@@ -97,7 +97,11 @@ unsafe extern "C" fn on_progress(stage: c_int, hour: std::ffi::c_long, ctx: *mut
     // SAFETY: ctx is the `&mut &mut dyn FnMut` passed by run_with_progress,
     // alive for the whole (synchronous) run.
     let f = unsafe { &mut *(ctx as *mut &mut dyn FnMut(Progress) -> bool) };
-    f(Progress::new(stage, hour as i64)) as c_int
+    // c_long is i32 on Windows but i64 on Linux/macOS, so the cast is only
+    // a no-op on some targets.
+    #[allow(clippy::unnecessary_cast)]
+    let hour = hour as i64;
+    f(Progress::new(stage, hour)) as c_int
 }
 
 /// Runs a full simulation, calling `progress` as each simulation hour starts;
