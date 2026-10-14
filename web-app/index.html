@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>WEPANET</title>
+  <meta name="description" content="Open-source water distribution network modeling in your browser. Runs locally, no account needed.">
+  
+<script type="module">
+import init, * as bindings from '/epanet-ui-web-60ed22c05374c0bc.js';
+const wasm = await init({ module_or_path: '/epanet-ui-web-60ed22c05374c0bc_bg.wasm' });
+
+
+window.wasmBindings = bindings;
+
+
+dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
+
+</script>
+  
+  
+  
+  <link rel="icon" href="favicon.ico" sizes="any">
+  <link rel="apple-touch-icon" href="logo.png">
+  <script src="engine/engine.js"></script>
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #f6f7f9; }
+    @media (prefers-color-scheme: dark) { html, body { background: #1b1e23; } }
+    canvas { position: absolute; inset: 0; width: 100%; height: 100%; outline: none; }
+    #loading { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
+      justify-content: center; font: 15px system-ui, sans-serif; color: #55606e; gap: 14px; }
+    #loading img { width: 64px; height: 64px; }
+  </style>
+<link rel="modulepreload" href="/epanet-ui-web-60ed22c05374c0bc.js" crossorigin="anonymous" integrity="sha384-Wcozpgr/oWF82nt99goZ2IoRCph+8AhSyXihp/6M/i6UZ3k/uzRmE3zGJUvX5U9Z"><link rel="preload" href="/epanet-ui-web-60ed22c05374c0bc_bg.wasm" crossorigin="anonymous" integrity="sha384-V1L2crjzplclrfE751oE1PAP9OkqQDUe2ZwJKYdBq4a0wCme4W8QHqKRSJgJF9tw" as="fetch" type="application/wasm"></head>
+<body>
+  <canvas id="epanet_ui_canvas"></canvas>
+  <div id="loading"><img src="logo.png" alt=""><span>Loading WEPANET…</span></div>
+</body>
+</html>

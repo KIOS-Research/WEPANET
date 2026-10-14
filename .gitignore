@@ -1,0 +1,10 @@
+/target
+/apps/web/dist
+/apps/web/engine/epanet_engine.js
+/apps/web/engine/epanet_engine.wasm
+.idea/
+.vscode/
+*.rpt
+*.out
+.claude/
+/desktop-app

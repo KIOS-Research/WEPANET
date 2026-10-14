@@ -1,0 +1,10 @@
+* text=auto
+*.sh text eol=lf
+*.inp -text
+# Binary assets: never convert line endings.
+*.rgba binary
+*.bgra binary
+*.ttf binary
+*.wasm binary
+*.ico binary
+*.png binary

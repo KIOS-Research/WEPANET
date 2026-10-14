@@ -1,0 +1,16 @@
+[package]
+name = "epanet-ui"
+description = "EPANET-UI desktop app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "epanet-ui"
+path = "src/main.rs"
+
+[dependencies]
+eui-ui.workspace = true
+eframe.workspace = true
+env_logger.workspace = true

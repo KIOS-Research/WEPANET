@@ -1,0 +1,50 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/eui-core",
+    "crates/eui-engine",
+    "crates/eui-ui",
+    "apps/desktop",
+    "apps/cli",
+    "apps/web",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["Marios S. Kyriakou"]
+rust-version = "1.88"
+
+[workspace.dependencies]
+eui-core = { path = "crates/eui-core" }
+eui-engine = { path = "crates/eui-engine" }
+eui-ui = { path = "crates/eui-ui" }
+
+anyhow = "1"
+thiserror = "2"
+log = "0.4"
+eframe = { version = "0.36", default-features = false, features = ["default_fonts", "glow", "persistence", "wayland", "x11"] }
+egui = "0.36"
+egui_plot = "0.37"
+rfd = "0.17"
+ehttp = "0.7"
+serde = { version = "1", features = ["derive"] }
+clap = { version = "4", features = ["derive"] }
+env_logger = "0.11"
+cc = "1"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = "0.3"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+rhai = { version = "1.26", features = ["no_time"] }
+proj4rs = { version = "0.2", default-features = false }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+
+[profile.dev.package."*"]
+opt-level = 2

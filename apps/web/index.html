@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>WEPANET</title>
+  <meta name="description" content="Open-source water distribution network modeling in your browser. Runs locally, no account needed.">
+  <link data-trunk rel="rust" data-bin="epanet-ui-web" data-wasm-opt="z" />
+  <link data-trunk rel="copy-dir" href="engine" />
+  <link data-trunk rel="copy-file" href="favicon.ico" />
+  <link data-trunk rel="copy-file" href="logo.png" />
+  <link rel="icon" href="favicon.ico" sizes="any">
+  <link rel="apple-touch-icon" href="logo.png">
+  <script src="engine/engine.js"></script>
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #f6f7f9; }
+    @media (prefers-color-scheme: dark) { html, body { background: #1b1e23; } }
+    canvas { position: absolute; inset: 0; width: 100%; height: 100%; outline: none; }
+    #loading { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
+      justify-content: center; font: 15px system-ui, sans-serif; color: #55606e; gap: 14px; }
+    #loading img { width: 64px; height: 64px; }
+  </style>
+</head>
+<body>
+  <canvas id="epanet_ui_canvas"></canvas>
+  <div id="loading"><img src="logo.png" alt=""><span>Loading WEPANET…</span></div>
+</body>
+</html>

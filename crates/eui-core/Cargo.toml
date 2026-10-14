@@ -1,0 +1,10 @@
+[package]
+name = "eui-core"
+description = "EPANET-UI core: network model, INP reader/writer, binary results reader and report calculations"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+thiserror.workspace = true
