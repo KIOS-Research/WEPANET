@@ -1,5 +1,6 @@
 # WEPANET
 
+**WEPANET** (Web-based EPANET) is an open-source web-based user interface for modeling and simulating water distribution networks with the [EPANET](https://github.com/OpenWaterAnalytics/EPANET) hydraulic and water quality engine. It is built using Rust, extending EPANET's latest user interface, [EPANET-UI](https://github.com/OpenWaterAnalytics/EPANET-UI), through the addition of new functionalities, connections to benchmark and plugin repositories, and others. **WEPANET** runs locally and does not transmit any files to an external server.
 
 [![CI](https://github.com/KIOS-Research/WEPANET/actions/workflows/ci.yml/badge.svg)](https://github.com/KIOS-Research/WEPANET/actions/workflows/ci.yml)
 [![Web App](https://github.com/KIOS-Research/WEPANET/actions/workflows/pages.yml/badge.svg)](https://github.com/KIOS-Research/WEPANET/actions/workflows/pages.yml)
@@ -10,3 +11,7 @@
 
 
 <img width="3198" height="1898" alt="wepanet" src="https://github.com/user-attachments/assets/29025f35-665d-4c6e-ad70-7ce8695bc0df" />
+
+## License
+
+WEPANET is released under the [MIT License](LICENSE).
