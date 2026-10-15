@@ -280,6 +280,7 @@ pub fn take_file(app: &mut EpanetApp, name: &str, bytes: &[u8]) {
 
 /// Opens the arsenic oxidation/adsorption example of the EPANET-MSX manual:
 /// its network, with its MSX file.
+#[cfg(test)]
 pub fn open_example(app: &mut EpanetApp) {
     use eui_core::msx::examples;
     app.msx.pending = Some(MsxFile::new("example.msx", examples::MSX));
@@ -608,17 +609,6 @@ fn general_page(app: &mut EpanetApp, ui: &mut Ui) {
         {
             w.text = TEMPLATE.to_string();
             app.msx.draft = None;
-        }
-        if ui
-            .button("Open the Example")
-            .on_hover_text(
-                "The arsenic oxidation/adsorption example of the EPANET-MSX manual, \
-                 with its network (replaces the current project)",
-            )
-            .clicked()
-        {
-            app.msx.work = None;
-            open_example(app);
         }
         if ui.button("Edit as Text…").clicked() {
             app.msx.edit = Some(w.text.clone());
