@@ -106,7 +106,7 @@ pub fn show(app: &mut EpanetApp, ctx: &egui::Context) {
             Dialog::RunStatus | Dialog::ConfirmDelete => 320.0,
             Dialog::About => 470.0,
             Dialog::Preferences => 330.0,
-            Dialog::Benchmarks => 520.0,
+            Dialog::Benchmarks => 880.0,
             _ => 320.0,
         })
         .max_width(if dialog == Dialog::Welcome {

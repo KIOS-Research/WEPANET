@@ -8,6 +8,7 @@ use eui_core::props::Element;
 use eui_core::{LinkKind, LinkVar, NodeKind};
 
 use crate::app::{EpanetApp, Tool};
+use crate::geometry::Occupancy;
 use crate::style::{self, Legend};
 
 /// World <-> screen transform. World Y points up, screen Y points down.
@@ -124,15 +125,35 @@ fn node_visible(app: &EpanetApp, kind: NodeKind) -> bool {
 
 /// Screen-space polyline of a link (end nodes plus vertices).
 fn link_points(app: &EpanetApp, rect: Rect, i: usize) -> Option<Vec<Pos2>> {
+    link_points_within(app, rect, i, 0.0)
+}
+
+/// As [`link_points`], leaving out vertices closer than `tol` points to the
+/// previous one (they cannot be seen, but cost time to draw).
+fn link_points_within(app: &EpanetApp, rect: Rect, i: usize, tol: f32) -> Option<Vec<Pos2>> {
     let link = &app.net.links[i];
-    let (a, b) = app.net.link_ends(link)?;
+    let (a, b) = app.geom.ends.get(i).copied().flatten()?;
     let pa = app.net.nodes[a].pos?;
     let pb = app.net.nodes[b].pos?;
     let mut pts = Vec::with_capacity(link.vertices.len() + 2);
     pts.push(app.view.to_screen(rect, pa));
-    pts.extend(link.vertices.iter().map(|&v| app.view.to_screen(rect, v)));
-    pts.push(app.view.to_screen(rect, pb));
+    for &v in &link.vertices {
+        let s = app.view.to_screen(rect, v);
+        if tol <= 0.0 || pts.last().is_none_or(|l| l.distance(s) >= tol) {
+            pts.push(s);
+        }
+    }
+    let end = app.view.to_screen(rect, pb);
+    if pts.len() > 1 && pts.last().is_some_and(|l| l.distance(end) < tol) {
+        pts.pop();
+    }
+    pts.push(end);
     Some(pts)
+}
+
+/// Whether the world point `w` is within `tol` world units of box `b`.
+fn near_box(b: [f64; 4], w: [f64; 2], tol: f64) -> bool {
+    w[0] >= b[0] - tol && w[0] <= b[2] + tol && w[1] >= b[1] - tol && w[1] <= b[3] + tol
 }
 
 fn dist_to_segment(p: Pos2, a: Pos2, b: Pos2) -> f32 {
@@ -163,7 +184,17 @@ fn hit_link(app: &EpanetApp, rect: Rect, p: Pos2) -> Option<(usize, usize)> {
     if !app.prefs.show_links {
         return None;
     }
+    let w = app.view.to_world(rect, p);
+    let tol = 6.0 / app.view.scale;
     (0..app.net.links.len())
+        .filter(|&i| {
+            app.geom
+                .boxes
+                .get(i)
+                .copied()
+                .flatten()
+                .is_some_and(|b| near_box(b, w, tol))
+        })
         .filter_map(|i| {
             let pts = link_points(app, rect, i)?;
             let (seg, d) = pts
@@ -196,6 +227,7 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
     let pal = app.map_palette();
     painter.rect_filled(rect, 0.0, pal.map_bg);
     app.export.map_rect = Some(rect);
+    app.refresh_geometry();
 
     let view = &mut app.view;
     if view.fit_pending {
@@ -204,21 +236,23 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
         view.last_size = Vec2::ZERO;
     }
     if view.auto_fit && rect.size() != view.last_size {
-        view.fit(rect, app.net.bounds().or(view.fit_to));
+        view.fit(rect, app.geom.bounds.or(view.fit_to));
     }
     view.last_size = rect.size();
 
     handle_input(app, ui, rect, &response);
+    // Edits made by the input above show up in this frame's drawing.
+    app.refresh_geometry();
     crate::basemap::draw(app, ui, &painter, rect, pal.map_bg);
 
     let highlight = |is_node: bool, i: usize| {
-        app.query.active && app.query.nodes == is_node && app.query.hits.contains(&i)
+        app.query.active && app.query.nodes == is_node && app.query.hits.binary_search(&i).is_ok()
     };
     let node_legend = app.node_legend();
     let link_legend = app.link_legend();
     // Labels and arrows can wait until the map is zoomed in far enough.
     let zoom = if app.prefs.label_zoom > 0 || app.prefs.arrow_zoom > 0 {
-        app.view.zoom_level(rect, app.net.bounds())
+        app.view.zoom_level(rect, app.bounds())
     } else {
         0.0
     };
@@ -232,6 +266,14 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
             app.prefs.show_arrows && app.results.is_some() && zoomed_to(app.prefs.arrow_zoom);
         // Pump and valve symbols grow with the link width, as in EPANET-UI.
         let symbol = app.prefs.link_width + 3.0;
+        // The world box on screen: links outside it are skipped unprojected.
+        let a = app.view.to_world(rect, rect.left_top() - vec2(4.0, 4.0));
+        let b = app
+            .view
+            .to_world(rect, rect.right_bottom() + vec2(4.0, 4.0));
+        let shown = [a[0], b[1], b[0], a[1]];
+        // Links smaller than a pixel: one per pixel is all that can be seen.
+        let mut specks = Occupancy::new(rect, 1.0);
         for i in 0..app.net.links.len() {
             let kind = app.net.links[i].kind;
             if (kind == LinkKind::Pump && !app.prefs.show_pumps)
@@ -239,14 +281,29 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
             {
                 continue;
             }
-            let Some(pts) = link_points(app, rect, i) else {
+            let Some(wb) = app.geom.boxes.get(i).copied().flatten() else {
                 continue;
             };
-            let bb = Rect::from_points(&pts);
-            if !bb.expand(4.0).intersects(rect) {
+            if wb[2] < shown[0] || wb[0] > shown[2] || wb[3] < shown[1] || wb[1] > shown[3] {
                 continue;
             }
             let selected = app.selection == Some(Element::Link(i));
+            let speck = kind == LinkKind::Pipe
+                && !selected
+                && !highlight(false, i)
+                && ((wb[2] - wb[0]).max(wb[3] - wb[1]) * app.view.scale) < 1.5;
+            if speck
+                && !specks.claim(
+                    app.view
+                        .to_screen(rect, [(wb[0] + wb[2]) / 2.0, (wb[1] + wb[3]) / 2.0]),
+                )
+            {
+                continue;
+            }
+            let Some(pts) = link_points_within(app, rect, i, 1.0) else {
+                continue;
+            };
+            let bb = Rect::from_points(&pts);
             let value = app.link_theme_value(i);
             let color = if selected {
                 style::SELECTED
@@ -320,6 +377,8 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
 
     // ---- nodes ----
     let mut visible_nodes = Vec::new();
+    // Junctions closer than a dot's width hide each other; draw one per spot.
+    let mut spots = Occupancy::new(rect.expand(10.0), 1.5 * app.prefs.node_size);
     for (i, n) in app.net.nodes.iter().enumerate() {
         if !node_visible(app, n.kind) {
             continue;
@@ -327,6 +386,13 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
         let Some(p) = n.pos else { continue };
         let s = app.view.to_screen(rect, p);
         if !rect.expand(10.0).contains(s) {
+            continue;
+        }
+        let marked = app.selection == Some(Element::Node(i))
+            || app.link_start == Some(i)
+            || highlight(true, i);
+        if n.kind == NodeKind::Junction && !marked && !spots.claim(s) {
+            visible_nodes.push((i, s, app.prefs.node_size));
             continue;
         }
         let value = app.node_theme_value(i);
@@ -516,12 +582,14 @@ fn handle_input(app: &mut EpanetApp, ui: &mut Ui, rect: Rect, response: &egui::R
         match (app.drag_node, app.drag_vertex, reshape_link, pointer) {
             (Some(i), _, _, Some(p)) if primary => {
                 app.net.nodes[i].pos = Some(app.view.to_world(rect, p));
+                app.geom.mark_moved();
                 app.update_lengths(i);
                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
             }
             (_, Some(v), Some(l), Some(p)) if primary => {
                 if let Some(slot) = app.net.links[l].vertices.get_mut(v) {
                     *slot = app.view.to_world(rect, p);
+                    app.geom.mark_moved();
                 }
             }
             _ => {
@@ -570,7 +638,7 @@ fn handle_input(app: &mut EpanetApp, ui: &mut Ui, rect: Rect, response: &egui::R
             && app.tool == Tool::Select
             && hit(app, rect, pointer.unwrap_or_default()).is_none()
         {
-            app.view.fit(rect, app.net.bounds());
+            app.view.fit(rect, app.bounds());
         }
         return;
     }
@@ -973,4 +1041,55 @@ fn label_editor(app: &mut EpanetApp, ui: &mut Ui, rect: Rect) {
         return;
     }
     app.label_edit = Some((pos, text));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Times map frames for a large network:
+    /// `WEPANET_BENCH_INP=big.inp cargo test --release -p eui-ui map_frame_time -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn map_frame_time() {
+        let Ok(path) = std::env::var("WEPANET_BENCH_INP") else {
+            return;
+        };
+        let ctx = egui::Context::default();
+        let mut app = EpanetApp::new(&eframe::CreationContext::_new_kittest(ctx.clone()));
+        let bytes = std::fs::read(&path).unwrap();
+        let t = std::time::Instant::now();
+        app.load_example("bench", &crate::io::decode_text(&bytes));
+        app.dialog = crate::app::Dialog::None;
+        eprintln!("load {:?}", t.elapsed());
+        let input = || egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 1000.0))),
+            ..Default::default()
+        };
+        for zoom in [0.0, 6.0] {
+            for frame in 0..4 {
+                let t = std::time::Instant::now();
+                let out = ctx.run_ui(input(), |ui| {
+                    app.refresh_geometry();
+                    if frame == 1 {
+                        app.view.zoom_steps(zoom);
+                    }
+                    egui::CentralPanel::default().show(ui, |ui| show(&mut app, ui));
+                });
+                let ran = t.elapsed();
+                let prims = ctx.tessellate(out.shapes, out.pixels_per_point);
+                let verts: usize = prims
+                    .iter()
+                    .map(|p| match &p.primitive {
+                        egui::epaint::Primitive::Mesh(m) => m.vertices.len(),
+                        _ => 0,
+                    })
+                    .sum();
+                eprintln!(
+                    "zoom {zoom} frame {frame}: ui {ran:?}, total {:?}, {verts} vertices",
+                    t.elapsed()
+                );
+            }
+        }
+    }
 }

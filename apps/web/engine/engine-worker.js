@@ -14,7 +14,9 @@ self.onmessage = async (e) => {
     const dir = '/run' + id;
     M.FS.mkdir(dir);
     M.FS.chdir(dir); // EPANET writes its scratch files into the working directory
-    M.FS.writeFile('net.inp', inp);
+    // Encoded here: Emscripten turns a string into a plain JS Array, one
+    // element per byte, which fails ("Invalid array length") above ~134 MB.
+    M.FS.writeFile('net.inp', new TextEncoder().encode(inp));
     const read = (f, opts) => { try { return M.FS.readFile(f, opts); } catch (_) { return null; } };
     const cleanup = () => {
       for (const f of M.FS.readdir('.')) if (f !== '.' && f !== '..') M.FS.unlink(f);
