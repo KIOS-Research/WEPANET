@@ -31,6 +31,13 @@ jobs:
       - name: Build web app
         working-directory: apps/web
         run: trunk build --release --public-url "/${{ github.event.repository.name }}/"
+      # Benchmarks hosted where web pages may not download them (no CORS) are
+      # published next to the app, gzipped (crates/eui-ui/src/catalog.rs).
+      - name: Add large benchmark networks
+        run: |
+          mkdir -p apps/web/dist/benchmarks
+          curl -fsSL --retry 3 https://filedn.com/lumBFq2P9S74PNoLPWtzxG4/Benchmarks/ky-all-customers.inp \
+            | gzip -9 > apps/web/dist/benchmarks/ky-all-customers.inp.gz
       - uses: actions/upload-pages-artifact@v3
         with:
           path: apps/web/dist

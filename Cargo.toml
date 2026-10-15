@@ -30,6 +30,7 @@ egui_plot = "0.37"
 rfd = "0.17"
 ehttp = "0.7"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 clap = { version = "4", features = ["derive"] }
 env_logger = "0.11"
 cc = "1"
@@ -39,6 +40,7 @@ js-sys = "0.3"
 web-sys = "0.3"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 rhai = { version = "1.26", features = ["no_time"] }
 proj4rs = { version = "0.2", default-features = false }
 

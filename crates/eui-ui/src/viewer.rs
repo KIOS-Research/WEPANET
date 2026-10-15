@@ -321,7 +321,7 @@ fn overview(app: &mut EpanetApp, ui: &mut Ui) {
         egui::Stroke::new(1.0, Color32::from_gray(170)),
         egui::StrokeKind::Inside,
     );
-    let Some([x0, y0, x1, y1]) = app.net.bounds() else {
+    let Some([x0, y0, x1, y1]) = app.bounds() else {
         return;
     };
     let inner = rect.shrink(10.0);
@@ -333,12 +333,24 @@ fn overview(app: &mut EpanetApp, ui: &mut Ui) {
         |[x, y]: [f64; 2]| egui::pos2(c.x + ((x - cx) * s) as f32, c.y - ((y - cy) * s) as f32);
     let to_world = |q: egui::Pos2| [cx + (q.x - c.x) as f64 / s, cy - (q.y - c.y) as f64 / s];
     let line = egui::Stroke::new(1.0, Color32::from_gray(120));
-    for l in &app.net.links {
-        let ends = (app.net.node_index(&l.from), app.net.node_index(&l.to));
-        let (Some(a), Some(b)) = ends else { continue };
+    app.refresh_geometry();
+    // Small links: one per pixel is all the overview can show.
+    let mut specks = crate::geometry::Occupancy::new(rect, 1.0);
+    for (i, l) in app.net.links.iter().enumerate() {
+        let Some((a, b)) = app.geom.ends.get(i).copied().flatten() else {
+            continue;
+        };
         let (Some(pa), Some(pb)) = (app.net.nodes[a].pos, app.net.nodes[b].pos) else {
             continue;
         };
+        if let Some(wb) = app.geom.boxes.get(i).copied().flatten()
+            && (wb[2] - wb[0]).max(wb[3] - wb[1]) * s < 2.0
+        {
+            if specks.claim(to_screen(pa)) {
+                p.line_segment([to_screen(pa), to_screen(pb)], line);
+            }
+            continue;
+        }
         let mut pts = vec![to_screen(pa)];
         pts.extend(l.vertices.iter().map(|&v| to_screen(v)));
         pts.push(to_screen(pb));

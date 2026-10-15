@@ -334,8 +334,7 @@ fn crs_def(app: &EpanetApp) -> Option<String> {
     if let Some(d) = app.prefs.basemap_crs.get(&app.file_name) {
         return Some(d.clone());
     }
-    app.net
-        .bounds()
+    app.bounds()
         .filter(|&b| looks_lonlat(b))
         .map(|_| "EPSG:4326".to_string())
 }
@@ -404,7 +403,7 @@ fn poll(app: &mut EpanetApp, ctx: &egui::Context) {
         match item.and_then(|(name, bytes)| decode(&bytes, false).map(|img| (name, img))) {
             Ok((name, img)) => {
                 // across the network's width, keeping the picture's proportions
-                let b = app.net.bounds().unwrap_or([0.0, 0.0, 10000.0, 10000.0]);
+                let b = app.bounds().unwrap_or([0.0, 0.0, 10000.0, 10000.0]);
                 let size = img.size;
                 let s = (b[2] - b[0]).max(1e-9) / size[0].max(1) as f64;
                 let bounds = [b[0], b[1], b[2], b[1] + s * size[1] as f64];
@@ -759,13 +758,15 @@ pub fn dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
             .net
             .option("BACKDROP", "UNITS")
             .and_then(|u| UNITS.iter().position(|m| m.eq_ignore_ascii_case(&u)));
-        let lonlat = app.net.bounds().is_some_and(looks_lonlat);
-        app.basemap.crs_edit = Some(if empty || (saved.is_none() && lonlat) {
-            "4326".into()
-        } else {
+        let lonlat = app.bounds().is_some_and(looks_lonlat);
+        // Longitude/latitude (EPSG:4326) unless another system was chosen for this file.
+        let custom = !empty && saved.as_deref().is_some_and(|c| c != "4326");
+        app.basemap.crs_edit = Some(if custom {
             saved.unwrap_or_default()
+        } else {
+            "4326".into()
         });
-        app.basemap.units_edit = if empty || lonlat {
+        app.basemap.units_edit = if !custom || lonlat {
             3
         } else {
             units.unwrap_or(2)

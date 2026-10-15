@@ -324,6 +324,7 @@ pub struct QueryState {
     /// 0 below, 1 equal to, 2 above
     pub op: usize,
     pub value: String,
+    /// Matching element indices, in ascending order.
     pub hits: Vec<usize>,
     pub active: bool,
 }
@@ -354,6 +355,8 @@ pub struct EpanetApp {
     node_map: Vec<Option<usize>>,
     link_map: Vec<Option<usize>>,
     maps_key: (u64, u64),
+    /// Cached extent, link ends and link boxes for drawing and hit-testing.
+    pub(crate) geom: crate::geometry::Geometry,
     /// Incremented whenever new results arrive.
     pub(crate) results_id: u64,
     pub(crate) run_message: String,
@@ -452,6 +455,7 @@ impl EpanetApp {
             node_map: Vec::new(),
             link_map: Vec::new(),
             maps_key: (u64::MAX, 0),
+            geom: Default::default(),
             results_id: 0,
             run_message: String::new(),
             rpt: Default::default(),
@@ -555,6 +559,8 @@ impl EpanetApp {
     fn load_document(&mut self, name: &str, text: &str, path: Option<PathBuf>) {
         match Network::from_inp(text) {
             Ok(net) => {
+                // Saving writes plain INP text, never back over a compressed file.
+                let path = path.filter(|p| !p.to_string_lossy().ends_with(".gz"));
                 self.request_document(net, name, path);
             }
             Err(e) => {
@@ -572,6 +578,7 @@ impl EpanetApp {
         self.replace_after_save = false;
         self.net = net;
         self.file_name = name
+            .trim_end_matches(".gz")
             .trim_end_matches(".inp")
             .trim_end_matches(".INP")
             .to_string();
@@ -1063,6 +1070,17 @@ impl EpanetApp {
         self.results.is_some() && self.results_generation != self.generation
     }
 
+    /// Brings the cached map geometry up to date with the network.
+    pub(crate) fn refresh_geometry(&mut self) {
+        self.geom
+            .refresh(&self.net, self.document_id, self.generation);
+    }
+
+    /// Extent of the network's coordinates (cached).
+    pub(crate) fn bounds(&self) -> Option<[f64; 4]> {
+        self.geom.bounds
+    }
+
     /// Maps network element indices to result indices.
     fn refresh_maps(&mut self) {
         let key = (self.generation, self.results_id);
@@ -1376,6 +1394,7 @@ impl eframe::App for EpanetApp {
         crate::scripting::poll(self);
         crate::export::poll(self, ctx);
         self.refresh_maps();
+        self.refresh_geometry();
         self.animate(ctx);
         self.shortcuts(ctx);
         self.update_title(ctx);

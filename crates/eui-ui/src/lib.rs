@@ -14,6 +14,7 @@ mod explorer;
 mod export;
 mod fireflow;
 mod fonts;
+mod geometry;
 mod icons;
 mod images;
 mod import;

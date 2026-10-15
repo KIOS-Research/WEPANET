@@ -22,7 +22,23 @@ impl Inbox {
 }
 
 /// Decodes INP bytes; old files are often Latin-1 rather than UTF-8.
+/// Gzip-compressed files (`.inp.gz`, used for very large networks) are
+/// unpacked first.
 pub fn decode_text(bytes: &[u8]) -> String {
+    let unpacked;
+    let bytes = if bytes.starts_with(&[0x1f, 0x8b]) {
+        use std::io::Read as _;
+        let mut out = Vec::new();
+        match flate2::read::MultiGzDecoder::new(bytes).read_to_end(&mut out) {
+            Ok(_) => {
+                unpacked = out;
+                &unpacked[..]
+            }
+            Err(_) => bytes,
+        }
+    } else {
+        bytes
+    };
     match std::str::from_utf8(bytes) {
         Ok(s) => s.trim_start_matches('\u{feff}').to_string(),
         Err(_) => bytes.iter().map(|&b| b as char).collect(),
@@ -35,7 +51,7 @@ pub fn open_dialog(inbox: &Inbox, ctx: &egui::Context) -> Option<std::path::Path
     {
         let _ = ctx;
         let path = rfd::FileDialog::new()
-            .add_filter("EPANET input file", &["inp", "INP"])
+            .add_filter("EPANET input file", &["inp", "INP", "gz"])
             .add_filter("All files", &["*"])
             .pick_file()?;
         inbox.push(read_path(&path));
@@ -47,7 +63,7 @@ pub fn open_dialog(inbox: &Inbox, ctx: &egui::Context) -> Option<std::path::Path
         let ctx = ctx.clone();
         wasm_bindgen_futures::spawn_local(async move {
             if let Some(file) = rfd::AsyncFileDialog::new()
-                .add_filter("EPANET input file", &["inp", "INP"])
+                .add_filter("EPANET input file", &["inp", "INP", "gz"])
                 .pick_file()
                 .await
             {
@@ -455,4 +471,16 @@ fn save_in_browser(
         SAVE_EVENTS.with(|m| m.borrow_mut().push(SaveEvent { token, result }));
         ctx.request_repaint();
     });
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn decodes_gzipped_and_latin1_text() {
+        use std::io::Write as _;
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(b"[TITLE]\nNet\n").unwrap();
+        assert_eq!(super::decode_text(&gz.finish().unwrap()), "[TITLE]\nNet\n");
+        assert_eq!(super::decode_text(b"caf\xe9"), "café");
+    }
 }
