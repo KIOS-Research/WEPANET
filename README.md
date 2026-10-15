@@ -11,6 +11,15 @@
 
 
 <img width="3198" height="1898" alt="wepanet" src="https://github.com/user-attachments/assets/29025f35-665d-4c6e-ad70-7ce8695bc0df" />
+<img width="1914" height="990" alt="image" src="https://github.com/user-attachments/assets/5aed89ed-878f-4ad1-bb65-faa35d2722ee" />
+
+<p>
+<p>
+<b>EPANET-MSX</b>
+  
+<img width="1917" height="1031" alt="image" src="https://github.com/user-attachments/assets/bcab53e0-16cd-424a-9b9d-5483cb02b00a" />
+
+<img width="1917" height="1030" alt="image" src="https://github.com/user-attachments/assets/b8842eed-7f19-4f44-8407-57091c488f3d" />
 
 ## License
 
