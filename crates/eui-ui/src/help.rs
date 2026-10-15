@@ -134,7 +134,13 @@ mod tests {
     fn opens_a_local_copy_at_the_topic() {
         let url = local_url(Doc::Manual, "#source_quality").unwrap();
         assert!(url.starts_with("file:///") && url.ends_with("go-source_quality.html"));
-        let path = url.trim_start_matches("file:///");
+        // file:///C:/... on Windows, file:///tmp/... elsewhere
+        let path = url.strip_prefix("file://").unwrap();
+        let path = if cfg!(windows) {
+            path.trim_start_matches('/')
+        } else {
+            path
+        };
         let go = std::fs::read_to_string(path).unwrap();
         assert!(go.contains("Manual.html#source_quality"));
     }
