@@ -207,8 +207,8 @@ fn status_bar(app: &mut EpanetApp, ui: &mut Ui) {
     let (fill, text) = if on {
         (
             egui::Color32::from_rgb(0xd4, 0xed, 0xda),
-            "EPANET-MSX is ON — every analysis also runs this multi-species model \
-             (EPANET's single species quality is not used).",
+            "EPANET-MSX is ON — it runs with every analysis, instead of EPANET's \
+             single species quality.",
         )
     } else if has_model {
         (
@@ -232,7 +232,8 @@ fn status_bar(app: &mut EpanetApp, ui: &mut Ui) {
         .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(170)))
         .inner_margin(egui::Margin::symmetric(10, 6))
         .show(ui, |ui| {
-            ui.set_width(ui.available_width());
+            // a fixed width: a long text must not widen the editor
+            ui.set_width(790.0);
             ui.horizontal(|ui| {
                 let dot = if on {
                     egui::Color32::from_rgb(0x27, 0xae, 0x60)
@@ -241,11 +242,16 @@ fn status_bar(app: &mut EpanetApp, ui: &mut Ui) {
                 };
                 let (r, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
                 ui.painter().circle_filled(r.center(), 6.0, dot);
-                ui.label(RichText::new(text).color(if dark {
+                let color = if dark {
                     egui::Color32::LIGHT_GRAY
                 } else {
                     egui::Color32::from_gray(30)
-                }));
+                };
+                // in a fixed space, cut short rather than widen the editor
+                ui.allocate_ui(egui::vec2(660.0, 20.0), |ui| {
+                    ui.add(egui::Label::new(RichText::new(text).color(color)).truncate())
+                        .on_hover_text(text);
+                });
                 if has_model {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let label = if on { "Turn Off" } else { "Turn On" };

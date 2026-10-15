@@ -97,17 +97,13 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
                 // EPANET-MSX replaces the single species quality when it runs
                 let msx = app.net.msx.as_ref().filter(|_| app.msx.enabled);
                 let resp = match msx {
-                    Some(m) => {
-                        let species: Vec<String> =
-                            m.model().species.into_iter().map(|s| s.id).collect();
-                        cell(
-                            ui,
-                            190.0,
-                            &format!("Quality: EPANET-MSX ({})", species.join(", ")),
-                            Some(Color32::from_rgb(0xd4, 0xed, 0xda)),
-                        )
-                        .on_hover_text("EPANET-MSX runs with each analysis — click to edit")
-                    }
+                    Some(_) => cell(
+                        ui,
+                        190.0,
+                        "Quality: EPANET-MSX",
+                        Some(Color32::from_rgb(0xd4, 0xed, 0xda)),
+                    )
+                    .on_hover_text("EPANET-MSX runs with each analysis — click to edit"),
                     None => cell(ui, 190.0, &format!("Quality: {q}"), None),
                 };
                 if msx.is_some() && resp.interact(Sense::click()).clicked() {
