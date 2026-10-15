@@ -5,17 +5,64 @@ small scripting language with a syntax close to JavaScript and Rust. The same
 file works in the browser and in the desktop application; nothing has to be
 installed or compiled.
 
-Load a plugin from **Plugins > Load Plugin**. It then appears on the Plugins
-toolbar with a drop-down of its commands, and WEPANET remembers it for the next
-session (**Remove Plugin** in its drop-down forgets it).
+Install plugins with **Plugins > Manage Plugins**, or load a file with
+**Plugins > Load Plugin**. A plugin then appears on the Plugins toolbar with a
+drop-down of its commands, and WEPANET remembers it for the next session
+(**Remove Plugin** in its drop-down forgets it).
 
-Ready-made examples are in [`plugins/examples`](../plugins/examples):
+Ready-made examples are in [`plugins/examples`](../plugins/examples), and all
+of them can be installed from the Plugin Manager:
 
 | File | What it does |
 |---|---|
 | `count.rhai` | Counts junctions or pipes (the Count plugin of [EPANET-Plugins](https://github.com/eladsal/EPANET-Plugins) by Elad Salomons) |
+| `network_stats.rhai` | Element counts, total pipe length and junction elevation range |
 | `pipe_summary.rhai` | A table of pipe length and count for each diameter |
+| `dead_ends.rhai` | Junctions connected to a single link |
 | `low_pressure.rhai` | Junctions whose pressure drops below a limit during the simulation |
+| `high_velocity.rhai` | Pipes whose velocity rises above a limit during the simulation |
+
+## The Plugin Manager and plugin repositories
+
+As in QGIS, the Plugin Manager offers the plugins of **repositories**: XML
+files listing plugins, read from their URLs. WEPANET's own repository is
+[`plugins/plugins.xml`](../plugins/plugins.xml); add others under
+**Settings** in the Plugin Manager. Installed plugins are offered an
+**Upgrade** when a repository lists a higher version.
+
+To publish plugins, put their `.rhai` files and a `plugins.xml` anywhere they
+can be downloaded from (a GitHub repository works; browsers need the server to
+allow cross-origin requests, which `raw.githubusercontent.com` does):
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<plugins>
+  <plugin name="Dead Ends" version="1.0">
+    <description>Junctions connected to a single link</description>
+    <author>Your name</author>
+    <file>examples/dead_ends.rhai</file>  <!-- a URL, or a path relative to this file -->
+    <tags>network, water quality</tags>
+    <homepage>https://…</homepage>
+  </plugin>
+</plugins>
+```
+
+`name` must be the name the script gives in `fn name()`. Raise `version`
+whenever the script changes.
+
+## The AI Assistant
+
+**Plugins > AI Assistant** opens a chat with a large language model about the
+open project: it is told the project's size, options, the selected object and
+the latest results. Asked to change the network, find objects or compute
+something, it writes a plugin script, which runs (sandboxed, on a copy of the
+project, undoable) when you click **Run script**.
+
+It works with any OpenAI-compatible API. The default is
+[Groq](https://console.groq.com/keys), which gives free keys; OpenAI,
+OpenRouter or a local [Ollama](https://ollama.com) (`http://localhost:11434/v1`)
+work too. The key is kept only on your computer (in the browser's storage for
+the web app) and sent only to the API you chose.
 
 ## The shape of a plugin
 
