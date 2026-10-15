@@ -844,7 +844,7 @@ checksum = "773fa9c96dd0dbef887e39d0ed6177f141cce4d68e6041df77570aa3702dfa13"
 
 [[package]]
 name = "epanet-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -854,7 +854,7 @@ dependencies = [
 
 [[package]]
 name = "epanet-ui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "eframe",
  "env_logger",
@@ -863,7 +863,7 @@ dependencies = [
 
 [[package]]
 name = "epanet-ui-web"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "eframe",
  "eui-ui",
@@ -906,14 +906,14 @@ dependencies = [
 
 [[package]]
 name = "eui-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "eui-engine"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cc",
  "eui-core",
@@ -925,7 +925,7 @@ dependencies = [
 
 [[package]]
 name = "eui-ui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "eframe",
  "egui",

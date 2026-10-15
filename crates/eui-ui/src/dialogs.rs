@@ -1629,10 +1629,10 @@ fn about(ui: &mut Ui) -> bool {
                         };
                         item(
                             ui,
-                            "Original EPANET-UI desktop application",
+                            "EPANET-UI desktop application",
                             "https://github.com/OpenWaterAnalytics/EPANET-UI",
                             &[
-                                "Original desktop application by Lewis A. Rossman",
+                                "Desktop application by Lewis A. Rossman",
                                 "Interface design, workflows, reports, icon and welcome image",
                                 "MIT license",
                                 "Copyright (c) 2026 by the Authors",
@@ -1709,4 +1709,17 @@ fn welcome_banner(ui: &mut Ui) {
         font,
         Color32::WHITE,
     );
+    // the version, in the bottom right corner
+    let version = format!("WEPANET v{}", env!("CARGO_PKG_VERSION"));
+    let at = rect.right_bottom() + vec2(-14.0, -10.0);
+    let small = crate::fonts::bold(14.0);
+    ui.painter().text(
+        at + vec2(1.0, 1.0),
+        Align2::RIGHT_BOTTOM,
+        &version,
+        small.clone(),
+        Color32::from_black_alpha(140),
+    );
+    ui.painter()
+        .text(at, Align2::RIGHT_BOTTOM, version, small, Color32::WHITE);
 }
