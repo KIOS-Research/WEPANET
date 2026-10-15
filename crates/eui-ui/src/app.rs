@@ -231,6 +231,8 @@ pub struct Prefs {
     pub plugin_versions: std::collections::BTreeMap<String, String>,
     /// Installed plugins unticked in the Plugin Manager: kept, but off the toolbar.
     pub disabled_plugins: std::collections::BTreeSet<String>,
+    /// Core plugins (see `plugin_manager::CORE`) installed on the toolbar.
+    pub core_plugins: std::collections::BTreeSet<String>,
     /// Icons (PNG) of plugins installed from a repository, by plugin name.
     pub plugin_icons: std::collections::BTreeMap<String, Vec<u8>>,
     pub animate_fps: f32,
@@ -300,6 +302,7 @@ impl Default for Prefs {
             plugin_repos: crate::plugin_manager::default_repositories(),
             plugin_versions: Default::default(),
             disabled_plugins: Default::default(),
+            core_plugins: Default::default(),
             plugin_icons: Default::default(),
             animate_fps: 4.0,
             auto_length: false,

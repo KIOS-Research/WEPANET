@@ -1,8 +1,8 @@
-//! The Plugins menu: Elad Salomons' EPANET plugins
+//! The core plugins (Plugins > Manage Plugins): Elad Salomons' EPANET plugins
 //! (<https://github.com/eladsal/EPANET-Plugins>), written for the Python UI
 //! of EPANET MTP4, brought over to run on the desktop and in the browser.
+//! (Count is a script plugin now: `plugins/examples/count.rhai`.)
 //!
-//! - **Count** – the number of junctions or pipes.
 //! - **Elevations** – junction elevations from a digital elevation model. The
 //!   original used Google's Elevation API (which needs a key); this uses the
 //!   free Open-Meteo API (Copernicus DEM, 90 m).
@@ -32,23 +32,6 @@ pub struct PluginsState {
     elev: Option<ElevationJob>,
     elev_error: Option<String>,
     pub curve: CurveState,
-}
-
-// ----- Count ----------------------------------------------------------------
-
-pub fn count(app: &mut EpanetApp, nodes: bool) {
-    app.plugins.message = if nodes {
-        format!(
-            "Number of Junctions: {}",
-            app.net.count_nodes(NodeKind::Junction)
-        )
-    } else {
-        format!(
-            "Number of Pipes: {}",
-            app.net.count_links(eui_core::LinkKind::Pipe)
-        )
-    };
-    app.dialog = Dialog::PluginMessage;
 }
 
 /// The Plugins message box.

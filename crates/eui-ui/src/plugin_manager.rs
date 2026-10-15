@@ -104,6 +104,56 @@ fn builtin_source(url: &str) -> Option<&'static str> {
     BUILTIN.iter().find(|(f, _)| *f == path).map(|(_, s)| *s)
 }
 
+/// A core plugin: part of WEPANET itself (written in Rust, so it can reach
+/// web services or run the engine), offered in the Plugin Manager like the
+/// others. Installing one puts it on the Plugins toolbar.
+pub(crate) struct CorePlugin {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub tags: &'static str,
+    pub icon: Icon,
+    pub dialog: crate::app::Dialog,
+}
+
+pub(crate) const CORE: &[CorePlugin] = &[
+    CorePlugin {
+        name: "Elevations",
+        description: "Junction elevations from a digital elevation model (Open-Meteo, Copernicus DEM 90 m)",
+        tags: "elevation, terrain, web service",
+        icon: Icon::Import,
+        dialog: crate::app::Dialog::Elevations,
+    },
+    CorePlugin {
+        name: "Fire Flow Curve",
+        description: "Pressure at a junction, and the lowest in the network, as its demand grows",
+        tags: "fire flow, hydraulics, analysis",
+        icon: Icon::FireFlow,
+        dialog: crate::app::Dialog::FireFlowCurve,
+    },
+];
+
+pub(crate) fn core(name: &str) -> Option<&'static CorePlugin> {
+    CORE.iter().find(|c| c.name == name)
+}
+
+const CORE_REPOSITORY: &str = "Core (part of WEPANET)";
+
+fn core_offers() -> Vec<Offer> {
+    CORE.iter()
+        .map(|c| Offer {
+            name: c.name.into(),
+            version: env!("CARGO_PKG_VERSION").into(),
+            description: c.description.into(),
+            author: "WEPANET (after Elad Salomons' EPANET-Plugins)".into(),
+            tags: c.tags.into(),
+            homepage: crate::plugins::PLUGINS_REPO.into(),
+            url: format!("core:{}", c.name),
+            icon: String::new(),
+            repository: CORE_REPOSITORY.into(),
+        })
+        .collect()
+}
+
 fn builtin_icon(url: &str) -> Option<&'static [u8]> {
     let path = url.strip_prefix("builtin:/")?;
     BUILTIN_ICONS
@@ -287,7 +337,8 @@ fn fetch(
 fn sync(app: &mut EpanetApp, ctx: &egui::Context) {
     let m = &mut app.plugin_manager;
     m.synced = true;
-    m.offers = builtin_offers();
+    m.offers = core_offers();
+    m.offers.extend(builtin_offers());
     m.read.clear();
     m.message = None;
     let repos: Vec<Repository> = app
@@ -311,6 +362,18 @@ fn sync(app: &mut EpanetApp, ctx: &egui::Context) {
 
 fn install(app: &mut EpanetApp, ctx: &egui::Context, offer: &Offer) {
     if app.plugin_manager.installing.contains(&offer.name) {
+        return;
+    }
+    if core(&offer.name).is_some() {
+        // built in: installing puts it on the toolbar
+        app.prefs.core_plugins.insert(offer.name.clone());
+        app.plugin_manager.message = Some((
+            true,
+            format!(
+                "\"{}\" was installed: it is on the Plugins toolbar.",
+                offer.name
+            ),
+        ));
         return;
     }
     app.plugin_manager.installing.push(offer.name.clone());
@@ -408,29 +471,41 @@ pub(crate) fn installed_icon(
     texture(app, ctx, format!("installed:{name}"), bytes.as_deref())
 }
 
-/// The icon of a row of the list: the repository's, else the installed one's.
-fn row_icon(app: &mut EpanetApp, ctx: &egui::Context, r: &Row) -> Option<egui::TextureId> {
+/// A plugin's icon: its author's picture, or one of WEPANET's icons.
+#[derive(Clone, Copy)]
+pub(crate) enum Pic {
+    Image(egui::TextureId),
+    Glyph(Icon),
+}
+
+impl Pic {
+    /// The author's picture, else the default plugin icon.
+    pub(crate) fn or_default(tex: Option<egui::TextureId>) -> Pic {
+        tex.map_or(Pic::Glyph(Icon::Setup), Pic::Image)
+    }
+}
+
+/// The icon of a row of the list: a core plugin's, the repository's, else the
+/// installed one's.
+fn row_icon(app: &mut EpanetApp, ctx: &egui::Context, r: &Row) -> Pic {
+    if let Some(c) = core(&r.name) {
+        return Pic::Glyph(c.icon);
+    }
     if let Some(o) = &r.offer
         && !o.icon.is_empty()
     {
         let bytes = app.plugin_manager.icons.get(&o.icon).cloned().flatten();
         if let Some(t) = texture(app, ctx, o.icon.clone(), bytes.as_deref()) {
-            return Some(t);
+            return Pic::Image(t);
         }
     }
-    installed_icon(app, ctx, &r.name)
+    Pic::or_default(installed_icon(app, ctx, &r.name))
 }
 
-/// Draws a plugin icon (or the default plugin icon) centred at `c`.
-pub(crate) fn paint_icon(
-    p: &egui::Painter,
-    tex: Option<egui::TextureId>,
-    c: egui::Pos2,
-    size: f32,
-    fg: Color32,
-) {
-    match tex {
-        Some(t) => {
+/// Draws a plugin icon centred at `c`.
+pub(crate) fn paint_icon(p: &egui::Painter, pic: Pic, c: egui::Pos2, size: f32, fg: Color32) {
+    match pic {
+        Pic::Image(t) => {
             p.image(
                 t,
                 egui::Rect::from_center_size(c, egui::vec2(size, size)),
@@ -438,11 +513,12 @@ pub(crate) fn paint_icon(
                 Color32::WHITE,
             );
         }
-        None => icons::paint(p, Icon::Setup, c, size, fg),
+        Pic::Glyph(icon) => icons::paint(p, icon, c, size, fg),
     }
 }
 
 fn uninstall(app: &mut EpanetApp, name: &str) {
+    app.prefs.core_plugins.remove(name);
     crate::scripting::remove(app, name);
     app.prefs.plugin_versions.remove(name);
     app.prefs.disabled_plugins.remove(name);
@@ -468,7 +544,7 @@ fn poll(app: &mut EpanetApp) {
                 match result {
                     Ok(offers) => {
                         m.read.push((url, Ok(offers.len())));
-                        for o in offers {
+                        for o in offers.into_iter().filter(|o| core(&o.name).is_none()) {
                             // the first repository to offer a name wins, unless a later one is newer
                             match m.offers.iter_mut().find(|x| x.name == o.name) {
                                 Some(x) if version_cmp(&o.version, &x.version).is_gt() => *x = o,
@@ -538,6 +614,13 @@ enum State {
 }
 
 fn state(app: &EpanetApp, installed: &[String], o: &Offer) -> State {
+    if core(&o.name).is_some() {
+        return if app.prefs.core_plugins.contains(&o.name) {
+            State::Installed
+        } else {
+            State::NotInstalled
+        };
+    }
     if !installed.contains(&o.name) {
         return State::NotInstalled;
     }
@@ -981,6 +1064,11 @@ fn details(app: &mut EpanetApp, ui: &mut Ui, r: &Row) {
             "This plugin is installed but disabled (tick it in the list to enable it)",
             Color32::from_gray(215),
         ),
+        _ if core(&r.name).is_some() => banner(
+            ui,
+            "This is a core plugin: part of WEPANET, nothing to download",
+            Color32::from_rgb(0x9e, 0xe6, 0xe6),
+        ),
         _ => {}
     }
     let tex = row_icon(app, &ui.ctx().clone(), r);
@@ -1011,13 +1099,15 @@ fn details(app: &mut EpanetApp, ui: &mut Ui, r: &Row) {
                 ui.label(&o.tags);
                 ui.end_row();
             }
-            if !o.homepage.is_empty() || !o.url.starts_with("builtin:") {
+            if !o.homepage.is_empty()
+                || !(o.url.starts_with("builtin:") || o.url.starts_with("core:"))
+            {
                 key(ui, "More info");
                 ui.horizontal(|ui| {
                     if !o.homepage.is_empty() {
                         ui.hyperlink_to("homepage", &o.homepage);
                     }
-                    if !o.url.starts_with("builtin:") {
+                    if !(o.url.starts_with("builtin:") || o.url.starts_with("core:")) {
                         ui.hyperlink_to("script", &o.url);
                     }
                 });
@@ -1293,9 +1383,9 @@ mod tests {
         };
         // the sidebar: one entry below the other
         let side = [
-            "All (6)",
+            "All (8)",
             "Installed (0)",
-            "Not installed (6)",
+            "Not installed (8)",
             "Install from File",
             "Settings",
         ]
@@ -1340,5 +1430,43 @@ mod tests {
                 .any(|(s, _)| s.contains("raw.githubusercontent.com/KIOS-Research")),
             "{t:?}"
         );
+    }
+
+    #[test]
+    fn core_plugins_install_onto_the_toolbar() {
+        let ctx = egui::Context::default();
+        let mut app = EpanetApp::new(&eframe::CreationContext::_new_kittest(ctx.clone()));
+        let offers = core_offers();
+        assert_eq!(offers.len(), CORE.len());
+        let installed = crate::scripting::installed(&app);
+        let e = offers.iter().find(|o| o.name == "Elevations").unwrap();
+        assert_eq!(state(&app, &installed, e), State::NotInstalled);
+        install(&mut app, &ctx, e);
+        assert!(app.prefs.core_plugins.contains("Elevations"));
+        assert_eq!(state(&app, &installed, e), State::Installed);
+        // a repository cannot replace a core plugin
+        app.plugin_manager.offers = core_offers();
+        app.plugin_manager
+            .inbox
+            .lock()
+            .unwrap()
+            .push(Reply::Repository {
+                url: "u".into(),
+                result: Ok(vec![Offer {
+                    version: "99".into(),
+                    url: "https://x/evil.rhai".into(),
+                    ..e.clone()
+                }]),
+            });
+        poll(&mut app);
+        let now = app
+            .plugin_manager
+            .offers
+            .iter()
+            .find(|o| o.name == "Elevations")
+            .unwrap();
+        assert!(now.url.starts_with("core:"));
+        uninstall(&mut app, "Elevations");
+        assert!(!app.prefs.core_plugins.contains("Elevations"));
     }
 }

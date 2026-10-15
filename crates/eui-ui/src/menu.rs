@@ -640,50 +640,6 @@ fn plugins_toolbar(app: &mut EpanetApp, ui: &mut Ui) {
     {
         app.dialog = Dialog::PluginManager;
     }
-    separator(ui);
-    let count = tool_button(
-        ui,
-        Icon::Summary,
-        "Count ▾",
-        true,
-        false,
-        "Count junctions or pipes",
-    );
-    dropdown(&count, |ui| {
-        if icons::menu_item(ui, Icon::Junction, "Junctions", true).clicked() {
-            crate::plugins::count(app, true);
-            ui.close();
-        }
-        if icons::menu_item(ui, Icon::Pipe, "Pipes", true).clicked() {
-            crate::plugins::count(app, false);
-            ui.close();
-        }
-    });
-    if tool_button(
-        ui,
-        Icon::Import,
-        "Elevations",
-        has_net,
-        false,
-        "Get junction elevations from a digital elevation model",
-    )
-    .clicked()
-    {
-        app.dialog = Dialog::Elevations;
-    }
-    if tool_button(
-        ui,
-        Icon::FireFlow,
-        "Fire Flow Curve",
-        has_net,
-        false,
-        "Pressure at a junction as its demand grows",
-    )
-    .clicked()
-    {
-        app.dialog = Dialog::FireFlowCurve;
-    }
-    separator(ui);
     if tool_button(
         ui,
         Icon::About,
@@ -697,9 +653,21 @@ fn plugins_toolbar(app: &mut EpanetApp, ui: &mut Ui) {
         ui.ctx()
             .open_url(egui::OpenUrl::new_tab(crate::plugins::PLUGINS_REPO));
     }
-    // User plugins (Rhai scripts, see docs/plugins.md)
-    if !app.scripts.plugins.is_empty() {
+    // Installed plugins: the core ones (built in), then the scripts.
+    let on = |app: &EpanetApp, name: &str| !app.prefs.disabled_plugins.contains(name);
+    let core: Vec<&str> = crate::plugin_manager::CORE
+        .iter()
+        .map(|c| c.name)
+        .filter(|n| app.prefs.core_plugins.contains(*n) && on(app, n))
+        .collect();
+    if !core.is_empty() || app.scripts.plugins.iter().any(|p| on(app, &p.name)) {
         separator(ui);
+    }
+    for name in core {
+        let c = crate::plugin_manager::core(name).expect("a core plugin");
+        if tool_button(ui, c.icon, c.name, has_net, false, c.description).clicked() {
+            app.dialog = c.dialog;
+        }
     }
     for p in app.scripts.plugins.clone() {
         if app.prefs.disabled_plugins.contains(&p.name) {
@@ -713,7 +681,15 @@ fn plugins_toolbar(app: &mut EpanetApp, ui: &mut Ui) {
         let tex = crate::plugin_manager::installed_icon(app, &ui.ctx().clone(), &p.name);
         let b = tool_button_with(
             ui,
-            |pt, c, fg| crate::plugin_manager::paint_icon(pt, tex, c, 28.0, fg),
+            |pt, c, fg| {
+                crate::plugin_manager::paint_icon(
+                    pt,
+                    crate::plugin_manager::Pic::or_default(tex),
+                    c,
+                    28.0,
+                    fg,
+                )
+            },
             &format!("{} ▾", p.name),
             true,
             false,

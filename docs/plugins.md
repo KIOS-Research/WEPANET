@@ -30,6 +30,11 @@ files listing plugins, read from their URLs. WEPANET's own repository is
 **Settings** in the Plugin Manager. Installed plugins are offered an
 **Upgrade** when a repository lists a higher version.
 
+The Plugin Manager also offers WEPANET's **core plugins**, **Elevations** and
+**Fire Flow Curve** (after Elad Salomons' EPANET-Plugins). They are part of the
+application, so installing one only puts it on the Plugins toolbar. Unticking a
+plugin in the list hides it from the toolbar without uninstalling it.
+
 To publish plugins, put their `.rhai` files and a `plugins.xml` anywhere they
 can be downloaded from (a GitHub repository works; browsers need the server to
 allow cross-origin requests, which `raw.githubusercontent.com` does):
