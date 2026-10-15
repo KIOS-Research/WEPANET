@@ -150,6 +150,18 @@ pub enum Dialog {
     FireFlowCurve,
     Benchmarks,
     PluginManager,
+    /// The project's EPANET-MSX file.
+    Msx,
+    /// EPANET-UI's Source Editor (a node's quality source).
+    SourceEditor,
+    PatternSelector,
+    PatternEditor,
+    CurveSelector,
+    CurveEditor,
+    /// The Single Species Water Quality Editor.
+    QualityEditor,
+    ControlsEditor,
+    RulesEditor,
     ConfirmDelete,
     ConfirmReplace,
 }
@@ -403,8 +415,6 @@ pub struct EpanetApp {
     pub(crate) buffers: HashMap<String, String>,
     pub(crate) buffer_owner: Option<(Option<Selection>, ExplorerItem, u64)>,
     pub(crate) prop_hint: String,
-    pub(crate) pattern_index: usize,
-    pub(crate) curve_index: usize,
     pub(crate) section_buffer: Option<(ExplorerItem, String)>,
     pub(crate) copied: Option<(Selection, Vec<String>)>,
 
@@ -426,6 +436,14 @@ pub struct EpanetApp {
     pub(crate) export: crate::export::ExportState,
     pub(crate) shp_import: Option<crate::import_shp::ShpImport>,
     pub(crate) setup_job: Option<crate::setup::SetupJob>,
+    /// The project's EPANET-MSX input file.
+    pub(crate) msx: crate::msx::MsxState,
+    /// EPANET-UI's data forms (patterns, curves, quality, controls).
+    pub(crate) forms: crate::forms::FormsState,
+    /// The Source Editor's working copy.
+    pub(crate) source_edit: Option<crate::source::SourceEdit>,
+    /// The MSX text of the run in progress (its results need it).
+    run_msx: Option<String>,
     inbox: Inbox,
     title_sent: String,
 }
@@ -496,8 +514,6 @@ impl EpanetApp {
             buffers: HashMap::new(),
             buffer_owner: None,
             prop_hint: String::new(),
-            pattern_index: 0,
-            curve_index: 0,
             section_buffer: None,
             copied: None,
             prefs,
@@ -520,6 +536,10 @@ impl EpanetApp {
             shp_import: None,
             setup_edit: None,
             setup_job: None,
+            msx: Default::default(),
+            source_edit: None,
+            forms: Default::default(),
+            run_msx: None,
             inbox: Inbox::default(),
             title_sent: String::new(),
         };
@@ -574,7 +594,7 @@ impl EpanetApp {
 
     // ----- documents ------------------------------------------------------
 
-    fn load_document(&mut self, name: &str, text: &str, path: Option<PathBuf>) {
+    pub(crate) fn load_document(&mut self, name: &str, text: &str, path: Option<PathBuf>) {
         match Network::from_inp(text) {
             Ok(net) => {
                 // Saving writes plain INP text, never back over a compressed file.
@@ -629,6 +649,19 @@ impl EpanetApp {
         self.backstage = false;
         self.dialog = Dialog::None;
         self.rpt = Default::default();
+        // The MSX file came with the network (see accept_document).
+        self.msx.enabled = self.net.msx.is_some();
+        self.msx.edit = None;
+        crate::msx::forget_legends(self);
+        if self.net.msx.is_none() {
+            use crate::style::{LinkTheme, NodeTheme};
+            if matches!(self.prefs.node_theme, NodeTheme::Msx(_)) {
+                self.prefs.node_theme = NodeTheme::Elevation;
+            }
+            if matches!(self.prefs.link_theme, LinkTheme::Msx(_)) {
+                self.prefs.link_theme = LinkTheme::Diameter;
+            }
+        }
     }
 
     fn set_path(&mut self, path: Option<PathBuf>) {
@@ -667,10 +700,19 @@ impl EpanetApp {
     }
 
     fn accept_document(&mut self) {
-        if let Some((net, name, path)) = self.pending_document.take() {
+        if let Some((mut net, name, path)) = self.pending_document.take() {
+            // its EPANET-MSX file: opened with it, or beside it on disk
+            net.msx = self.msx.pending.take();
+            #[cfg(not(target_arch = "wasm32"))]
+            if net.msx.is_none() {
+                net.msx = path.as_deref().and_then(crate::msx::sibling_file);
+            }
             self.set_network(net, &name);
             self.set_path(path);
             self.status = format!("Opened {name}");
+            if let Some(m) = &self.net.msx {
+                self.status = format!("Opened {name} with its EPANET-MSX file {}", m.name);
+            }
             if name == "Untitled" {
                 self.view.center = [0.0, 0.0];
                 self.view.scale = 1.0;
@@ -691,6 +733,7 @@ impl EpanetApp {
             1 => self.accept_document(),
             _ => {
                 self.pending_document = None;
+                self.msx.pending = None;
                 self.replace_after_save = false;
                 self.dialog = Dialog::None;
             }
@@ -736,9 +779,16 @@ impl EpanetApp {
                     .file_stem()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default();
+                self.status = format!("Saved {}", self.file_name);
+                // the EPANET-MSX file goes beside the INP file
+                #[cfg(not(target_arch = "wasm32"))]
+                match crate::msx::save_beside(self, &p) {
+                    Ok(Some(name)) => self.status += &format!(" and {name}"),
+                    Ok(None) => {}
+                    Err(e) => self.status = format!("Saved the network, but not its MSX file: {e}"),
+                }
                 self.set_path(Some(p));
                 self.dirty = false;
-                self.status = format!("Saved {}", self.file_name);
                 if self.replace_after_save {
                     self.accept_document();
                 }
@@ -747,6 +797,11 @@ impl EpanetApp {
                 if cfg!(target_arch = "wasm32") {
                     self.saving = Some(token);
                     self.status = format!("Saving {suggested}…");
+                    // a browser allows one save dialog per click: the MSX
+                    // file has its own Save As in the EPANET-MSX dialog
+                    if self.net.msx.is_some() {
+                        self.status += " (save its MSX file from Project > EPANET-MSX)";
+                    }
                 } else {
                     self.replace_after_save = false;
                 }
@@ -805,6 +860,11 @@ impl EpanetApp {
             match item {
                 Ok((name, bytes)) => {
                     let path = self.pending_path.take();
+                    if name.to_ascii_lowercase().ends_with(".msx") {
+                        // an MSX file dropped on the window joins the project
+                        crate::msx::take_file(self, &name, &bytes);
+                        continue;
+                    }
                     self.load_document(&name, &io::decode_text(&bytes), path);
                 }
                 Err(e) => {
@@ -1005,16 +1065,27 @@ impl EpanetApp {
             return;
         }
         let ctx = ctx.clone();
-        self.run = Some(eui_engine::spawn_run(self.net.to_inp(), move || {
-            ctx.request_repaint()
-        }));
+        self.run_msx = crate::msx::run_input(self);
+        // With EPANET-MSX modeling water quality, EPANET's own is not run.
+        let inp = if self.run_msx.is_some() {
+            let mut net = self.net.clone();
+            net.set_option("OPTIONS", "QUALITY", "None");
+            net.to_inp()
+        } else {
+            self.net.to_inp()
+        };
+        self.run = Some(eui_engine::spawn_run(
+            inp,
+            self.run_msx.clone(),
+            move || ctx.request_repaint(),
+        ));
         self.results_generation = self.generation;
         self.status = "Running analysis…".into();
         // Run Status shows the progress, with Cancel.
         self.dialog = Dialog::RunStatus;
     }
 
-    fn poll_simulation(&mut self) {
+    pub(crate) fn poll_simulation(&mut self) {
         let Some(handle) = self.run.as_mut() else {
             return;
         };
@@ -1057,7 +1128,22 @@ impl EpanetApp {
                 match SimResults::from_out(&out.out) {
                     Ok(mut res) => {
                         res.set_extra(&out.extra);
-                        if out.code > 0 {
+                        let msx = self.run_msx.take();
+                        let mut msx_failed = out.msx_code > 0;
+                        if let Some(text) = msx.filter(|_| !msx_failed) {
+                            match eui_core::MsxResults::from_out(&out.msx, &text) {
+                                Ok(m) => res.msx = Some(m),
+                                Err(e) => {
+                                    msx_failed = true;
+                                    self.report
+                                        .push_str(&format!("\n  EPANET-MSX: no results ({e})\n"));
+                                }
+                            }
+                        }
+                        if msx_failed {
+                            self.status = "EPANET-MSX failed — see the Status Report".into();
+                            self.run_message = "The hydraulic analysis was successful,\nbut EPANET-MSX failed.\nSee Status Report for reasons.".into();
+                        } else if out.code > 0 {
                             self.status =
                                 "Analysis completed with warnings — see the Status Report".into();
                             self.run_message =
@@ -1100,7 +1186,7 @@ impl EpanetApp {
     }
 
     /// Maps network element indices to result indices.
-    fn refresh_maps(&mut self) {
+    pub(crate) fn refresh_maps(&mut self) {
         let key = (self.generation, self.results_id);
         if self.maps_key == key {
             return;
@@ -1176,6 +1262,10 @@ impl EpanetApp {
             NodeTheme::BaseDemand => {
                 (n.kind == NodeKind::Junction).then(|| n.num(1).unwrap_or(0.0) as f32)
             }
+            NodeTheme::Msx(s) => {
+                let r = self.node_result_index(i)?;
+                crate::msx::theme_value(self, true, s as usize, r)
+            }
             t => match t.extra() {
                 Some(x) => self.node_extra(i, x),
                 None => self.node_result(i, t.result_var()?),
@@ -1201,6 +1291,10 @@ impl EpanetApp {
                 .then(|| l.num(2))
                 .flatten()
                 .map(|v| v as f32),
+            LinkTheme::Msx(s) => {
+                let r = self.link_result_index(i)?;
+                crate::msx::theme_value(self, false, s as usize, r)
+            }
             t => match t.extra() {
                 Some(x) => self.link_extra(i, x),
                 None => self.link_result(i, t.result_var()?),
@@ -1223,7 +1317,7 @@ impl EpanetApp {
             .node_legends
             .get(&t)
             .copied()
-            .unwrap_or(Legend::new(t.default_breaks()));
+            .unwrap_or_else(|| Legend::new(self.node_default_breaks(t)));
         l.colors = self.prefs.node_colors.map(color);
         l
     }
@@ -1235,9 +1329,97 @@ impl EpanetApp {
             .link_legends
             .get(&t)
             .copied()
-            .unwrap_or(Legend::new(t.default_breaks()));
+            .unwrap_or_else(|| Legend::new(self.link_default_breaks(t)));
         l.colors = self.prefs.link_colors.map(color);
         l
+    }
+
+    /// The interval breaks a theme starts with: EPANET-UI's, or for an MSX
+    /// species steps up to its largest value.
+    pub(crate) fn node_default_breaks(&self, t: NodeTheme) -> [f32; 4] {
+        match t {
+            NodeTheme::Msx(s) => {
+                crate::msx::default_breaks(self.results.as_ref(), s as usize, true)
+            }
+            _ => None,
+        }
+        .unwrap_or(t.default_breaks())
+    }
+
+    pub(crate) fn link_default_breaks(&self, t: LinkTheme) -> [f32; 4] {
+        match t {
+            LinkTheme::Msx(s) => {
+                crate::msx::default_breaks(self.results.as_ref(), s as usize, false)
+            }
+            _ => None,
+        }
+        .unwrap_or(t.default_breaks())
+    }
+
+    /// A theme's name: its label, or the species ID of an MSX species.
+    pub(crate) fn node_theme_name(&self, t: NodeTheme) -> String {
+        match t {
+            NodeTheme::Msx(s) => {
+                crate::msx::theme_name(self, s as usize).unwrap_or_else(|| t.label().into())
+            }
+            t => t.label().into(),
+        }
+    }
+
+    pub(crate) fn link_theme_name(&self, t: LinkTheme) -> String {
+        match t {
+            LinkTheme::Msx(s) => {
+                crate::msx::theme_name(self, s as usize).unwrap_or_else(|| t.label().into())
+            }
+            t => t.label().into(),
+        }
+    }
+
+    /// The node themes on offer: EPANET-UI's, then the MSX bulk species.
+    pub(crate) fn node_themes(&self) -> Vec<NodeTheme> {
+        // EPANET's own quality is not computed when EPANET-MSX runs
+        let msx = self.msx_active();
+        let mut all: Vec<NodeTheme> = NodeTheme::ALL
+            .into_iter()
+            .filter(|t| !(msx && *t == NodeTheme::Quality))
+            .collect();
+        // the species only while EPANET-MSX runs
+        all.extend(
+            crate::msx::result_species(self.results.as_ref().filter(|_| msx), true)
+                .into_iter()
+                .filter_map(|s| u8::try_from(s).ok().map(NodeTheme::Msx)),
+        );
+        all
+    }
+
+    /// The link themes on offer: EPANET-UI's, then all MSX species.
+    pub(crate) fn link_themes(&self) -> Vec<LinkTheme> {
+        let msx = self.msx_active();
+        let mut all: Vec<LinkTheme> = LinkTheme::ALL
+            .into_iter()
+            .filter(|t| !(msx && *t == LinkTheme::Quality))
+            .collect();
+        all.extend(
+            crate::msx::result_species(self.results.as_ref().filter(|_| msx), false)
+                .into_iter()
+                .filter_map(|s| u8::try_from(s).ok().map(LinkTheme::Msx)),
+        );
+        all
+    }
+
+    /// EPANET-MSX models the water quality: the project has an MSX file
+    /// and it runs with each analysis. EPANET's single species quality is
+    /// then left out.
+    pub(crate) fn msx_active(&self) -> bool {
+        self.msx.enabled && self.net.msx.is_some()
+    }
+
+    /// Marks the results as out of date (the network did not change, but
+    /// the analysis would now give others).
+    pub(crate) fn mark_results_stale(&mut self) {
+        if self.results.is_some() {
+            self.results_generation = self.generation.wrapping_sub(1);
+        }
     }
 
     pub(crate) fn node_theme_units(&self, theme: NodeTheme) -> String {
@@ -1249,6 +1431,9 @@ impl EpanetApp {
                 self.net.flow_units()
             }
             NodeTheme::DemandDeficit => "%".into(),
+            NodeTheme::Msx(s) => crate::msx::species_label(self.results.as_ref(), s as usize)
+                .map(|l| l.1)
+                .unwrap_or_default(),
             t => match (&self.results, t.result_var()) {
                 (Some(r), Some(v)) => r.node_units(v),
                 _ => match t {
@@ -1268,6 +1453,9 @@ impl EpanetApp {
             LinkTheme::Diameter => eui_core::units::diameter(si).into(),
             LinkTheme::Length => eui_core::units::length(si).into(),
             LinkTheme::Leakage => self.net.flow_units(),
+            LinkTheme::Msx(s) => crate::msx::species_label(self.results.as_ref(), s as usize)
+                .map(|l| l.1)
+                .unwrap_or_default(),
             t => match (&self.results, t.result_var()) {
                 (Some(r), Some(v)) => r.link_units(v),
                 _ => match t {
@@ -1410,6 +1598,7 @@ impl eframe::App for EpanetApp {
         crate::plugins::poll(self, ctx);
         crate::setup::poll(self);
         crate::scripting::poll(self);
+        crate::msx::poll(self);
         crate::export::poll(self, ctx);
         self.refresh_maps();
         self.refresh_geometry();

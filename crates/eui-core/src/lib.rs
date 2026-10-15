@@ -5,15 +5,20 @@
 //!
 //! * [`network`] – the editable network model and its INP reader/writer.
 //! * [`results`] – reader for EPANET's binary output (`.out`) file.
+//! * [`msx`]     – EPANET-MSX species and its binary output file.
 //! * [`analysis`] – quantities derived from results, for the reports.
 //! * [`units`]   – unit labels.
 
 pub mod analysis;
+pub mod data;
+pub mod msx;
 pub mod network;
 pub mod props;
 pub mod results;
 pub mod units;
 
+pub use data::{CURVE_TYPES, DataCurve, TimePattern};
+pub use msx::{MsxCoefficient, MsxFile, MsxModel, MsxResults, MsxSpecies};
 pub use network::{DataTable, Link, LinkKind, Network, Node, NodeKind};
 pub use results::{LinkExtra, LinkVar, NodeExtra, NodeVar, SimResults};
 

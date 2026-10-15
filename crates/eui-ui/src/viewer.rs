@@ -82,19 +82,28 @@ fn theme_combo<T: Copy + PartialEq>(
     ui: &mut Ui,
     id: &str,
     value: &mut T,
-    all: &[T],
-    info: impl Fn(T) -> (&'static str, bool),
+    current: String,
+    items: &[(T, String, bool)],
+    split: usize,
 ) {
     egui::ComboBox::from_id_salt(id)
-        .selected_text(info(*value).0)
+        .selected_text(current)
         .width(130.0)
         .height(f32::INFINITY)
         .show_ui(ui, |ui| {
             ui.set_min_width(150.0);
-            for &t in all {
-                let (label, enabled) = info(t);
+            for (k, (t, label, enabled)) in items.iter().enumerate() {
+                // the EPANET-MSX species follow the other themes
+                if k == split {
+                    ui.separator();
+                    ui.label(egui::RichText::new("EPANET-MSX species").weak().small());
+                }
+                let t = *t;
                 let resp = ui
-                    .add_enabled(enabled, egui::Button::selectable(*value == t, label))
+                    .add_enabled(
+                        *enabled,
+                        egui::Button::selectable(*value == t, label.as_str()),
+                    )
                     .on_disabled_hover_text("Run an analysis first");
                 if resp.clicked() {
                     *value = t;
@@ -116,12 +125,22 @@ fn contents(app: &mut EpanetApp, ui: &mut Ui) {
         ui.label("Nodes");
         ui.horizontal(|ui| {
             let has_results = app.results.is_some();
+            let items: Vec<(NodeTheme, String, bool)> = app
+                .node_themes()
+                .into_iter()
+                .map(|t| (t, app.node_theme_name(t), !t.is_result() || has_results))
+                .collect();
+            let current = app.node_theme_name(app.prefs.node_theme);
             theme_combo(
                 ui,
                 "node_theme",
                 &mut app.prefs.node_theme,
-                &NodeTheme::ALL,
-                |t| (t.label(), !t.is_result() || has_results),
+                current,
+                &items,
+                items
+                    .iter()
+                    .filter(|i| !matches!(i.0, NodeTheme::Msx(_)))
+                    .count(),
             );
             ui.label(RichText::new(app.node_theme_units(app.prefs.node_theme)).weak());
         });
@@ -140,12 +159,22 @@ fn contents(app: &mut EpanetApp, ui: &mut Ui) {
         ui.label("Links");
         ui.horizontal(|ui| {
             let has_results = app.results.is_some();
+            let items: Vec<(LinkTheme, String, bool)> = app
+                .link_themes()
+                .into_iter()
+                .map(|t| (t, app.link_theme_name(t), !t.is_result() || has_results))
+                .collect();
+            let current = app.link_theme_name(app.prefs.link_theme);
             theme_combo(
                 ui,
                 "link_theme",
                 &mut app.prefs.link_theme,
-                &LinkTheme::ALL,
-                |t| (t.label(), !t.is_result() || has_results),
+                current,
+                &items,
+                items
+                    .iter()
+                    .filter(|i| !matches!(i.0, LinkTheme::Msx(_)))
+                    .count(),
             );
             ui.label(RichText::new(app.link_theme_units(app.prefs.link_theme)).weak());
         });

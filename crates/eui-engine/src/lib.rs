@@ -14,7 +14,7 @@ mod native;
 mod web;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use native::{engine_version, run_blocking};
+pub use native::{engine_version, run_blocking, run_blocking_msx};
 
 /// What a finished run returns.
 #[derive(Clone, Debug, Default)]
@@ -31,6 +31,11 @@ pub struct RunOutput {
     /// Results EPANET's output file lacks, for each reporting period (see
     /// `eui_core::results::ExtraResults`); empty if not available.
     pub extra: Vec<u8>,
+    /// EPANET-MSX's binary output file, if an MSX analysis was run and
+    /// succeeded (read by `eui_core::MsxResults`).
+    pub msx: Vec<u8>,
+    /// EPANET-MSX's return code: 0 = ok or not run, otherwise an error.
+    pub msx_code: i32,
 }
 
 /// Number of energy balance sums returned by the engine.
@@ -57,6 +62,8 @@ pub enum EngineError {
 pub enum Stage {
     Hydraulics,
     Quality,
+    /// The EPANET-MSX multi-species analysis.
+    Msx,
 }
 
 /// How far a simulation has got: the stage and the simulation hour.
@@ -67,14 +74,14 @@ pub struct Progress {
 }
 
 impl Progress {
-    /// From the engine's stage code (1 hydraulics, 2 quality) and hour.
+    /// From the engine's stage code (1 hydraulics, 2 quality, 3 MSX) and hour.
     #[allow(dead_code)]
     fn new(stage: i32, hour: i64) -> Progress {
         Progress {
-            stage: if stage == 2 {
-                Stage::Quality
-            } else {
-                Stage::Hydraulics
+            stage: match stage {
+                2 => Stage::Quality,
+                3 => Stage::Msx,
+                _ => Stage::Hydraulics,
             },
             hour: hour.max(0) as u32,
         }
@@ -137,9 +144,14 @@ impl RunHandle {
     }
 }
 
-/// Starts a simulation of `inp` in the background. `repaint` is called as it
+/// Starts a simulation of `inp` in the background, followed by an EPANET-MSX
+/// analysis if `msx` (MSX input text) is given. `repaint` is called as it
 /// progresses and when it finishes (use it to request a UI repaint).
-pub fn spawn_run(inp: String, repaint: impl Fn() + Send + 'static) -> RunHandle {
+pub fn spawn_run(
+    inp: String,
+    msx: Option<String>,
+    repaint: impl Fn() + Send + 'static,
+) -> RunHandle {
     #[cfg(not(target_arch = "wasm32"))]
     {
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -149,7 +161,7 @@ pub fn spawn_run(inp: String, repaint: impl Fn() + Send + 'static) -> RunHandle 
         let cancel = Arc::new(AtomicBool::new(false));
         let (p, c) = (progress.clone(), cancel.clone());
         std::thread::spawn(move || {
-            let result = native::run_with_progress(&inp, &mut |pr| {
+            let result = native::run_with_progress(&inp, msx.as_deref(), &mut |pr| {
                 if let Ok(mut slot) = p.lock() {
                     *slot = Some(pr);
                 }
@@ -175,7 +187,7 @@ pub fn spawn_run(inp: String, repaint: impl Fn() + Send + 'static) -> RunHandle 
         let repaint = Rc::new(repaint);
         let r = repaint.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            let result = web::run(&inp, move |pr| {
+            let result = web::run(&inp, msx.as_deref(), move |pr| {
                 p.set(Some(pr));
                 r();
             })
@@ -244,5 +256,54 @@ pub fn spawn_convert(
             repaint();
         });
         ConvertHandle { slot }
+    }
+}
+
+/// The MSX input given to EPANET-MSX: without the `COMPILER` option, which
+/// would need a C compiler on the user's machine (and is never available in
+/// the browser); EPANET-MSX then evaluates the expressions itself.
+fn msx_input(text: &str) -> String {
+    let mut section = String::new();
+    let mut out = String::with_capacity(text.len());
+    for line in text.lines() {
+        let t = line.trim_start();
+        if t.starts_with('[') {
+            section = t.to_ascii_uppercase();
+        } else if section.starts_with("[OPTIONS]")
+            && t.split_whitespace()
+                .next()
+                .is_some_and(|k| k.eq_ignore_ascii_case("COMPILER"))
+        {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+/// Adds EPANET-MSX's report (`text`) and, if it failed (`code`), its error
+/// message to the run's report.
+fn add_msx_report(report: &mut String, text: &str, code: i32, message: &str) {
+    let text = text.trim_end();
+    if !text.trim().is_empty() {
+        report.push_str("\n\n  EPANET-MSX\n");
+        report.push_str(text);
+        report.push('\n');
+    }
+    if code > 0 && !text.contains(&code.to_string()) {
+        report.push_str(&format!("\n  EPANET-MSX: {message}\n"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn msx_input_drops_the_compiler_option() {
+        let text = "[OPTIONS]\n  SOLVER RK5\n  compiler VC ;fast\n[TERMS]\n  COMPILER 1\n";
+        assert_eq!(
+            super::msx_input(text),
+            "[OPTIONS]\n  SOLVER RK5\n[TERMS]\n  COMPILER 1\n"
+        );
     }
 }

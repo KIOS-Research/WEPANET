@@ -836,3 +836,52 @@ mod tests {
         assert_eq!(n.option("TIMES", "DURATION").as_deref(), Some("2:00:00"));
     }
 }
+
+/// A time option as EPANET-UI shows it: `HH:MM` (with `:SS` when there are
+/// seconds), e.g. `01:00` or `24:00`. A clock time (`12 am`, `6:30 PM`) is
+/// shown in 24-hour form. Text that is not a time is returned unchanged.
+pub fn format_time_option(text: &str) -> String {
+    let t = text.trim();
+    let upper = t.to_ascii_uppercase();
+    let (body, pm) = match upper
+        .strip_suffix("PM")
+        .map(|b| (b, Some(true)))
+        .or_else(|| upper.strip_suffix("AM").map(|b| (b, Some(false))))
+    {
+        Some((b, p)) => (b.trim().to_string(), p),
+        None => (t.to_string(), None),
+    };
+    let Some(mut secs) = parse_time(&body) else {
+        return text.to_string();
+    };
+    if let Some(pm) = pm {
+        secs %= 12 * 3600;
+        if pm {
+            secs += 12 * 3600;
+        }
+    }
+    let (h, m, s) = (secs / 3600, (secs % 3600) / 60, secs % 60);
+    if s > 0 {
+        format!("{h:02}:{m:02}:{s:02}")
+    } else {
+        format!("{h:02}:{m:02}")
+    }
+}
+
+#[cfg(test)]
+mod time_option_tests {
+    use super::format_time_option as f;
+
+    #[test]
+    fn formats_time_options() {
+        assert_eq!(f("24:00"), "24:00");
+        assert_eq!(f("1:00"), "01:00");
+        assert_eq!(f("0:05"), "00:05");
+        assert_eq!(f("72"), "72:00");
+        assert_eq!(f("300 SEC"), "00:05");
+        assert_eq!(f("12 am"), "00:00");
+        assert_eq!(f("6:30 PM"), "18:30");
+        assert_eq!(f("0:00:30"), "00:00:30");
+        assert_eq!(f("abc"), "abc");
+    }
+}

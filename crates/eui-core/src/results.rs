@@ -110,6 +110,9 @@ pub struct SimResults {
     links: Vec<f32>,
     /// Results the output file lacks, per period (see [`SimResults::set_extra`]).
     extra: Vec<f32>,
+    /// Species concentrations from an EPANET-MSX analysis run with the
+    /// simulation, for the same reporting periods.
+    pub msx: Option<crate::MsxResults>,
 }
 
 /// Node results that EPANET's output file lacks, saved by the engine at
@@ -300,6 +303,7 @@ impl SimResults {
             nodes,
             links,
             extra: Vec::new(),
+            msx: None,
         })
     }
 

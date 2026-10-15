@@ -716,7 +716,7 @@ fn hover_tooltip(app: &EpanetApp, response: &egui::Response, sel: Element) {
             if let Some(v) = app.node_theme_value(i) {
                 t += &format!(
                     "\n{}: {} {}",
-                    app.prefs.node_theme.label(),
+                    app.node_theme_name(app.prefs.node_theme),
                     style::fmt_value(v),
                     app.node_theme_units(app.prefs.node_theme)
                 );
@@ -729,7 +729,7 @@ fn hover_tooltip(app: &EpanetApp, response: &egui::Response, sel: Element) {
             if let Some(v) = app.link_theme_value(i) {
                 t += &format!(
                     "\n{}: {} {}",
-                    app.prefs.link_theme.label(),
+                    app.link_theme_name(app.prefs.link_theme),
                     style::fmt_value(v),
                     app.link_theme_units(app.prefs.link_theme)
                 );
@@ -886,9 +886,9 @@ fn draw_legends(app: &EpanetApp, ui: &Ui, rect: Rect, node: Legend, link: Legend
         let u = app.node_theme_units(nt);
         items.push((
             if u.is_empty() {
-                nt.label().into()
+                app.node_theme_name(nt)
             } else {
-                format!("{} ({u})", nt.label())
+                format!("{} ({u})", app.node_theme_name(nt))
             },
             node,
             true,
@@ -902,9 +902,9 @@ fn draw_legends(app: &EpanetApp, ui: &Ui, rect: Rect, node: Legend, link: Legend
         let u = app.link_theme_units(lt);
         items.push((
             if u.is_empty() {
-                lt.label().into()
+                app.link_theme_name(lt)
             } else {
-                format!("{} ({u})", lt.label())
+                format!("{} ({u})", app.link_theme_name(lt))
             },
             link,
             false,

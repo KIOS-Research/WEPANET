@@ -144,6 +144,8 @@ pub enum NodeTheme {
     Head,
     Pressure,
     Quality,
+    /// Species `n` of the EPANET-MSX results.
+    Msx(u8),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -157,6 +159,8 @@ pub enum LinkTheme {
     Headloss,
     Leakage,
     Quality,
+    /// Species `n` of the EPANET-MSX results.
+    Msx(u8),
 }
 
 impl NodeTheme {
@@ -184,6 +188,7 @@ impl NodeTheme {
             NodeTheme::Head => "Hydraulic Head",
             NodeTheme::Pressure => "Pressure",
             NodeTheme::Quality => "Quality",
+            NodeTheme::Msx(_) => "MSX Species",
         }
     }
     pub fn result_var(self) -> Option<NodeVar> {
@@ -214,7 +219,7 @@ impl NodeTheme {
     }
     /// Whether the theme shows simulation results.
     pub fn is_result(self) -> bool {
-        self.result_var().is_some() || self.extra().is_some()
+        matches!(self, NodeTheme::Msx(_)) || self.result_var().is_some() || self.extra().is_some()
     }
 }
 
@@ -241,6 +246,7 @@ impl LinkTheme {
             LinkTheme::Headloss => "Head Loss",
             LinkTheme::Leakage => "Leakage",
             LinkTheme::Quality => "Quality",
+            LinkTheme::Msx(_) => "MSX Species",
         }
     }
     pub fn result_var(self) -> Option<LinkVar> {
@@ -273,7 +279,7 @@ impl LinkTheme {
     }
     /// Whether the theme shows simulation results.
     pub fn is_result(self) -> bool {
-        self.result_var().is_some() || self.extra().is_some()
+        matches!(self, LinkTheme::Msx(_)) || self.result_var().is_some() || self.extra().is_some()
     }
 }
 

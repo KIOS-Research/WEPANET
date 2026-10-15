@@ -598,7 +598,7 @@ pub fn dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
             .add_sized([96.0, 30.0], egui::Button::new("Help"))
             .clicked()
         {
-            ctx.open_url(egui::OpenUrl::new_tab(crate::menu::USER_MANUAL));
+            crate::help::open(&ctx, "Project Setup");
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 14.0;

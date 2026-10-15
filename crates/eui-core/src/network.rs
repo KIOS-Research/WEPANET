@@ -185,6 +185,9 @@ pub struct Network {
     pub nodes: Vec<Node>,
     pub links: Vec<Link>,
     pub raw: Vec<RawSection>,
+    /// The project's EPANET-MSX input file, kept with the network (it names
+    /// its nodes and links, and undo covers it) but saved to its own file.
+    pub msx: Option<crate::MsxFile>,
     node_lookup: HashMap<String, usize>,
     link_lookup: HashMap<String, usize>,
 }
@@ -782,8 +785,14 @@ impl Network {
             .collect();
         self.links.retain(|l| l.from != id && l.to != id);
         self.purge_references(&id, true);
+        if let Some(m) = &mut self.msx {
+            m.remove(true, &id);
+        }
         for l in &dead_links {
             self.purge_references(l, false);
+            if let Some(m) = &mut self.msx {
+                m.remove(false, l);
+            }
         }
         self.rebuild_index();
     }
@@ -791,6 +800,9 @@ impl Network {
     pub fn delete_link(&mut self, idx: usize) {
         let id = self.links.remove(idx).id;
         self.purge_references(&id, false);
+        if let Some(m) = &mut self.msx {
+            m.remove(false, &id);
+        }
         self.rebuild_index();
     }
 
@@ -811,6 +823,9 @@ impl Network {
             }
         }
         self.rename_references(&old, new_id, true);
+        if let Some(m) = &mut self.msx {
+            m.rename(true, &old, new_id);
+        }
         self.rebuild_index();
         true
     }
@@ -822,6 +837,9 @@ impl Network {
         }
         let old = std::mem::replace(&mut self.links[idx].id, new_id.to_string());
         self.rename_references(&old, new_id, false);
+        if let Some(m) = &mut self.msx {
+            m.rename(false, &old, new_id);
+        }
         self.rebuild_index();
         true
     }

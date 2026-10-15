@@ -1,8 +1,9 @@
 //! Browser bridge to the Emscripten build of EPANET (see `web-engine/`).
 //!
-//! `apps/web/engine/engine.js` defines `window.euiEngine.run(inpText, onProgress)`,
+//! `apps/web/engine/engine.js` defines `window.euiEngine.run(inpText, msxText, onProgress)`,
 //! which runs the simulation in a Web Worker, calls `onProgress(stage, hour)` as
-//! it goes and resolves to `{ code, report, out, energy }`, and
+//! it goes and resolves to `{ code, report, out, energy, extra }` (plus
+//! `{ msx, msxCode, msxReport, msxMessage }` after an MSX analysis), and
 //! `window.euiEngine.cancel()`, which stops it.
 
 use js_sys::{Reflect, Uint8Array};
@@ -16,6 +17,7 @@ extern "C" {
     #[wasm_bindgen(catch, js_namespace = euiEngine, js_name = run)]
     fn js_run(
         inp: &str,
+        msx: Option<String>,
         on_progress: &Closure<dyn FnMut(i32, f64)>,
     ) -> Result<js_sys::Promise, JsValue>;
     #[wasm_bindgen(catch, js_namespace = euiEngine, js_name = cancel)]
@@ -36,41 +38,49 @@ fn js_err(v: JsValue) -> EngineError {
 
 pub async fn run(
     inp: &str,
+    msx: Option<&str>,
     progress: impl Fn(Progress) + 'static,
 ) -> Result<RunOutput, EngineError> {
     // kept alive until the run is over
     let on_progress = Closure::<dyn FnMut(i32, f64)>::new(move |stage, hour: f64| {
         progress(Progress::new(stage, hour as i64))
     });
-    let promise = js_run(inp, &on_progress).map_err(js_err)?;
+    let promise = js_run(inp, msx.map(crate::msx_input), &on_progress).map_err(js_err)?;
     let obj = JsFuture::from(promise).await.map_err(js_err)?;
     let get = |k: &str| Reflect::get(&obj, &JsValue::from_str(k)).map_err(js_err);
     let code = get("code")?.as_f64().unwrap_or(0.0) as i32;
-    let report = get("report")?.as_string().unwrap_or_default();
-    let out_val = get("out")?;
-    let out = if out_val.is_instance_of::<Uint8Array>() {
-        Uint8Array::from(out_val).to_vec()
-    } else {
-        Vec::new()
+    let mut report = get("report")?.as_string().unwrap_or_default();
+    let bytes = |k: &str| -> Result<Vec<u8>, EngineError> {
+        let v = get(k)?;
+        Ok(if v.is_instance_of::<Uint8Array>() {
+            Uint8Array::from(v).to_vec()
+        } else {
+            Vec::new()
+        })
     };
+    let out = bytes("out")?;
     // Older engine builds do not return the energy sums.
     let energy = get("energy")
         .ok()
         .filter(|v| v.is_instance_of::<js_sys::Float64Array>())
         .map(|v| js_sys::Float64Array::from(v).to_vec())
         .and_then(|v| <[f64; ENERGY_SIZE]>::try_from(v).ok());
-    let extra_val = get("extra")?;
-    let extra = if extra_val.is_instance_of::<Uint8Array>() {
-        Uint8Array::from(extra_val).to_vec()
-    } else {
-        Vec::new()
-    };
+    let extra = bytes("extra")?;
+    let msx_out = bytes("msx")?;
+    let msx_code = get("msxCode")?.as_f64().unwrap_or(0.0) as i32;
+    if msx.is_some() && code < 100 {
+        let text = get("msxReport")?.as_string().unwrap_or_default();
+        let message = get("msxMessage")?.as_string().unwrap_or_default();
+        crate::add_msx_report(&mut report, &text, msx_code, &message);
+    }
     Ok(RunOutput {
         code,
         report,
         out,
         energy,
         extra,
+        msx: msx_out,
+        msx_code,
     })
 }
 

@@ -69,6 +69,15 @@ pub fn show(app: &mut EpanetApp, ctx: &egui::Context) {
         Dialog::FireFlowCurve => "Fire Flow Curve",
         Dialog::Benchmarks => "WaterBenchmarkHub Networks",
         Dialog::PluginManager => "Plugin Manager",
+        Dialog::Msx => "Multi-Species Quality Editor",
+        Dialog::SourceEditor => "Source Quality Editor",
+        Dialog::PatternSelector => "Time Pattern Selector",
+        Dialog::PatternEditor => "Time Pattern Editor",
+        Dialog::CurveSelector => "Data Curve Selector",
+        Dialog::CurveEditor => "Data Curve Editor",
+        Dialog::QualityEditor => "Single Species Water Quality Editor",
+        Dialog::ControlsEditor => "Simple Controls Editor",
+        Dialog::RulesEditor => "Rule-Based Controls Editor",
         Dialog::ConfirmDelete => "Confirm Deletion",
         Dialog::ConfirmReplace => "Unsaved Changes",
     };
@@ -160,6 +169,15 @@ pub fn show(app: &mut EpanetApp, ctx: &egui::Context) {
                     Dialog::FireFlowCurve => crate::plugins::curve(app, ui),
                     Dialog::Benchmarks => crate::catalog::dialog(app, ui),
                     Dialog::PluginManager => crate::plugin_manager::dialog(app, ui),
+                    Dialog::Msx => crate::msx::dialog(app, ui),
+                    Dialog::SourceEditor => crate::source::dialog(app, ui),
+                    Dialog::PatternSelector => crate::forms::pattern_selector(app, ui),
+                    Dialog::PatternEditor => crate::forms::pattern_editor(app, ui),
+                    Dialog::CurveSelector => crate::forms::curve_selector(app, ui),
+                    Dialog::CurveEditor => crate::forms::curve_editor(app, ui),
+                    Dialog::QualityEditor => crate::forms::quality_editor(app, ui),
+                    Dialog::ControlsEditor => crate::forms::controls_editor(app, ui),
+                    Dialog::RulesEditor => crate::forms::rules_editor(app, ui),
                     Dialog::None => true,
                 };
                 close = if own_panel || message {
@@ -288,11 +306,11 @@ fn welcome(app: &mut EpanetApp, ui: &mut Ui) -> bool {
                         cols[0].add_space(34.0);
                         heading(&mut cols[0], "Learn");
                         if welcome_link(&mut cols[0], "Basic Tutorial", Icon::Junction) {
-                            ctx.open_url(egui::OpenUrl::new_tab(crate::menu::TUTORIAL));
+                            crate::help::open_doc(&ctx, crate::help::Doc::Tutorial, None);
                         }
                         cols[0].add_space(10.0);
                         if welcome_link(&mut cols[0], "User Guide", Icon::Junction) {
-                            ctx.open_url(egui::OpenUrl::new_tab(crate::menu::USER_MANUAL));
+                            crate::help::open_doc(&ctx, crate::help::Doc::Manual, None);
                         }
 
                         heading(&mut cols[1], "Open a Recent Project");
@@ -394,6 +412,7 @@ fn run_status(app: &mut EpanetApp, ui: &mut Ui) -> bool {
                 match p.stage {
                     eui_engine::Stage::Hydraulics => "hydraulics",
                     eui_engine::Stage::Quality => "water quality",
+                    eui_engine::Stage::Msx => "multi-species quality (EPANET-MSX)",
                 },
                 p.hour
             ),
@@ -486,7 +505,7 @@ fn preferences(app: &mut EpanetApp, ui: &mut Ui) -> bool {
     ui.add_space(6.0);
     let mut close = false;
     match b {
-        Some(0) => ctx.open_url(egui::OpenUrl::new_tab(crate::menu::USER_MANUAL)),
+        Some(0) => crate::help::open(&ctx, "Program Preferences"),
         Some(1) => {
             if clear_recent {
                 app.prefs.recent.clear();
@@ -724,6 +743,24 @@ fn locate(app: &mut EpanetApp, ui: &mut Ui) -> bool {
 }
 
 fn query(app: &mut EpanetApp, ui: &mut Ui) -> bool {
+    // every theme but None, with the EPANET-MSX species
+    let node_themes: Vec<(NodeTheme, String)> = app
+        .node_themes()
+        .into_iter()
+        .skip(1)
+        .map(|t| (t, app.node_theme_name(t)))
+        .collect();
+    let link_themes: Vec<(LinkTheme, String)> = app
+        .link_themes()
+        .into_iter()
+        .skip(1)
+        .map(|t| (t, app.link_theme_name(t)))
+        .collect();
+    fn name_of<T: PartialEq>(all: &[(T, String)], t: T) -> String {
+        all.iter()
+            .find(|(k, _)| *k == t)
+            .map_or_else(String::new, |(_, n)| n.clone())
+    }
     let q = &mut app.query;
     ui.horizontal(|ui| {
         ui.label("Find");
@@ -735,10 +772,10 @@ fn query(app: &mut EpanetApp, ui: &mut Ui) -> bool {
         if q.nodes {
             let t = q.node_theme.unwrap_or(NodeTheme::Pressure);
             egui::ComboBox::from_id_salt("q_node")
-                .selected_text(t.label())
+                .selected_text(name_of(&node_themes, t))
                 .show_ui(ui, |ui| {
-                    for th in NodeTheme::ALL.into_iter().skip(1) {
-                        if ui.selectable_label(t == th, th.label()).clicked() {
+                    for (th, name) in node_themes.iter().cloned() {
+                        if ui.selectable_label(t == th, name).clicked() {
                             q.node_theme = Some(th);
                         }
                     }
@@ -746,10 +783,10 @@ fn query(app: &mut EpanetApp, ui: &mut Ui) -> bool {
         } else {
             let t = q.link_theme.unwrap_or(LinkTheme::Flow);
             egui::ComboBox::from_id_salt("q_link")
-                .selected_text(t.label())
+                .selected_text(name_of(&link_themes, t))
                 .show_ui(ui, |ui| {
-                    for th in LinkTheme::ALL.into_iter().skip(1) {
-                        if ui.selectable_label(t == th, th.label()).clicked() {
+                    for (th, name) in link_themes.iter().cloned() {
+                        if ui.selectable_label(t == th, name).clicked() {
                             q.link_theme = Some(th);
                         }
                     }
@@ -1172,9 +1209,9 @@ fn color_bar(ui: &mut Ui, colors: &[Color32; 5], size: egui::Vec2) -> (Rect, Opt
 fn legend_editor(app: &mut EpanetApp, ui: &mut Ui, nodes: bool) -> bool {
     let ctx = ui.ctx().clone();
     let title = if nodes {
-        app.prefs.node_theme.label()
+        app.node_theme_name(app.prefs.node_theme)
     } else {
-        app.prefs.link_theme.label()
+        app.link_theme_name(app.prefs.link_theme)
     };
     let range = theme_range(app, nodes);
     let red = Color32::from_rgb(0xc0, 0x39, 0x2b);
@@ -1329,7 +1366,7 @@ fn legend_editor(app: &mut EpanetApp, ui: &mut Ui, nodes: bool) -> bool {
             }
             ui.add_space(10.0);
             match buttons(ui, &["Help", "OK", "Cancel"]) {
-                Some(0) => ctx.open_url(egui::OpenUrl::new_tab(crate::menu::USER_MANUAL)),
+                Some(0) => crate::help::open(&ctx, "Map Legend"),
                 Some(1) => apply = true,
                 Some(_) => close = true,
                 None => {}

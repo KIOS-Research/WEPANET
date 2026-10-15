@@ -602,6 +602,23 @@ fn project_toolbar(app: &mut EpanetApp, ui: &mut Ui) {
     {
         app.run_simulation(&ctx);
     }
+    let msx_on = app.msx.enabled && app.net.msx.is_some();
+    if tool_button_with(
+        ui,
+        paint_molecule,
+        "EPANET-MSX",
+        true,
+        msx_on,
+        if msx_on {
+            "Multi-species water quality: runs with each analysis (open to edit or remove)"
+        } else {
+            "Multi-species water quality: load, write or edit the project's MSX file"
+        },
+    )
+    .clicked()
+    {
+        crate::msx::open_editor(app);
+    }
     let rep = tool_button(
         ui,
         Icon::Report,
@@ -722,7 +739,7 @@ fn help_toolbar(app: &mut EpanetApp, ui: &mut Ui) {
     )
     .clicked()
     {
-        ui.ctx().open_url(egui::OpenUrl::new_tab(USER_MANUAL));
+        crate::help::open_doc(ui.ctx(), crate::help::Doc::Manual, None);
     }
     if tool_button(
         ui,
@@ -758,16 +775,12 @@ fn help_toolbar(app: &mut EpanetApp, ui: &mut Ui) {
     )
     .clicked()
     {
-        ui.ctx().open_url(egui::OpenUrl::new_tab(TUTORIAL));
+        crate::help::open_doc(ui.ctx(), crate::help::Doc::Tutorial, None);
     }
     if tool_button(ui, Icon::About, "About", true, false, "About WEPANET").clicked() {
         app.dialog = Dialog::About;
     }
 }
-
-pub const USER_MANUAL: &str = "https://github.com/OpenWaterAnalytics/EPANET-UI/tree/main/manual";
-pub const TUTORIAL: &str =
-    "https://github.com/OpenWaterAnalytics/EPANET-UI/blob/main/tutorial/tutorial.md";
 
 // ----- File menu ----------------------------------------------------------------
 
@@ -1100,5 +1113,21 @@ pub fn file_menu(app: &mut EpanetApp, ctx: &egui::Context) {
             .is_some_and(|p| p.y > 34.0);
     if close || clicked_outside {
         app.backstage = false;
+    }
+}
+
+/// The EPANET-MSX button's icon: a molecule of three atoms.
+fn paint_molecule(p: &egui::Painter, c: egui::Pos2, fg: Color32) {
+    let atoms = [
+        (vec2(-7.0, 5.0), 5.5, Color32::from_rgb(0x2e, 0x86, 0xc1)),
+        (vec2(7.0, 5.0), 5.5, Color32::from_rgb(0xc0, 0x39, 0x2b)),
+        (vec2(0.0, -7.0), 6.5, Color32::from_rgb(0x27, 0xae, 0x60)),
+    ];
+    let bond = Stroke::new(2.0, fg);
+    for i in 0..3 {
+        p.line_segment([c + atoms[i].0, c + atoms[(i + 1) % 3].0], bond);
+    }
+    for (o, r, col) in atoms {
+        p.circle(c + o, r, col, Stroke::new(1.0, fg));
     }
 }

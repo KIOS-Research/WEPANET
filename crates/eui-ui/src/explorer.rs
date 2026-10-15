@@ -2,7 +2,6 @@
 //! a tree of project data categories above the Property Editor.
 
 use egui::{Color32, RichText, Ui};
-use egui_plot::{Bar, BarChart, Line, Plot, PlotPoints};
 use eui_core::props::{self, Element, OptionCategory, PropKind};
 use eui_core::{LinkKind, LinkVar, NodeKind, NodeVar};
 
@@ -21,7 +20,7 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
             panel_header(ui, "Project Explorer", pal.menu);
             egui::ScrollArea::vertical()
                 .id_salt("tree")
-                .max_height(230.0)
+                .max_height(420.0)
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
                     // The tree sits on white, as in EPANET-UI.
@@ -46,6 +45,9 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
                 app.prop_hint.clear();
             }
             hint_box(app, ui);
+            if ui.input(|i| i.key_pressed(egui::Key::F1)) {
+                crate::help::open(ui.ctx(), help_topic(app));
+            }
             egui::ScrollArea::vertical()
                 .id_salt("props")
                 .auto_shrink(false)
@@ -69,6 +71,16 @@ fn tree(app: &mut EpanetApp, ui: &mut Ui) {
         };
         if ui.selectable_label(app.explorer == it, text).clicked() {
             app.explorer = it;
+            // EPANET-UI opens these categories' forms
+            match it {
+                ExplorerItem::Patterns => {
+                    crate::forms::open_patterns(app, crate::forms::Pick::Browse)
+                }
+                ExplorerItem::Curves => crate::forms::open_curves(app, crate::forms::Pick::Browse),
+                ExplorerItem::SimpleControls => crate::forms::open_controls(app),
+                ExplorerItem::RuleControls => crate::forms::open_rules(app),
+                _ => {}
+            }
             if it == ExplorerItem::Nodes && !matches!(app.selection, Some(Element::Node(_))) {
                 app.selection = (!app.net.nodes.is_empty()).then_some(Element::Node(0));
             }
@@ -90,12 +102,47 @@ fn tree(app: &mut EpanetApp, ui: &mut Ui) {
     item(ui, app, "Time Patterns", ExplorerItem::Patterns);
     item(ui, app, "Data Curves", ExplorerItem::Curves);
     egui::CollapsingHeader::new("Control Actions")
-        .default_open(false)
+        .default_open(true)
         .show(ui, |ui| {
             item(ui, app, "Simple Controls", ExplorerItem::SimpleControls);
             item(ui, app, "Rule-Based Controls", ExplorerItem::RuleControls);
         });
     item(ui, app, "Map Labels", ExplorerItem::Labels);
+}
+
+/// The manual's topic for what the Property Editor shows (F1).
+fn help_topic(app: &EpanetApp) -> &'static str {
+    match app.explorer {
+        ExplorerItem::Title => "Working with Projects",
+        ExplorerItem::Options(c) => match c {
+            OptionCategory::Hydraulics => "Hydraulic Options",
+            OptionCategory::Demands => "Demand Options",
+            OptionCategory::Quality => "Water Quality Options",
+            OptionCategory::Times => "Time Options",
+            OptionCategory::Energy => "Energy Options",
+        },
+        ExplorerItem::Nodes => match app.selection {
+            Some(Element::Node(i)) => match app.net.nodes.get(i).map(|n| n.kind) {
+                Some(NodeKind::Reservoir) => "Reservoir Properties",
+                Some(NodeKind::Tank) => "Tank Properties",
+                _ => "Junction Properties",
+            },
+            _ => "Junction Properties",
+        },
+        ExplorerItem::Links => match app.selection {
+            Some(Element::Link(i)) => match app.net.links.get(i).map(|l| l.kind) {
+                Some(LinkKind::Pump) => "Pump Properties",
+                Some(LinkKind::Valve) => "Valve Properties",
+                _ => "Pipe Properties",
+            },
+            _ => "Pipe Properties",
+        },
+        ExplorerItem::Patterns => "Time Patterns",
+        ExplorerItem::Curves => "Data Curves",
+        ExplorerItem::SimpleControls => "Simple Controls Editor",
+        ExplorerItem::RuleControls => "Rule-Based Controls Editor",
+        ExplorerItem::Labels => "Label Properties",
+    }
 }
 
 fn hint_box(app: &EpanetApp, ui: &mut Ui) {
@@ -104,7 +151,7 @@ fn hint_box(app: &EpanetApp, ui: &mut Ui) {
         .frame(egui::Frame::NONE)
         .show(ui, |ui| {
             let text = if app.prop_hint.is_empty() {
-                "Press Enter to record an edit"
+                "Press Enter to record an edit, F1 for Help"
             } else {
                 &app.prop_hint
             };
@@ -183,29 +230,50 @@ fn editor(app: &mut EpanetApp, ui: &mut Ui) {
         ExplorerItem::Nodes | ExplorerItem::Links => element_editor(app, ui),
         ExplorerItem::Patterns => {
             item_header(ui, menu, "Time Patterns", false);
-            pattern_editor(app, ui);
+            let rows: Vec<(String, String)> = app
+                .net
+                .time_patterns()
+                .into_iter()
+                .map(|p| (p.id, p.description))
+                .collect();
+            if form_summary(ui, &rows, "Time Pattern Selector…") {
+                crate::forms::open_patterns(app, crate::forms::Pick::Browse);
+            }
         }
         ExplorerItem::Curves => {
             item_header(ui, menu, "Data Curves", false);
-            curve_editor(app, ui);
+            let rows: Vec<(String, String)> = app
+                .net
+                .data_curves()
+                .into_iter()
+                .map(|c| (c.id, c.description))
+                .collect();
+            if form_summary(ui, &rows, "Data Curve Selector…") {
+                crate::forms::open_curves(app, crate::forms::Pick::Browse);
+            }
         }
         ExplorerItem::SimpleControls => {
             item_header(ui, menu, "Simple Controls", false);
-            section_editor(
-                app,
-                ui,
-                "CONTROLS",
-                "LINK 12 CLOSED IF NODE 23 ABOVE 140\nLINK 9 OPEN AT TIME 6",
-            );
+            let rows: Vec<(String, String)> = app
+                .net
+                .raw_lines("CONTROLS")
+                .map(|t| (t.join(" "), String::new()))
+                .collect();
+            if form_summary(ui, &rows, "Simple Controls Editor…") {
+                crate::forms::open_controls(app);
+            }
         }
         ExplorerItem::RuleControls => {
             item_header(ui, menu, "Rule-Based Controls", false);
-            section_editor(
-                app,
-                ui,
-                "RULES",
-                "RULE 1\nIF TANK 1 LEVEL ABOVE 19\nTHEN PUMP 335 STATUS IS CLOSED",
-            );
+            let rows: Vec<(String, String)> = app
+                .net
+                .raw_lines("RULES")
+                .filter(|t| t[0].eq_ignore_ascii_case("RULE"))
+                .map(|t| (t.get(1).cloned().unwrap_or_default(), String::new()))
+                .collect();
+            if form_summary(ui, &rows, "Rule-Based Controls Editor…") {
+                crate::forms::open_rules(app);
+            }
         }
         ExplorerItem::Labels => {
             item_header(ui, menu, "Map Labels", false);
@@ -372,20 +440,56 @@ fn element_editor(app: &mut EpanetApp, ui: &mut Ui) {
         Element::Node(i) => app.net.nodes[i].kind.label(),
         Element::Link(i) => app.net.links[i].kind.label(),
     };
+    // EPANET-MSX models the water quality instead of EPANET: its single
+    // species quality properties are left out.
+    let msx = app.msx_active();
+    let mut msx_change: Option<MsxChange> = None;
     grid(ui, "element_props", |ui| {
         for p in &rows {
+            if msx && QUALITY_PROPS.contains(&p.name) {
+                continue;
+            }
             let units = prop_units(app, p.name);
             let label = if p.name == "ID" {
                 format!("{kind_label} ID")
             } else {
                 p.name.to_string()
             };
+            if p.key == props::PropKey::KeyedRest("SOURCES")
+                && let Element::Node(i) = sel
+            {
+                // EPANET-UI's Source Editor
+                if source_row(ui, &label, &p.value) {
+                    crate::source::open(app, crate::source::Target::Quality(i));
+                }
+                continue;
+            }
+            // patterns and curves are chosen in EPANET-UI's selectors
+            let pick = crate::forms::Pick::Prop(sel, p.key);
+            if PATTERN_PROPS.contains(&p.name) {
+                if pick_row(ui, &label, &p.value) {
+                    crate::forms::open_patterns(app, pick);
+                }
+                continue;
+            }
+            if CURVE_PROPS.contains(&p.name) {
+                if pick_row(ui, &label, &p.value) {
+                    crate::forms::open_curves(app, pick);
+                }
+                continue;
+            }
             if let Some(v) = prop_row(app, ui, &label, &p.value, p.kind, &units) {
                 commit = Some((p.key, p.name, v));
             }
         }
+        if msx {
+            msx_change = msx_rows(app, ui, sel);
+        }
         result_rows(app, ui, sel);
     });
+    if let Some(c) = msx_change {
+        apply_msx_change(app, sel, c);
+    }
     if let Some((key, name, v)) = commit {
         let mut trial = app.net.clone();
         match trial.set_prop(sel, key, &v) {
@@ -404,6 +508,167 @@ fn element_editor(app: &mut EpanetApp, ui: &mut Ui) {
                 app.buffers.remove(name);
             }
         }
+    }
+}
+
+/// EPANET's single species water quality properties, left out while
+/// EPANET-MSX models the water quality.
+const QUALITY_PROPS: [&str; 5] = [
+    "Initial Quality",
+    "Source Quality",
+    "Bulk Coeff.",
+    "Wall Coeff.",
+    "Reaction Coeff.",
+];
+
+/// Element properties chosen in the Time Pattern Selector.
+const PATTERN_PROPS: [&str; 4] = [
+    "Demand Pattern",
+    "Elev. Pattern",
+    "Speed Pattern",
+    "Price Pattern",
+];
+
+/// Element properties chosen in the Data Curve Selector.
+const CURVE_PROPS: [&str; 3] = ["Volume Curve", "Pump Curve", "Effic. Curve"];
+
+/// A property chosen in a selector: its value, and a `…` button that
+/// opens the selector. Returns true when clicked.
+fn pick_row(ui: &mut Ui, label: &str, value: &str) -> bool {
+    ui.label(label);
+    let clicked = ui
+        .horizontal(|ui| {
+            ui.add(egui::Label::new(value).truncate())
+                .on_hover_text(value);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.small_button("…").on_hover_text("Select").clicked()
+            })
+            .inner
+        })
+        .inner;
+    ui.label("");
+    ui.end_row();
+    clicked
+}
+
+/// A source property: its value on a button that opens the Source Editor.
+/// Returns true when clicked.
+fn source_row(ui: &mut Ui, label: &str, value: &str) -> bool {
+    ui.label(label);
+    let shown = if value.trim().is_empty() {
+        "(none)".to_string()
+    } else {
+        value.to_string()
+    };
+    let clicked = ui
+        .add(egui::Button::new(format!("{shown}  …")).min_size(egui::vec2(120.0, 0.0)))
+        .on_hover_text("Edit the source: strength, time pattern and type")
+        .clicked();
+    ui.label("");
+    ui.end_row();
+    clicked
+}
+
+/// A change made in the EPANET-MSX rows of the Property Editor.
+enum MsxChange {
+    Initial(String, Option<f64>),
+    Parameter(String, Option<f64>),
+    Source(String),
+}
+
+/// The EPANET-MSX rows of a node or pipe: per species its initial
+/// concentration and (nodes) its source, then the model's parameters (pipes
+/// and tanks).
+fn msx_rows(app: &mut EpanetApp, ui: &mut Ui, sel: Element) -> Option<MsxChange> {
+    let file = app.net.msx.clone()?;
+    let model = file.model();
+    let (id, node, tank, pipe) = match sel {
+        Element::Node(i) => (
+            app.net.nodes[i].id.clone(),
+            true,
+            app.net.nodes[i].kind == NodeKind::Tank,
+            false,
+        ),
+        Element::Link(i) => (
+            app.net.links[i].id.clone(),
+            false,
+            false,
+            app.net.links[i].kind == LinkKind::Pipe,
+        ),
+    };
+    if !node && !pipe {
+        return None;
+    }
+    ui.label(RichText::new("EPANET-MSX").strong());
+    ui.label("");
+    ui.label("");
+    ui.end_row();
+    let mut change = None;
+    for (s, sp) in model.species.iter().enumerate() {
+        if node && sp.wall {
+            continue; // wall species live on pipe walls
+        }
+        let value = if node {
+            file.node_initial(&id, &sp.id)
+        } else {
+            file.link_initial(&id, &sp.id)
+        }
+        .unwrap_or_default();
+        let units = model.units(s);
+        let name = format!("Initial {}", sp.id);
+        if let Some(v) = prop_row(app, ui, &name, &value, PropKind::Number, &units) {
+            change = Some(MsxChange::Initial(sp.id.clone(), v.parse().ok()));
+        }
+        if node {
+            let source = file.source(&id, &sp.id).unwrap_or_default();
+            if source_row(ui, &format!("Source {}", sp.id), &source) {
+                change = Some(MsxChange::Source(sp.id.clone()));
+            }
+        }
+    }
+    if tank || pipe {
+        for p in model.parameters() {
+            let value = file.parameter(tank, &id, &p.id).unwrap_or_default();
+            let name = format!("Parameter {}", p.id);
+            if let Some(v) = prop_row(app, ui, &name, &value, PropKind::Number, "") {
+                change = Some(MsxChange::Parameter(p.id.clone(), v.parse().ok()));
+            }
+        }
+    }
+    change
+}
+
+fn apply_msx_change(app: &mut EpanetApp, sel: Element, c: MsxChange) {
+    let (id, node, tank) = match sel {
+        Element::Node(i) => (
+            app.net.nodes[i].id.clone(),
+            true,
+            app.net.nodes[i].kind == NodeKind::Tank,
+        ),
+        Element::Link(i) => (app.net.links[i].id.clone(), false, false),
+    };
+    let result = match c {
+        MsxChange::Source(sp) => {
+            if let Element::Node(i) = sel {
+                crate::source::open(app, crate::source::Target::Species(i, sp));
+            }
+            Ok(())
+        }
+        MsxChange::Initial(sp, v) => crate::msx::edit(app, |m| {
+            if node {
+                m.set_node_initial(&id, &sp, v);
+            } else {
+                m.set_link_initial(&id, &sp, v);
+            }
+            Ok(())
+        }),
+        MsxChange::Parameter(p, v) => crate::msx::edit(app, |m| {
+            m.set_parameter(tank, &id, &p, v);
+            Ok(())
+        }),
+    };
+    if let Err(e) = result {
+        app.prop_hint = e;
     }
 }
 
@@ -567,75 +832,196 @@ fn result_rows(app: &EpanetApp, ui: &mut Ui, sel: Element) {
             }
         }
     }
+    // EPANET-MSX species at the time shown
+    if let Some(m) = &res.msx {
+        let (nodes, r) = match sel {
+            Element::Node(i) => (true, app.node_result_index(i)),
+            Element::Link(i) => (false, app.link_result_index(i)),
+        };
+        let Some(r) = r else {
+            return;
+        };
+        for s in crate::msx::result_species(Some(res), nodes) {
+            let v = if nodes {
+                m.node(app.period, s, r)
+            } else {
+                m.link(app.period, s, r)
+            };
+            ro(ui, &m.species()[s].id, v, m.units(s));
+        }
+    }
 }
 
 // ----- options, title -----------------------------------------------------------
 
+/// EPANET-UI's two-column Property / Value grid of the Analysis Options.
+fn options_grid(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
+    egui::Frame::NONE
+        .inner_margin(egui::Margin::symmetric(6, 4))
+        .show(ui, |ui| {
+            egui::Grid::new("options")
+                .num_columns(2)
+                .striped(true)
+                .spacing([10.0, 6.0])
+                .min_col_width(150.0)
+                .show(ui, |ui| {
+                    ui.label(RichText::new("Property").strong());
+                    ui.label(RichText::new("Value").strong());
+                    ui.end_row();
+                    add(ui);
+                });
+        });
+}
+
+/// How an option's value is shown: times as `HH:MM`, prices and charges to
+/// four decimals, the pump efficiency to two, keywords by their names.
+fn option_shown(key: &str, value: &str) -> String {
+    let num = |d: usize| {
+        value
+            .trim()
+            .parse::<f64>()
+            .map_or_else(|_| value.to_string(), |v| format!("{v:.d$}"))
+    };
+    match key {
+        "DURATION" | "HYDRAULIC TIMESTEP" | "QUALITY TIMESTEP" | "PATTERN TIMESTEP"
+        | "PATTERN START" | "REPORT TIMESTEP" | "REPORT START" | "RULE TIMESTEP"
+        | "START CLOCKTIME" => eui_core::analysis::format_time_option(value),
+        "GLOBAL EFFICIENCY" => num(2),
+        "GLOBAL PRICE" | "DEMAND CHARGE" => num(4),
+        _ => value.to_string(),
+    }
+}
+
+/// The names EPANET-UI gives to option keywords.
+fn choice_label(key: &str, value: &str) -> String {
+    match (key, value.to_ascii_uppercase().as_str()) {
+        ("STATUS", "NO") => "None".into(),
+        ("STATUS", "YES") => "Normal".into(),
+        ("STATUS", "FULL") => "Full".into(),
+        (_, "") => "(none)".into(),
+        (_, v) => {
+            let mut c = v.chars();
+            match c.next() {
+                Some(f) if v.len() > 3 => format!("{f}{}", c.as_str().to_ascii_lowercase()),
+                _ => v.to_string(),
+            }
+        }
+    }
+}
+
+/// An option row chosen in the Time Pattern Selector.
+const PATTERN_OPTIONS: [&str; 2] = ["PATTERN", "GLOBAL PATTERN"];
+
 fn options_editor(app: &mut EpanetApp, ui: &mut Ui, cat: OptionCategory) {
     let specs = props::option_specs(cat);
     let mut commit: Option<(&'static str, &'static str, String)> = None;
-    let mut quality: Option<(String, String, String, String)> = None;
-    grid(ui, "options", |ui| {
+    options_grid(ui, |ui| {
         if cat == OptionCategory::Quality {
-            let (model, chem, units, trace) = props::quality_parts(&app.net);
-            let mut q = (model.clone(), chem.clone(), units.clone(), trace.clone());
-            let mut changed = false;
-            if let Some(v) = prop_row(
-                app,
-                ui,
-                "Parameter",
-                &model,
-                PropKind::Choice(&["None", "Chemical", "Age", "Trace"]),
-                "",
-            ) {
-                q.0 = v;
-                changed = true;
+            // EPANET-UI: a row for each water quality model, each opening
+            // its editor
+            let msx = app.msx_active();
+            let (model, chem, _, trace) = props::quality_parts(&app.net);
+            let single = match model.as_str() {
+                "Chemical" => chem,
+                "Trace" => format!("Trace {trace}"),
+                m => m.to_string(),
+            };
+            let single = if msx {
+                format!("{single} (not used)")
+            } else {
+                single
+            };
+            ui.label("Single Species Model");
+            if model_button(ui, &single) {
+                crate::forms::open_quality(app);
             }
-            if q.0 == "Chemical" {
-                if let Some(v) = prop_row(app, ui, "Chemical Name", &chem, PropKind::Text, "") {
-                    q.1 = v;
-                    changed = true;
-                }
-                if let Some(v) = prop_row(
-                    app,
-                    ui,
-                    "Mass Units",
-                    &units,
-                    PropKind::Choice(&["mg/L", "ug/L"]),
-                    "",
-                ) {
-                    q.2 = v;
-                    changed = true;
-                }
+            ui.end_row();
+            ui.label("Multi-Species Model");
+            let multi = match &app.net.msx {
+                Some(m) if app.msx.enabled => m.name.clone(),
+                Some(m) => format!("{} (off)", m.name),
+                None => "(none)".into(),
+            };
+            if model_button(ui, &multi) {
+                crate::msx::open_editor(app);
             }
-            if q.0 == "Trace"
-                && let Some(v) = prop_row(app, ui, "Trace Node", &trace, PropKind::Text, "")
-            {
-                q.3 = v;
-                changed = true;
-            }
-            if changed {
-                quality = Some(q);
-            }
+            ui.end_row();
+            return;
         }
         for s in &specs {
             let value = app
                 .net
                 .option(s.section, s.key)
                 .unwrap_or_else(|| s.default.to_string());
-            if let Some(v) = prop_row(app, ui, s.name, &value, s.kind, "") {
-                commit = Some((s.section, s.key, v));
+            ui.label(s.name);
+            if PATTERN_OPTIONS.contains(&s.key) {
+                ui.horizontal(|ui| {
+                    ui.label(&value);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .small_button("…")
+                            .on_hover_text("Select a pattern")
+                            .clicked()
+                        {
+                            crate::forms::open_patterns(
+                                app,
+                                crate::forms::Pick::Option(s.section, s.key),
+                            );
+                        }
+                    });
+                });
+                ui.end_row();
+                continue;
             }
+            match s.kind {
+                PropKind::Choice(choices) => {
+                    egui::ComboBox::from_id_salt(("option", s.key))
+                        .selected_text(choice_label(s.key, &value))
+                        .width(140.0)
+                        .show_ui(ui, |ui| {
+                            for c in choices {
+                                if ui
+                                    .selectable_label(
+                                        value.eq_ignore_ascii_case(c),
+                                        choice_label(s.key, c),
+                                    )
+                                    .clicked()
+                                    && !value.eq_ignore_ascii_case(c)
+                                {
+                                    commit = Some((s.section, s.key, c.to_string()));
+                                }
+                            }
+                        });
+                }
+                _ => {
+                    let shown = option_shown(s.key, &value);
+                    let buf = app
+                        .buffers
+                        .entry(s.name.to_string())
+                        .or_insert_with(|| shown.clone());
+                    let resp = ui.add(egui::TextEdit::singleline(buf).desired_width(140.0));
+                    if resp.lost_focus() {
+                        let v = buf.trim().to_string();
+                        if v != shown {
+                            if s.kind == PropKind::Number
+                                && !v.is_empty()
+                                && v.parse::<f64>().is_err()
+                            {
+                                app.prop_hint =
+                                    format!("\"{v}\" is not a valid number for {}", s.name);
+                                *buf = shown;
+                            } else {
+                                commit = Some((s.section, s.key, v));
+                            }
+                        }
+                    } else if !resp.has_focus() && *buf != shown {
+                        *buf = shown;
+                    }
+                }
+            }
+            ui.end_row();
         }
     });
-    if let Some((model, chem, units, trace)) = quality {
-        if model == "Trace" && !trace.is_empty() && app.net.node_index(&trace).is_none() {
-            app.prop_hint = format!("Trace node \"{trace}\" does not exist");
-        } else {
-            app.checkpoint();
-            props::set_quality_parts(&mut app.net, &model, &chem, &units, &trace);
-        }
-    }
     if let Some((section, key, v)) = commit {
         app.checkpoint();
         app.net.set_option(section, key, &v);
@@ -643,12 +1029,26 @@ fn options_editor(app: &mut EpanetApp, ui: &mut Ui, cat: OptionCategory) {
     if cat == OptionCategory::Times {
         ui.label(
             RichText::new(
-                "  Times are hours:minutes (e.g. 24:00) or a number with SEC / MIN / HOURS / DAYS.",
+                "  Times are hours:minutes (e.g. 24:00); Duration may also be decimal hours.",
             )
             .small()
             .weak(),
         );
     }
+}
+
+/// A water quality model row's value: a button that opens its editor.
+fn model_button(ui: &mut Ui, text: &str) -> bool {
+    ui.horizontal(|ui| {
+        ui.label(text);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.small_button("…")
+                .on_hover_text("Open its editor")
+                .clicked()
+        })
+        .inner
+    })
+    .inner
 }
 
 fn title_editor(app: &mut EpanetApp, ui: &mut Ui) {
@@ -698,259 +1098,31 @@ fn title_editor(app: &mut EpanetApp, ui: &mut Ui) {
 
 // ----- patterns, curves, text sections ---------------------------------------------
 
-fn id_picker(ui: &mut Ui, salt: &str, ids: &[String], index: &mut usize) {
-    egui::ComboBox::from_id_salt(salt)
-        .selected_text(ids.get(*index).cloned().unwrap_or_default())
-        .width(120.0)
-        .show_ui(ui, |ui| {
-            for (i, id) in ids.iter().enumerate() {
-                ui.selectable_value(index, i, id);
-            }
-        });
-}
-
-fn number_cell(app: &mut EpanetApp, ui: &mut Ui, key: String, value: f64) -> Option<f64> {
-    let buf = app.buffers.entry(key).or_insert_with(|| format!("{value}"));
-    let resp = ui.add(egui::TextEdit::singleline(buf).desired_width(80.0));
-    if resp.lost_focus() {
-        match buf.trim().parse::<f64>() {
-            Ok(v) if v != value => return Some(v),
-            Ok(_) => {}
-            Err(_) => *buf = format!("{value}"),
-        }
-    } else if !resp.has_focus() && buf.trim().parse::<f64>().ok() != Some(value) {
-        *buf = format!("{value}");
-    }
-    None
-}
-
-fn pattern_editor(app: &mut EpanetApp, ui: &mut Ui) {
-    let mut pats = app.net.patterns();
-    let mut changed = false;
+/// The Property Editor's view of a category with its own form (patterns,
+/// curves, controls): what it holds, and a button that opens the form.
+fn form_summary(ui: &mut Ui, rows: &[(String, String)], open: &str) -> bool {
+    let mut clicked = false;
     egui::Frame::NONE
         .inner_margin(egui::Margin::symmetric(8, 6))
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Pattern");
-                let ids: Vec<String> = pats.iter().map(|p| p.0.clone()).collect();
-                let before = app.pattern_index;
-                id_picker(ui, "pattern_id", &ids, &mut app.pattern_index);
-                if before != app.pattern_index {
-                    app.buffers.clear();
-                }
-                if ui.button("Add").clicked() {
-                    let id = (1..)
-                        .map(|i| i.to_string())
-                        .find(|id| !ids.contains(id))
-                        .unwrap();
-                    pats.push((id, vec![1.0; 24]));
-                    app.pattern_index = pats.len() - 1;
-                    changed = true;
-                }
-                if ui
-                    .add_enabled(!pats.is_empty(), egui::Button::new("Delete"))
-                    .clicked()
-                {
-                    pats.remove(app.pattern_index.min(pats.len() - 1));
-                    app.pattern_index = 0;
-                    changed = true;
-                }
-            });
-            if pats.is_empty() {
-                ui.label(RichText::new("The project has no time patterns.").weak());
-                return;
+            clicked = ui.button(open).clicked();
+            ui.add_space(6.0);
+            if rows.is_empty() {
+                ui.label(RichText::new("(none)").weak());
             }
-            let k = app.pattern_index.min(pats.len() - 1);
-            let step = app
-                .net
-                .option("TIMES", "PATTERN TIMESTEP")
-                .unwrap_or_else(|| "1:00".into());
-            let bars: Vec<Bar> = pats[k]
-                .1
-                .iter()
-                .enumerate()
-                .map(|(i, &v)| Bar::new(i as f64 + 0.5, v).width(0.9).fill(style::RAMP[0]))
-                .collect();
-            // EPANET-UI's title: "Time (Time Period = 1.00 hrs)"
-            let hours = {
-                let mut it = step.trim().split(':');
-                let h: f64 = it.next().and_then(|v| v.trim().parse().ok()).unwrap_or(1.0);
-                let m: f64 = it.next().and_then(|v| v.trim().parse().ok()).unwrap_or(0.0);
-                h + m / 60.0
-            };
-            Plot::new("pattern_plot")
-                .height(140.0)
-                .x_axis_label(format!("Time (Time Period = {hours:.2} hrs)"))
-                .y_axis_label("Multiplier")
-                .allow_scroll(false)
-                .allow_drag(false)
-                .allow_zoom(false)
-                .show(ui, |p| {
-                    p.bar_chart(BarChart::new("Multiplier", bars));
-                });
-            egui::Grid::new("pattern_grid")
-                .striped(true)
+            egui::Grid::new("form_summary")
                 .num_columns(2)
+                .striped(true)
+                .spacing([12.0, 3.0])
                 .show(ui, |ui| {
-                    ui.strong("Period");
-                    ui.strong("Multiplier");
-                    ui.end_row();
-                    for i in 0..pats[k].1.len() {
-                        ui.label((i + 1).to_string());
-                        if let Some(v) = number_cell(app, ui, format!("pat{i}"), pats[k].1[i]) {
-                            pats[k].1[i] = v;
-                            changed = true;
-                        }
+                    for (a, b) in rows {
+                        ui.label(a);
+                        ui.label(RichText::new(b).weak());
                         ui.end_row();
                     }
                 });
-            ui.horizontal(|ui| {
-                if ui.button("+ Period").clicked() {
-                    let last = pats[k].1.last().copied().unwrap_or(1.0);
-                    pats[k].1.push(last);
-                    changed = true;
-                }
-                if ui
-                    .add_enabled(pats[k].1.len() > 1, egui::Button::new("− Period"))
-                    .clicked()
-                {
-                    pats[k].1.pop();
-                    changed = true;
-                }
-            });
         });
-    if changed {
-        app.checkpoint();
-        app.net.set_patterns(&pats);
-        app.buffers.clear();
-    }
-}
-
-fn curve_editor(app: &mut EpanetApp, ui: &mut Ui) {
-    let mut curves = app.net.curves();
-    let mut changed = false;
-    egui::Frame::NONE
-        .inner_margin(egui::Margin::symmetric(8, 6))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Curve");
-                let ids: Vec<String> = curves.iter().map(|c| c.0.clone()).collect();
-                let before = app.curve_index;
-                id_picker(ui, "curve_id", &ids, &mut app.curve_index);
-                if before != app.curve_index {
-                    app.buffers.clear();
-                }
-                if ui.button("Add").clicked() {
-                    let id = (1..)
-                        .map(|i| i.to_string())
-                        .find(|id| !ids.contains(id))
-                        .unwrap();
-                    curves.push((
-                        id,
-                        "PUMP".into(),
-                        vec![[0.0, 100.0], [500.0, 80.0], [1000.0, 40.0]],
-                    ));
-                    app.curve_index = curves.len() - 1;
-                    changed = true;
-                }
-                if ui
-                    .add_enabled(!curves.is_empty(), egui::Button::new("Delete"))
-                    .clicked()
-                {
-                    curves.remove(app.curve_index.min(curves.len() - 1));
-                    app.curve_index = 0;
-                    changed = true;
-                }
-            });
-            if curves.is_empty() {
-                ui.label(RichText::new("The project has no data curves.").weak());
-                return;
-            }
-            let k = app.curve_index.min(curves.len() - 1);
-            ui.horizontal(|ui| {
-                ui.label("Type");
-                egui::ComboBox::from_id_salt("curve_type")
-                    .selected_text(if curves[k].1.is_empty() {
-                        "GENERIC"
-                    } else {
-                        &curves[k].1
-                    })
-                    .show_ui(ui, |ui| {
-                        for t in [
-                            "PUMP",
-                            "EFFICIENCY",
-                            "VOLUME",
-                            "HEADLOSS",
-                            "VALVE",
-                            "GENERIC",
-                        ] {
-                            if ui.selectable_label(curves[k].1 == t, t).clicked() {
-                                curves[k].1 = t.into();
-                                changed = true;
-                            }
-                        }
-                    });
-            });
-            let pts: PlotPoints = curves[k].2.iter().map(|&[x, y]| [x, y]).collect();
-            // axis titles by curve type, as EPANET-UI's curve editor
-            let (xt, yt) = match curves[k].1.to_ascii_uppercase().as_str() {
-                "VOLUME" => ("Depth", "Volume"),
-                "PUMP" => ("Flow", "Head"),
-                "EFFICIENCY" => ("Flow", "Efficiency"),
-                "HEADLOSS" => ("Flow", "Head Loss"),
-                "VALVE" => ("% Open", "% Full Flow"),
-                _ => ("X", "Y"),
-            };
-            Plot::new("curve_plot")
-                .height(160.0)
-                .x_axis_label(xt)
-                .y_axis_label(yt)
-                .allow_scroll(false)
-                .show(ui, |p| {
-                    p.line(
-                        Line::new(curves[k].0.clone(), pts)
-                            .stroke(egui::Stroke::new(2.0, style::ACCENT)),
-                    );
-                });
-            egui::Grid::new("curve_grid")
-                .striped(true)
-                .num_columns(2)
-                .show(ui, |ui| {
-                    ui.strong("X");
-                    ui.strong("Y");
-                    ui.end_row();
-                    for i in 0..curves[k].2.len() {
-                        for c in 0..2 {
-                            if let Some(v) =
-                                number_cell(app, ui, format!("cv{i}_{c}"), curves[k].2[i][c])
-                            {
-                                curves[k].2[i][c] = v;
-                                changed = true;
-                            }
-                        }
-                        ui.end_row();
-                    }
-                });
-            ui.horizontal(|ui| {
-                if ui.button("+ Point").clicked() {
-                    let last = curves[k].2.last().copied().unwrap_or([0.0, 0.0]);
-                    curves[k].2.push(last);
-                    changed = true;
-                }
-                if ui
-                    .add_enabled(curves[k].2.len() > 1, egui::Button::new("− Point"))
-                    .clicked()
-                {
-                    curves[k].2.pop();
-                    changed = true;
-                }
-            });
-        });
-    if changed {
-        app.checkpoint();
-        app.net.set_curves(&curves);
-        app.buffers.clear();
-    }
+    clicked
 }
 
 fn section_editor(app: &mut EpanetApp, ui: &mut Ui, section: &str, example: &str) {
@@ -990,4 +1162,123 @@ fn section_editor(app: &mut EpanetApp, ui: &mut Ui, section: &str, example: &str
                 app.section_buffer = None;
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The Property Editor as drawn: its pieces of text.
+    fn texts(app: &mut EpanetApp, ctx: &egui::Context) -> Vec<String> {
+        let input = || egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1400.0, 2400.0),
+            )),
+            ..Default::default()
+        };
+        let mut texts = Vec::new();
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(input(), |ui| show(app, ui));
+            out.textures_delta.clear();
+            texts = out
+                .shapes
+                .iter()
+                .filter_map(|c| match &c.shape {
+                    egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                    _ => None,
+                })
+                .collect();
+        }
+        texts
+    }
+
+    /// With EPANET-MSX on, a node shows the species' initial concentrations
+    /// and sources instead of EPANET's single species quality.
+    #[test]
+    fn msx_replaces_single_species_quality_in_the_property_editor() {
+        let ctx = egui::Context::default();
+        let mut app = EpanetApp::new(&eframe::CreationContext::_new_kittest(ctx.clone()));
+        crate::msx::open_example(&mut app);
+        app.explorer = ExplorerItem::Nodes;
+        app.selection = Some(Element::Node(app.net.node_index("Source").unwrap()));
+        let t = texts(&mut app, &ctx);
+        for s in ["EPANET-MSX", "Initial AS3", "Source NH2CL", "(none)  …"] {
+            assert!(t.iter().any(|x| x == s), "{s} missing from {t:?}");
+        }
+        assert!(
+            !t.iter()
+                .any(|x| x == "Initial Quality" || x == "Source Quality")
+        );
+        assert!(
+            !t.iter().any(|x| x == "Initial AS5s"),
+            "no wall species at nodes"
+        );
+        // a pipe: every species, and no EPANET reaction coefficients
+        app.explorer = ExplorerItem::Links;
+        app.selection = Some(Element::Link(app.net.link_index("5").unwrap()));
+        let t = texts(&mut app, &ctx);
+        assert!(t.iter().any(|x| x == "Initial AS5s"), "{t:?}");
+        assert!(!t.iter().any(|x| x == "Bulk Coeff."));
+        // EPANET-MSX off: EPANET's quality is back
+        app.msx.enabled = false;
+        app.explorer = ExplorerItem::Nodes;
+        app.selection = Some(Element::Node(app.net.node_index("Source").unwrap()));
+        let t = texts(&mut app, &ctx);
+        assert!(t.iter().any(|x| x == "Initial Quality"), "{t:?}");
+        assert!(t.iter().any(|x| x == "Source Quality"));
+        assert!(!t.iter().any(|x| x == "Initial AS3"));
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+
+    /// The whole tree shows, Control Actions open, nothing scrolled away.
+    #[test]
+    fn the_tree_shows_every_category() {
+        let ctx = egui::Context::default();
+        let mut app = EpanetApp::new(&eframe::CreationContext::_new_kittest(ctx.clone()));
+        app.load_example("Net1", eui_core::examples::NET1);
+        let input = || egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1400.0, 900.0),
+            )),
+            ..Default::default()
+        };
+        let mut visible = Vec::new();
+        for _ in 0..3 {
+            let mut out = ctx.run_ui(input(), |ui| show(&mut app, ui));
+            out.textures_delta.clear();
+            visible = out
+                .shapes
+                .iter()
+                .filter_map(|c| match &c.shape {
+                    egui::Shape::Text(t)
+                        if c.clip_rect.contains_rect(c.shape.visual_bounding_rect()) =>
+                    {
+                        Some(t.galley.text().to_string())
+                    }
+                    _ => None,
+                })
+                .collect();
+        }
+        for s in [
+            "Title / Notes",
+            "Hydraulics",
+            "Energy",
+            "Network Nodes",
+            "Data Curves",
+            "Simple Controls",
+            "Rule-Based Controls",
+            "Map Labels",
+        ] {
+            assert!(
+                visible.iter().any(|x| x == s),
+                "{s} not fully visible: {visible:?}"
+            );
+        }
+    }
 }

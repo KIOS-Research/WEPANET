@@ -17,6 +17,7 @@ unsafe extern "C" {
         rpt: *const c_char,
         out: *const c_char,
         extra: *const c_char,
+        hyd: *const c_char,
         energy: *mut f64,
         cb: Option<ProgressFn>,
         ctx: *mut c_void,
@@ -30,6 +31,16 @@ unsafe extern "C" {
         hloss_model: c_int,
     ) -> c_int;
     fn eui_error_message(code: c_int, msg: *mut c_char);
+    fn eui_run_msx(
+        inp: *const c_char,
+        msx: *const c_char,
+        hyd: *const c_char,
+        rpt: *const c_char,
+        out: *const c_char,
+        cb: Option<ProgressFn>,
+        ctx: *mut c_void,
+    ) -> c_int;
+    fn eui_msx_error_message(code: c_int, msg: *mut c_char);
     fn eui_version() -> c_int;
 }
 
@@ -46,6 +57,14 @@ fn error_message(code: i32) -> String {
     let mut buf = [0 as c_char; 256];
     unsafe {
         eui_error_message(code, buf.as_mut_ptr());
+        CStr::from_ptr(buf.as_ptr()).to_string_lossy().into_owned()
+    }
+}
+
+fn msx_error_message(code: i32) -> String {
+    let mut buf = [0 as c_char; 256];
+    unsafe {
+        eui_msx_error_message(code, buf.as_mut_ptr());
         CStr::from_ptr(buf.as_ptr()).to_string_lossy().into_owned()
     }
 }
@@ -89,7 +108,13 @@ pub fn convert_units(inp: &str, change: crate::UnitChange) -> Result<String, Eng
 
 /// Runs a full simulation of `inp` (INP text) and waits for it to finish.
 pub fn run_blocking(inp: &str) -> Result<RunOutput, EngineError> {
-    run_with_progress(inp, &mut |_| false)
+    run_with_progress(inp, None, &mut |_| false)
+}
+
+/// Runs a full simulation of `inp` followed by an EPANET-MSX analysis of
+/// `msx` (MSX input text), and waits for both to finish.
+pub fn run_blocking_msx(inp: &str, msx: &str) -> Result<RunOutput, EngineError> {
+    run_with_progress(inp, Some(msx), &mut |_| false)
 }
 
 /// Calls the Rust progress closure behind `ctx`.
@@ -104,10 +129,12 @@ unsafe extern "C" fn on_progress(stage: c_int, hour: std::ffi::c_long, ctx: *mut
     f(Progress::new(stage, hour)) as c_int
 }
 
-/// Runs a full simulation, calling `progress` as each simulation hour starts;
-/// returning true from it cancels the run.
+/// Runs a full simulation, and then EPANET-MSX if `msx` (MSX input text) is
+/// given, calling `progress` as each simulation hour starts; returning true
+/// from it cancels the run.
 pub fn run_with_progress(
     inp: &str,
+    msx: Option<&str>,
     mut progress: &mut dyn FnMut(Progress) -> bool,
 ) -> Result<RunOutput, EngineError> {
     let dir: PathBuf = std::env::temp_dir().join(format!(
@@ -116,53 +143,93 @@ pub fn run_with_progress(
         RUN_COUNTER.fetch_add(1, Ordering::Relaxed)
     ));
     std::fs::create_dir_all(&dir).map_err(|e| EngineError::Io(e.to_string()))?;
+    let result = run_in(&dir, inp, msx, &mut progress);
+    let _ = std::fs::remove_dir_all(&dir);
+    result
+}
+
+fn run_in(
+    dir: &std::path::Path,
+    inp: &str,
+    msx: Option<&str>,
+    progress: &mut &mut dyn FnMut(Progress) -> bool,
+) -> Result<RunOutput, EngineError> {
+    let ctx = progress as *mut &mut dyn FnMut(Progress) -> bool as *mut c_void;
+    let io = |e: std::io::Error| EngineError::Io(e.to_string());
     let inp_path = dir.join("network.inp");
     let rpt_path = dir.join("network.rpt");
     let out_path = dir.join("network.out");
     let extra_path = dir.join("network.ext");
-    std::fs::write(&inp_path, inp).map_err(|e| EngineError::Io(e.to_string()))?;
+    let hyd_path = dir.join("network.hyd");
+    std::fs::write(&inp_path, inp).map_err(io)?;
 
+    // EPANET's legacy toolkit (used by EPANET-MSX) and EPANET-MSX itself keep
+    // their state in globals, so the lock is held over both runs.
+    let _guard = ENGINE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let hyd = msx.map(|_| cpath(&hyd_path)).transpose()?;
     let mut energy = [0.0; ENERGY_SIZE];
-    let code = {
-        let _guard = ENGINE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        unsafe {
-            eui_run_progress(
-                cpath(&inp_path)?.as_ptr(),
-                cpath(&rpt_path)?.as_ptr(),
-                cpath(&out_path)?.as_ptr(),
-                cpath(&extra_path)?.as_ptr(),
-                energy.as_mut_ptr(),
-                Some(on_progress),
-                &mut progress as *mut _ as *mut c_void,
-            )
-        }
+    let code = unsafe {
+        eui_run_progress(
+            cpath(&inp_path)?.as_ptr(),
+            cpath(&rpt_path)?.as_ptr(),
+            cpath(&out_path)?.as_ptr(),
+            cpath(&extra_path)?.as_ptr(),
+            hyd.as_ref().map_or(std::ptr::null(), |c| c.as_ptr()),
+            energy.as_mut_ptr(),
+            Some(on_progress),
+            ctx,
+        )
     };
-
     if code == CANCELLED {
-        let _ = std::fs::remove_dir_all(&dir);
         return Err(EngineError::Cancelled);
     }
     let mut report = std::fs::read_to_string(&rpt_path).unwrap_or_default();
     if code >= 100 && !report.contains(&code.to_string()) {
         report.push_str(&format!("\n{}\n", error_message(code)));
     }
-    let out = if code >= 100 {
-        Vec::new()
-    } else {
-        std::fs::read(&out_path).unwrap_or_default()
+    let read = |p: &std::path::Path| {
+        if code >= 100 {
+            Vec::new()
+        } else {
+            std::fs::read(p).unwrap_or_default()
+        }
     };
-    let extra = if code >= 100 {
-        Vec::new()
-    } else {
-        std::fs::read(&extra_path).unwrap_or_default()
-    };
-    let _ = std::fs::remove_dir_all(&dir);
+    let (out, extra) = (read(&out_path), read(&extra_path));
+
+    let (mut msx_out, mut msx_code) = (Vec::new(), 0);
+    if let Some(msx) = msx.filter(|_| code < 100) {
+        let msx_path = dir.join("network.msx");
+        let msx_rpt = dir.join("msx.rpt");
+        let msx_bin = dir.join("msx.out");
+        std::fs::write(&msx_path, crate::msx_input(msx)).map_err(io)?;
+        msx_code = unsafe {
+            eui_run_msx(
+                cpath(&inp_path)?.as_ptr(),
+                cpath(&msx_path)?.as_ptr(),
+                cpath(&hyd_path)?.as_ptr(),
+                cpath(&msx_rpt)?.as_ptr(),
+                cpath(&msx_bin)?.as_ptr(),
+                Some(on_progress),
+                ctx,
+            )
+        };
+        if msx_code == CANCELLED {
+            return Err(EngineError::Cancelled);
+        }
+        let text = std::fs::read_to_string(&msx_rpt).unwrap_or_default();
+        crate::add_msx_report(&mut report, &text, msx_code, &msx_error_message(msx_code));
+        if msx_code == 0 {
+            msx_out = std::fs::read(&msx_bin).unwrap_or_default();
+        }
+    }
     Ok(RunOutput {
         code,
         report,
         out,
         energy: (code < 100).then_some(energy),
         extra,
+        msx: msx_out,
+        msx_code,
     })
 }
 
@@ -256,6 +323,54 @@ mod tests {
         };
         let (p0, p1) = (pressure(0.0), pressure(1000.0));
         assert!(p1 < p0 - 1.0, "static {p0}, with fire flow {p1}");
+    }
+
+    /// EPANET-MSX's arsenic example runs on the hydraulics of the EPANET run
+    /// and reports every species at the same periods.
+    #[test]
+    fn runs_the_epanet_msx_example() {
+        use eui_core::MsxResults;
+        use eui_core::msx::examples;
+        let r = run_blocking_msx(examples::INP, examples::MSX).unwrap();
+        assert_eq!(r.code, 0, "{}", r.report);
+        assert_eq!(r.msx_code, 0, "{}", r.report);
+        let res = SimResults::from_out(&r.out).unwrap();
+        let m = MsxResults::from_out(&r.msx, examples::MSX).unwrap();
+        assert_eq!(res.n_periods, 25);
+        assert_eq!(m.n_periods, res.n_periods);
+        assert_eq!(m.report_step, 7200);
+        let (as3, as5, total, wall, nh2cl) = (0, 1, 2, 3, 4);
+        let node = |id: &str| res.node_ids.iter().position(|n| n == id).unwrap();
+        let (source, c) = (node("Source"), node("C"));
+        assert_eq!(m.node(0, as3, source), Some(10.0));
+        assert_eq!(m.node(0, nh2cl, source), Some(2.5));
+        // a wall species only exists in pipes
+        assert_eq!(m.node(5, wall, c), None);
+        let last = m.n_periods - 1;
+        let sum = m.node(last, as3, c).unwrap() + m.node(last, as5, c).unwrap();
+        let t = m.node(last, total, c).unwrap();
+        assert!(
+            t > 1.0 && (t - sum).abs() < 1e-3,
+            "AStot {t}, AS3 + AS5 {sum}"
+        );
+        // arsenite is oxidized and the chloramine decays on the way to C
+        assert!(m.node(last, as3, c).unwrap() < 10.0);
+        assert!(m.node(last, nh2cl, c).unwrap() < 2.5);
+        assert!(m.link(last, wall, 0).unwrap() > 0.0);
+        assert_eq!(m.node_series(c, nh2cl).len(), 25);
+    }
+
+    /// An error in the MSX file is reported, and the EPANET results are kept.
+    #[test]
+    fn reports_epanet_msx_errors() {
+        use eui_core::msx::examples;
+        let bad = examples::MSX.replace("RATE    NH2CL  -Kb*NH2CL", "RATE    NH2CL  -Kx*NH2CL");
+        let r = run_blocking_msx(examples::INP, &bad).unwrap();
+        assert_eq!(r.code, 0);
+        assert!(r.msx_code > 0);
+        assert!(r.msx.is_empty());
+        assert!(!r.out.is_empty());
+        assert!(r.report.contains("EPANET-MSX"), "{}", r.report);
     }
 
     #[test]

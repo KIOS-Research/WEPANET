@@ -609,33 +609,15 @@ const fn o(
     }
 }
 
-const FLOW_UNITS: &[&str] = &[
-    "CFS", "GPM", "MGD", "IMGD", "AFD", "LPS", "LPM", "MLD", "CMH", "CMD", "CMS",
-];
 const N: PropKind = PropKind::Number;
 const T: PropKind = PropKind::Text;
 
 pub fn option_specs(cat: OptionCategory) -> Vec<OptionSpec> {
     use PropKind::Choice;
     match cat {
+        // EPANET-UI keeps the units, head loss model, specific gravity and
+        // viscosity in Project Setup
         OptionCategory::Hydraulics => vec![
-            o("Flow Units", "OPTIONS", "UNITS", Choice(FLOW_UNITS), "GPM"),
-            o(
-                "Pressure Units",
-                "OPTIONS",
-                "PRESSURE",
-                Choice(&["", "PSI", "KPA", "METERS", "BAR", "FEET"]),
-                "",
-            ),
-            o(
-                "Head Loss Model",
-                "OPTIONS",
-                "HEADLOSS",
-                Choice(&["H-W", "D-W", "C-M"]),
-                "H-W",
-            ),
-            o("Specific Gravity", "OPTIONS", "SPECIFIC GRAVITY", N, "1.0"),
-            o("Relative Viscosity", "OPTIONS", "VISCOSITY", N, "1.0"),
             o("Maximum Trials", "OPTIONS", "TRIALS", N, "200"),
             o("Accuracy", "OPTIONS", "ACCURACY", N, "0.001"),
             o("Head Tolerance", "OPTIONS", "HEADERROR", N, "0"),
@@ -679,59 +661,25 @@ pub fn option_specs(cat: OptionCategory) -> Vec<OptionSpec> {
             ),
             o("Emitter Exponent", "OPTIONS", "EMITTER EXPONENT", N, "0.5"),
             o(
-                "Emitter Backflow",
+                "Emitter Can Backflow",
                 "OPTIONS",
                 "EMITTER BACKFLOW",
                 Choice(&["YES", "NO"]),
                 "YES",
             ),
         ],
-        // The QUALITY keyword packs model, chemical name, units and trace node;
-        // the UI edits it through `quality_parts` / `set_quality_parts`.
-        OptionCategory::Quality => vec![
-            o("Specific Diffusivity", "OPTIONS", "DIFFUSIVITY", N, "1.0"),
-            o("Quality Tolerance", "OPTIONS", "TOLERANCE", N, "0.01"),
-            o("Bulk Reaction Order", "REACTIONS", "ORDER BULK", N, "1"),
-            o(
-                "Wall Reaction Order",
-                "REACTIONS",
-                "ORDER WALL",
-                Choice(&["0", "1"]),
-                "1",
-            ),
-            o("Global Bulk Coeff.", "REACTIONS", "GLOBAL BULK", N, "0"),
-            o("Global Wall Coeff.", "REACTIONS", "GLOBAL WALL", N, "0"),
-            o(
-                "Limiting Concentration",
-                "REACTIONS",
-                "LIMITING POTENTIAL",
-                N,
-                "0",
-            ),
-            o(
-                "Wall Coeff. Correlation",
-                "REACTIONS",
-                "ROUGHNESS CORRELATION",
-                N,
-                "0",
-            ),
-        ],
+        // edited in the Single Species Quality Editor (see `quality_specs`)
+        OptionCategory::Quality => Vec::new(),
         OptionCategory::Times => vec![
-            o("Total Duration", "TIMES", "DURATION", T, "0:00"),
-            o(
-                "Hydraulic Time Step",
-                "TIMES",
-                "HYDRAULIC TIMESTEP",
-                T,
-                "1:00",
-            ),
-            o("Quality Time Step", "TIMES", "QUALITY TIMESTEP", T, "0:05"),
-            o("Pattern Time Step", "TIMES", "PATTERN TIMESTEP", T, "1:00"),
-            o("Pattern Start Time", "TIMES", "PATTERN START", T, "0:00"),
-            o("Reporting Time Step", "TIMES", "REPORT TIMESTEP", T, "1:00"),
-            o("Report Start Time", "TIMES", "REPORT START", T, "0:00"),
-            o("Rule Time Step", "TIMES", "RULE TIMESTEP", T, "0:06"),
-            o("Clock Start Time", "TIMES", "START CLOCKTIME", T, "12 am"),
+            o("Duration", "TIMES", "DURATION", T, "0:00"),
+            o("Hydraulic Step", "TIMES", "HYDRAULIC TIMESTEP", T, "1:00"),
+            o("Quality Step", "TIMES", "QUALITY TIMESTEP", T, "0:05"),
+            o("Pattern Step", "TIMES", "PATTERN TIMESTEP", T, "1:00"),
+            o("Pattern Start", "TIMES", "PATTERN START", T, "0:00"),
+            o("Report Step", "TIMES", "REPORT TIMESTEP", T, "1:00"),
+            o("Report Start", "TIMES", "REPORT START", T, "0:00"),
+            o("Rule Step", "TIMES", "RULE TIMESTEP", T, "0:06"),
+            o("Clock Start", "TIMES", "START CLOCKTIME", T, "0:00"),
             o(
                 "Statistic",
                 "TIMES",
@@ -748,11 +696,47 @@ pub fn option_specs(cat: OptionCategory) -> Vec<OptionSpec> {
                 N,
                 "75",
             ),
-            o("Energy Price / kWh", "ENERGY", "GLOBAL PRICE", N, "0"),
+            o("Energy Price / kwh", "ENERGY", "GLOBAL PRICE", N, "0"),
             o("Price Pattern", "ENERGY", "GLOBAL PATTERN", T, ""),
             o("Demand Charge", "ENERGY", "DEMAND CHARGE", N, "0"),
         ],
     }
+}
+
+/// The single species water quality options of EPANET-UI's Single Species
+/// Quality Editor (besides the QUALITY keyword, which packs model, chemical
+/// name, units and trace node: see `quality_parts` / `set_quality_parts`).
+pub fn quality_specs() -> Vec<OptionSpec> {
+    use PropKind::Choice;
+    vec![
+        o("Quality Tolerance", "OPTIONS", "TOLERANCE", N, "0.01"),
+        o("Bulk Reaction Order", "REACTIONS", "ORDER BULK", N, "1"),
+        o("Tank Reaction Order", "REACTIONS", "ORDER TANK", N, "1"),
+        o(
+            "Wall Reaction Order",
+            "REACTIONS",
+            "ORDER WALL",
+            Choice(&["0", "1"]),
+            "1",
+        ),
+        o(
+            "Limiting Concentration",
+            "REACTIONS",
+            "LIMITING POTENTIAL",
+            N,
+            "0",
+        ),
+        o("Specific Diffusivity", "OPTIONS", "DIFFUSIVITY", N, "1.0"),
+        o("Global Bulk Coeff.", "REACTIONS", "GLOBAL BULK", N, "0"),
+        o("Global Wall Coeff.", "REACTIONS", "GLOBAL WALL", N, "0"),
+        o(
+            "Wall Coeff. Correlation",
+            "REACTIONS",
+            "ROUGHNESS CORRELATION",
+            N,
+            "0",
+        ),
+    ]
 }
 
 /// The QUALITY option split into (model, chemical name, mass units, trace node).

@@ -130,6 +130,17 @@ These need an analysis whose results are up to date (run **Analyze** first).
 | `link_result(id, variable, p)` | `"Flow"`, `"Velocity"`, `"Headloss"`, `"Quality"`, `"Status"`, `"Setting"`, `"Reaction"` or `"Friction"` at period `p` |
 | `node_series(id, variable)`, `link_series(id, variable)` | the values for every period, as an array |
 
+### EPANET-MSX results
+
+When the project has an EPANET-MSX file (**Project > EPANET-MSX**), each
+analysis also computes the concentration of every species it declares.
+
+| Function | Returns |
+|---|---|
+| `msx_species()` | the species IDs, e.g. `["AS3", "AS5", "AStot", "AS5s", "NH2CL"]` (empty without MSX results) |
+| `node_species(id, species, p)` | the concentration of a bulk species at a node at period `p` |
+| `link_species(id, species, p)` | the concentration of a species in a link at period `p` (wall species too) |
+
 ### Showing results
 
 | Function | Effect |

@@ -310,7 +310,7 @@ fn spawn_curve_run(job: &mut CurveJob, ctx: &egui::Context) {
     let net =
         analysis::fire_flow_network(&job.base, Some(job.node), job.flows[job.k], job.fire_time);
     let ctx = ctx.clone();
-    job.run = Some(eui_engine::spawn_run(net.to_inp(), move || {
+    job.run = Some(eui_engine::spawn_run(net.to_inp(), None, move || {
         ctx.request_repaint()
     }));
 }

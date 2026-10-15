@@ -169,6 +169,18 @@ fn period_of(c: &Ctx, p: i64) -> Res<usize> {
     }
 }
 
+/// The EPANET-MSX results and the index of the species named `id`.
+fn msx_species<'a>(c: &'a Ctx, id: &str) -> Res<(&'a eui_core::MsxResults, usize)> {
+    let m = results(c)?
+        .msx
+        .as_ref()
+        .ok_or_else(|| "there are no EPANET-MSX results; load an MSX file and run".to_string())?;
+    let s = m
+        .species_index(id)
+        .ok_or_else(|| format!("unknown species \"{id}\""))?;
+    Ok((m, s))
+}
+
 fn array_of_strings(a: Array) -> Vec<String> {
     a.into_iter().map(|d| d.to_string()).collect()
 }
@@ -346,6 +358,48 @@ fn engine(ctx: Rc<RefCell<Ctx>>) -> Engine {
             .into_iter()
             .map(|x| Dynamic::from_float(x as f64))
             .collect())
+    });
+
+    // ---- EPANET-MSX results ----
+    with!("msx_species", |c| -> Array {
+        c.results
+            .as_ref()
+            .and_then(|r| r.msx.as_ref())
+            .map(|m| {
+                m.species()
+                    .iter()
+                    .map(|s| Dynamic::from(ImmutableString::from(s.id.as_str())))
+                    .collect()
+            })
+            .unwrap_or_default()
+    });
+    with!("node_species", |c,
+                           id: &str,
+                           species: &str,
+                           p: i64|
+     -> Res<f64> {
+        let p = period_of(&c, p)?;
+        let (m, s) = msx_species(&c, species)?;
+        let r = *c
+            .node_rows
+            .get(id)
+            .ok_or_else(|| format!("no results for node \"{id}\""))?;
+        m.node(p, s, r).map(|x| x as f64).ok_or_else(|| {
+            format!("\"{species}\" is a wall species: it has no values at nodes").into()
+        })
+    });
+    with!("link_species", |c,
+                           id: &str,
+                           species: &str,
+                           p: i64|
+     -> Res<f64> {
+        let p = period_of(&c, p)?;
+        let (m, s) = msx_species(&c, species)?;
+        let r = *c
+            .link_rows
+            .get(id)
+            .ok_or_else(|| format!("no results for link \"{id}\""))?;
+        Ok(m.link(p, s, r).unwrap_or(0.0) as f64)
     });
 
     // ---- showing things ----

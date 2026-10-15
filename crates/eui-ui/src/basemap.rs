@@ -1230,7 +1230,7 @@ pub fn georef_dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
     let mut close = false;
     ui.horizontal(|ui| {
         if ui.button("Help").clicked() {
-            ctx.open_url(egui::OpenUrl::new_tab(crate::menu::USER_MANUAL));
+            crate::help::open(&ctx, "Using a Basemap");
         }
         if ui.button("Apply").clicked() {
             match g.method {

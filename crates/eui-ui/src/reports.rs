@@ -603,6 +603,16 @@ fn fmt2(v: f64) -> String {
     crate::style::fmt_fixed(v)
 }
 
+/// A species concentration: these are often far below 0.01, so they are
+/// shown with four significant digits.
+fn fmt_msx(v: f64) -> String {
+    if v == 0.0 || !v.is_finite() {
+        return fmt2(v);
+    }
+    let digits = (3 - v.abs().log10().floor() as i32).clamp(2, 8) as usize;
+    format!("{v:.digits$}")
+}
+
 // ----- tables ---------------------------------------------------------------------------
 
 /// A sortable results grid (EPANET-UI's report tables). `rows[0]` holds the
@@ -767,6 +777,14 @@ fn node_rows(app: &EpanetApp, res: &SimResults) -> Rows {
         };
         head.push(format!("{name}\n{}", res.node_units(*v)));
     }
+    // EPANET-MSX bulk species
+    let species = crate::msx::result_species(Some(res), true);
+    let msx = res.msx.as_ref();
+    for &s in &species {
+        if let Some((id, units)) = crate::msx::species_label(Some(res), s) {
+            head.push(format!("{id}\n{units}"));
+        }
+    }
     let mut rows = vec![head];
     for (i, n) in app.net.nodes.iter().enumerate() {
         let Some(r) = app.node_result_index(i) else {
@@ -775,6 +793,12 @@ fn node_rows(app: &EpanetApp, res: &SimResults) -> Rows {
         let mut row = vec![n.id.clone(), n.kind.label().to_string()];
         for v in &vars {
             row.push(fmt2(res.node_slice(app.period, *v)[r] as f64));
+        }
+        for &s in &species {
+            row.push(
+                msx.and_then(|m| m.node(app.period, s, r))
+                    .map_or_else(String::new, |v| fmt_msx(v as f64)),
+            );
         }
         rows.push(row);
     }
@@ -809,6 +833,16 @@ fn link_rows(app: &EpanetApp, res: &SimResults) -> Rows {
         head.push(format!("{name}\n{}", res.link_units(*v)));
     }
     head.push("Status".into());
+    let species = crate::msx::result_species(Some(res), false);
+    let msx = res.msx.as_ref();
+    for &s in &species {
+        if let Some((id, units)) = crate::msx::species_label(Some(res), s) {
+            head.push(format!(
+                "{id}
+{units}"
+            ));
+        }
+    }
     let mut rows = vec![head];
     for (i, l) in app.net.links.iter().enumerate() {
         let Some(r) = app.link_result_index(i) else {
@@ -819,6 +853,12 @@ fn link_rows(app: &EpanetApp, res: &SimResults) -> Rows {
             row.push(fmt2(res.link_slice(app.period, *v)[r] as f64));
         }
         row.push(link_status(res.link_slice(app.period, LinkVar::Status)[r]).into());
+        for &s in &species {
+            row.push(
+                msx.and_then(|m| m.link(app.period, s, r))
+                    .map_or_else(String::new, |v| fmt_msx(v as f64)),
+            );
+        }
         rows.push(row);
     }
     rows[1..].sort_by_key(|r| match r[1].as_str() {
@@ -1573,9 +1613,55 @@ struct TsData {
     values: Vec<f32>,
 }
 
+/// Where the EPANET-MSX species start among a series' parameters (after
+/// NODE_VARS or LINK_VARS).
+fn ts_base(node: bool) -> usize {
+    if node {
+        NODE_VARS.len()
+    } else {
+        LINK_VARS.len()
+    }
+}
+
+/// The EPANET-MSX species a series of a node (bulk ones) or a link can show:
+/// (species index, ID).
+fn ts_species(res: Option<&SimResults>, node: bool) -> Vec<(usize, String)> {
+    crate::msx::result_species(res, node)
+        .into_iter()
+        .filter_map(|s| crate::msx::species_label(res, s).map(|(id, _)| (s, id)))
+        .collect()
+}
+
 /// The values of a time series curve (None if it has no results).
 fn ts_data(app: &EpanetApp, res: &SimResults, s: &TsSeries) -> Option<TsData> {
-    let (title, units, values) = if s.node {
+    let species = ts_species(Some(res), s.node);
+    let msx = s
+        .var
+        .checked_sub(ts_base(s.node))
+        .map(|k| species.get(k).map(|(sp, _)| *sp));
+    let (title, units, values) = if let Some(sp) = msx {
+        // an EPANET-MSX species
+        let sp = sp?;
+        let m = res.msx.as_ref()?;
+        let (id, units) = crate::msx::species_label(Some(res), sp)?;
+        if s.node {
+            let i = app.net.node_index(&s.id)?;
+            let r = app.node_result_index(i)?;
+            (
+                format!("{} {} {id}", app.net.nodes[i].kind.label(), s.id),
+                units,
+                m.node_series(r, sp),
+            )
+        } else {
+            let i = app.net.link_index(&s.id)?;
+            let r = app.link_result_index(i)?;
+            (
+                format!("{} {} {id}", app.net.links[i].kind.label(), s.id),
+                units,
+                m.link_series(r, sp),
+            )
+        }
+    } else if s.node {
         let i = app.net.node_index(&s.id)?;
         let r = app.node_result_index(i)?;
         let v = NODE_VARS[s.var.min(NODE_VARS.len() - 1)];
@@ -2130,8 +2216,10 @@ fn var_combo(
     var: &mut usize,
     res: Option<&SimResults>,
     max: usize,
+    // offer the EPANET-MSX species (Time Series Report)
+    msx: bool,
 ) {
-    let names: Vec<String> = if node {
+    let mut names: Vec<String> = if node {
         NODE_VARS.iter().map(|v| node_var_label(*v, res)).collect()
     } else {
         LINK_VARS
@@ -2140,6 +2228,9 @@ fn var_combo(
             .map(|v| link_var_label(*v, res))
             .collect()
     };
+    if msx {
+        names.extend(ts_species(res, node).into_iter().map(|(_, id)| id));
+    }
     *var = (*var).min(names.len() - 1);
     egui::ComboBox::from_id_salt(id)
         .selected_text(names[*var].clone())
@@ -2155,8 +2246,15 @@ fn var_combo(
 /// result, else pressure (nodes) or flow (links), as EPANET-UI does.
 fn ts_default_var(app: &EpanetApp, node: bool) -> usize {
     use crate::style::{LinkTheme, NodeTheme};
+    let species = |s: u8| {
+        let k = ts_species(app.results.as_ref(), node)
+            .iter()
+            .position(|(sp, _)| *sp == s as usize)?;
+        Some(ts_base(node) + k)
+    };
     if node {
         match app.prefs.node_theme {
+            NodeTheme::Msx(s) => species(s).unwrap_or(2),
             NodeTheme::Demand => 0,
             NodeTheme::Head => 1,
             NodeTheme::Quality => 3,
@@ -2164,6 +2262,7 @@ fn ts_default_var(app: &EpanetApp, node: bool) -> usize {
         }
     } else {
         match app.prefs.link_theme {
+            LinkTheme::Msx(s) => species(s).unwrap_or(0),
             LinkTheme::Velocity => 1,
             LinkTheme::Headloss => 2,
             LinkTheme::Quality => 3,
@@ -2177,17 +2276,26 @@ fn ts_default_var(app: &EpanetApp, node: bool) -> usize {
 fn ts_title(app: &EpanetApp, s: &TsSeries) -> String {
     let res = app.results.as_ref();
     let id = s.id.trim();
+    let species = s.var.checked_sub(ts_base(s.node)).map(|k| {
+        ts_species(res, s.node)
+            .get(k)
+            .map(|(_, n)| n.clone())
+            .unwrap_or_default()
+    });
     if s.node {
         let Some(i) = app.net.node_index(id) else {
             return String::new();
         };
-        let v = node_var_label(NODE_VARS[s.var.min(NODE_VARS.len() - 1)], res);
+        let v = species
+            .clone()
+            .unwrap_or_else(|| node_var_label(NODE_VARS[s.var.min(NODE_VARS.len() - 1)], res));
         format!("{} {id} {v}", app.net.nodes[i].kind.label())
     } else {
         let Some(i) = app.net.link_index(id) else {
             return String::new();
         };
-        let v = link_var_label(LINK_VARS[s.var.min(LINK_VARS.len() - 1)], res);
+        let v = species
+            .unwrap_or_else(|| link_var_label(LINK_VARS[s.var.min(LINK_VARS.len() - 1)], res));
         format!("{} {id} {v}", app.net.links[i].kind.label())
     }
 }
@@ -2498,6 +2606,7 @@ fn ts_edit_page(app: &mut EpanetApp, ui: &mut Ui) {
                 &mut var,
                 res.as_ref(),
                 LINK_VARS.len(),
+                true,
             );
             e.series.var = var;
             ui.end_row();
@@ -2580,6 +2689,7 @@ fn pc_selector(app: &mut EpanetApp, ui: &mut Ui) {
         &mut var,
         app.results.as_ref(),
         4,
+        false,
     );
     app.rpt.pc_var = var;
     ui.add_space(8.0);
@@ -2660,4 +2770,65 @@ fn pf_selector(app: &mut EpanetApp, ui: &mut Ui) {
             app.rpt.selector = Selector::None;
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// EPANET-MSX species are columns of the Node and Link tables (bulk
+    /// species only for nodes) and parameters of the Time Series Report.
+    #[test]
+    fn msx_species_in_tables_and_time_series() {
+        let (_ctx, app) = crate::msx::tests::example_app_with_results();
+        let res = app.results.as_ref().unwrap();
+        let nodes = node_rows(&app, res);
+        let head: Vec<&str> = nodes[0]
+            .iter()
+            .map(|h| h.split('\n').next().unwrap())
+            .collect();
+        assert!(
+            head.ends_with(&["AS3", "AS5", "AStot", "NH2CL"]),
+            "{head:?}"
+        );
+        let links = link_rows(&app, res);
+        let head: Vec<&str> = links[0]
+            .iter()
+            .map(|h| h.split('\n').next().unwrap())
+            .collect();
+        assert!(
+            head.ends_with(&["Status", "AS3", "AS5", "AStot", "AS5s", "NH2CL"]),
+            "{head:?}"
+        );
+        assert_eq!(nodes[0].last().unwrap(), "NH2CL\nMG/L");
+
+        // the last node parameter of a series is NH2CL
+        let s = TsSeries {
+            node: true,
+            id: "C".into(),
+            var: NODE_VARS.len() + 3,
+            legend: String::new(),
+            right: false,
+        };
+        assert_eq!(ts_title(&app, &s), "Junction C NH2CL");
+        let d = ts_data(&app, res, &s).unwrap();
+        assert_eq!(d.units, "MG/L");
+        assert_eq!(d.values.len(), res.n_periods);
+        assert!(d.values[0] < d.values[d.values.len() / 2] + 2.5);
+        // links also offer the wall species
+        let s = TsSeries {
+            node: false,
+            var: LINK_VARS.len() + 3,
+            id: "5".into(),
+            ..s
+        };
+        assert_eq!(ts_title(&app, &s), "Pipe 5 AS5s");
+        assert!(
+            ts_data(&app, res, &s)
+                .unwrap()
+                .values
+                .iter()
+                .any(|&v| v > 0.0)
+        );
+    }
 }

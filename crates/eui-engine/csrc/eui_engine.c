@@ -5,11 +5,13 @@
  * with Emscripten for the web app (see web-engine/build.sh), so both
  * platforms run the identical engine through the identical entry point.
  */
+#include <locale.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include "epanet2_2.h"
 #include "types.h"
+#include "epanetmsx.h"
 
 /* Energy balance sums, |Q*H*dt| in project units, as accumulated by
  * EPANET-UI's energycalc.pas; EUI_TSUM is the time they cover (s). */
@@ -100,6 +102,7 @@ static void add_energy(EN_Project ph, double preq, double dt, double *e)
  * A non-zero return asks the run to stop. */
 #define EUI_HYDRAULICS 1
 #define EUI_QUALITY 2
+#define EUI_MSX 3
 #define EUI_CANCELLED (-1)
 typedef int (*eui_progress_fn)(int stage, long hour, void *ctx);
 
@@ -175,10 +178,12 @@ static void save_extra(EN_Project p, FILE *f)
  * out, so that the energy balance can be added up at every hydraulic time
  * step as EPANET-UI does (into energy, EUI_ENERGY_SIZE doubles, if not NULL),
  * the results missing from the output file saved at each reporting time
- * (into extraFile, see save_extra, if not NULL) and progress reported to cb
- * (which may be NULL). */
+ * (into extraFile, see save_extra, if not NULL), the hydraulics saved for
+ * EPANET-MSX (into hydFile, if not NULL) and progress reported to cb (which
+ * may be NULL). */
 int eui_run_progress(const char *inpFile, const char *rptFile, const char *outFile,
-                     const char *extraFile, double *energy, eui_progress_fn cb, void *ctx)
+                     const char *extraFile, const char *hydFile,
+                     double *energy, eui_progress_fn cb, void *ctx)
 {
     EN_Project p = NULL;
     FILE *extra = NULL;
@@ -216,6 +221,7 @@ int eui_run_progress(const char *inpFile, const char *rptFile, const char *outFi
         }
         EN_closeH(p);
         if (extra) fclose(extra);
+        if (hydFile && !cancelled && herr <= 100) herr = MAX(herr, EN_savehydfile(p, hydFile));
         herr = MAX(herr, p->Warnflag);
         ERRCODE(herr);
     }
@@ -248,12 +254,55 @@ int eui_run_progress(const char *inpFile, const char *rptFile, const char *outFi
 int eui_run_energy(const char *inpFile, const char *rptFile, const char *outFile,
                    double *energy)
 {
-    return eui_run_progress(inpFile, rptFile, outFile, NULL, energy, NULL, NULL);
+    return eui_run_progress(inpFile, rptFile, outFile, NULL, NULL, energy, NULL, NULL);
 }
 
 int eui_run(const char *inpFile, const char *rptFile, const char *outFile)
 {
     return eui_run_energy(inpFile, rptFile, outFile, NULL);
+}
+
+/* Runs EPANET-MSX on the hydraulics saved by eui_run_progress (hydFile):
+ * reads inpFile and msxFile, writes the MSX binary results to outFile and the
+ * MSX report (with any input errors) to rptFile, and reports progress to cb
+ * (which may be NULL). Returns 0, an EPANET or EPANET-MSX error code, or
+ * EUI_CANCELLED. EPANET-MSX keeps its state in globals, so runs must not
+ * overlap. */
+int eui_run_msx(const char *inpFile, const char *msxFile, const char *hydFile,
+                const char *rptFile, const char *outFile, eui_progress_fn cb, void *ctx)
+{
+    int err, cancelled = 0;
+    long last = -1;
+    double t = 0, tleft = 0;
+
+    err = ENopen(inpFile, rptFile, "");
+    if (err > 100) {
+        ENclose();
+        return err;
+    }
+    /* EPANET switches to the user's number format (for its report), but
+     * EPANET-MSX reads its input with strtod, which needs a decimal point. */
+    setlocale(LC_NUMERIC, "C");
+    err = MSXopen((char *)msxFile);
+    if (!err) err = MSXusehydfile((char *)hydFile);
+    if (!err) err = MSXinit(1);
+    if (!err) do {
+        if (progress(cb, ctx, EUI_MSX, (long)t, &last)) { cancelled = 1; break; }
+        err = MSXstep(&t, &tleft);
+    } while (tleft > 0 && !err);
+    if (!err && !cancelled) err = MSXsaveoutfile((char *)outFile);
+    if (!err && !cancelled) err = MSXreport();
+    MSXclose();
+    ENclose();
+    return cancelled ? EUI_CANCELLED : err;
+}
+
+/* Copies the text of an EPANET-MSX error code into msg (at least 256 bytes). */
+void eui_msx_error_message(int code, char *msg)
+{
+    msg[0] = '\0';
+    if (code > 500) MSXgeterror(code, msg, 255);
+    else EN_geterror(code, msg, 255);
 }
 
 /* Changes a project's units or head loss formula the way EPANET does it

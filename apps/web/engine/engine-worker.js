@@ -8,7 +8,7 @@ function engine() {
 }
 
 self.onmessage = async (e) => {
-  const { id, inp } = e.data;
+  const { id, inp, msx } = e.data;
   try {
     const M = await engine();
     const dir = '/run' + id;
@@ -38,14 +38,17 @@ self.onmessage = async (e) => {
     }
     // Progress (stage, hour) from inside the engine (eui_js_progress in eui_engine.c).
     self.euiProgress = (stage, hour) => self.postMessage({ id, progress: [stage, hour] });
+    // EPANET-MSX reads the hydraulics the EPANET run saves (net.hyd).
+    const hasMsx = msx !== undefined && msx !== null;
+    if (hasMsx) M.FS.writeFile('net.msx', new TextEncoder().encode(msx));
     // Energy balance sums (9 doubles) added up at every hydraulic time step.
     const ENERGY_SIZE = 9;
     const ptr = M._malloc(8 * ENERGY_SIZE);
     let code, energy;
     try {
       code = M.ccall('eui_run_progress', 'number',
-        ['string', 'string', 'string', 'string', 'number', 'number', 'number'],
-        ['net.inp', 'net.rpt', 'net.out', 'net.ext', ptr, 0, 0]);
+        ['string', 'string', 'string', 'string', 'string', 'number', 'number', 'number'],
+        ['net.inp', 'net.rpt', 'net.out', 'net.ext', hasMsx ? 'net.hyd' : null, ptr, 0, 0]);
       energy = code >= 100 ? null : new Float64Array(M.HEAPF64.buffer, ptr, ENERGY_SIZE).slice();
     } finally {
       M._free(ptr);
@@ -53,8 +56,25 @@ self.onmessage = async (e) => {
     const report = read('net.rpt', { encoding: 'utf8' }) || '';
     const out = code >= 100 ? new Uint8Array(0) : (read('net.out') || new Uint8Array(0));
     const extra = code >= 100 ? new Uint8Array(0) : (read('net.ext') || new Uint8Array(0));
+    // EPANET-MSX: eui_run_msx in eui_engine.c.
+    let msxOut = new Uint8Array(0), msxCode = 0, msxReport = '', msxMessage = '';
+    if (hasMsx && code < 100) {
+      msxCode = M.ccall('eui_run_msx', 'number',
+        ['string', 'string', 'string', 'string', 'string', 'number', 'number'],
+        ['net.inp', 'net.msx', 'net.hyd', 'msx.rpt', 'msx.out', 0, 0]);
+      msxReport = read('msx.rpt', { encoding: 'utf8' }) || '';
+      if (msxCode === 0) {
+        msxOut = read('msx.out') || msxOut;
+      } else {
+        const msg = M._malloc(256);
+        M.ccall('eui_msx_error_message', null, ['number', 'number'], [msxCode, msg]);
+        msxMessage = M.UTF8ToString(msg);
+        M._free(msg);
+      }
+    }
     cleanup();
-    self.postMessage({ id, result: { code, report, out, energy, extra } }, [out.buffer, extra.buffer]);
+    self.postMessage({ id, result: { code, report, out, energy, extra, msx: msxOut, msxCode, msxReport, msxMessage } },
+      [out.buffer, extra.buffer, msxOut.buffer]);
   } catch (err) {
     self.postMessage({ id, error: String(err && err.message || err) });
   }
