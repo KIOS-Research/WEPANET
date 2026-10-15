@@ -173,6 +173,25 @@ fn tool_button(
     active: bool,
     tip: &str,
 ) -> Response {
+    tool_button_with(
+        ui,
+        |p, c, fg| icons::paint(p, icon, c, 24.0, fg),
+        caption,
+        enabled,
+        active,
+        tip,
+    )
+}
+
+/// A toolbar button whose icon `paint` draws (centred at the given point).
+fn tool_button_with(
+    ui: &mut Ui,
+    paint: impl FnOnce(&egui::Painter, egui::Pos2, Color32),
+    caption: &str,
+    enabled: bool,
+    active: bool,
+    tip: &str,
+) -> Response {
     let (caption, dropdown) = match caption.strip_suffix(" ▾") {
         Some(c) => (c, true),
         None => (caption, false),
@@ -208,7 +227,7 @@ fn tool_button(
         p.rect_filled(rect, 0.0, Color32::from_rgb(0xe3, 0xf0, 0xfc));
     }
     let body_x = rect.center().x - if dropdown { 9.0 } else { 0.0 };
-    icons::paint(p, icon, pos2(body_x, rect.top() + 20.0), 24.0, fg);
+    paint(p, pos2(body_x, rect.top() + 20.0), fg);
     p.text(
         pos2(body_x, rect.bottom() - 11.0),
         Align2::CENTER_CENTER,
@@ -609,6 +628,19 @@ fn project_toolbar(app: &mut EpanetApp, ui: &mut Ui) {
 /// Elad Salomons' EPANET plugins (see `plugins.rs`).
 fn plugins_toolbar(app: &mut EpanetApp, ui: &mut Ui) {
     let has_net = !app.net.nodes.is_empty();
+    if tool_button(
+        ui,
+        Icon::Setup,
+        "Manage Plugins",
+        true,
+        false,
+        "Install, upgrade and remove plugins (also from a file)",
+    )
+    .clicked()
+    {
+        app.dialog = Dialog::PluginManager;
+    }
+    separator(ui);
     let count = tool_button(
         ui,
         Icon::Summary,
@@ -666,27 +698,27 @@ fn plugins_toolbar(app: &mut EpanetApp, ui: &mut Ui) {
             .open_url(egui::OpenUrl::new_tab(crate::plugins::PLUGINS_REPO));
     }
     // User plugins (Rhai scripts, see docs/plugins.md)
-    separator(ui);
-    if tool_button(
-        ui,
-        Icon::Open,
-        "Load Plugin",
-        true,
-        false,
-        "Load a plugin script (.rhai); see docs/plugins.md to write one",
-    )
-    .clicked()
-    {
-        let ctx = ui.ctx().clone();
-        crate::scripting::load(app, &ctx);
+    if !app.scripts.plugins.is_empty() {
+        separator(ui);
     }
     for p in app.scripts.plugins.clone() {
+        if app.prefs.disabled_plugins.contains(&p.name) {
+            continue;
+        }
         let tip = if p.description.is_empty() {
             format!("{} ({})", p.name, p.file)
         } else {
             format!("{}\n{}", p.description, p.file)
         };
-        let b = tool_button(ui, Icon::Setup, &format!("{} ▾", p.name), true, false, &tip);
+        let tex = crate::plugin_manager::installed_icon(app, &ui.ctx().clone(), &p.name);
+        let b = tool_button_with(
+            ui,
+            |pt, c, fg| crate::plugin_manager::paint_icon(pt, tex, c, 28.0, fg),
+            &format!("{} ▾", p.name),
+            true,
+            false,
+            &tip,
+        );
         dropdown(&b, |ui| {
             for item in &p.menu {
                 if icons::menu_item(ui, Icon::Analyze, item, true).clicked() {

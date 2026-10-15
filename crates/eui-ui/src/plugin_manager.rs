@@ -1,0 +1,1344 @@
+//! The Plugin Manager (Plugins > Manage Plugins), after QGIS's: plugins are
+//! offered by repositories — XML files listing each plugin's name, version,
+//! description and Rhai script — read from their URLs. WEPANET's own
+//! repository is `plugins/plugins.xml` of this project; any other can be
+//! added by its URL. Plugins can be installed, upgraded when a repository has
+//! a newer version, and uninstalled.
+//!
+//! ```xml
+//! <plugins>
+//!   <plugin name="Dead Ends" version="1.0">
+//!     <description>Junctions connected to a single link</description>
+//!     <author>WEPANET</author>
+//!     <file>examples/dead_ends.rhai</file>   <!-- a URL, or relative to the XML -->
+//!     <tags>network</tags>
+//!     <homepage>https://…</homepage>
+//!   </plugin>
+//! </plugins>
+//! ```
+
+use std::cmp::Ordering;
+use std::sync::{Arc, Mutex};
+
+use egui::{Color32, RichText, Ui};
+use serde::{Deserialize, Serialize};
+
+use crate::app::EpanetApp;
+use crate::icons::{self, Icon};
+
+const HELP: &str = "https://github.com/KIOS-Research/WEPANET/blob/main/docs/plugins.md";
+
+/// WEPANET's own plugin repository.
+pub const DEFAULT_REPOSITORY: &str =
+    "https://raw.githubusercontent.com/KIOS-Research/WEPANET/main/plugins/plugins.xml";
+
+/// The repository as it was when this version of WEPANET was built: always
+/// offered, so plugins can be installed offline too. An online repository
+/// with a higher version of a plugin offers it as an upgrade.
+const BUILTIN_XML: &str = include_str!("../../../plugins/plugins.xml");
+const BUILTIN_BASE: &str = "builtin:/plugins.xml";
+const BUILTIN_NAME: &str = "Built into WEPANET";
+/// The scripts `plugins/plugins.xml` lists, by their path there.
+pub(crate) const BUILTIN: &[(&str, &str)] = &[
+    (
+        "examples/count.rhai",
+        include_str!("../../../plugins/examples/count.rhai"),
+    ),
+    (
+        "examples/network_stats.rhai",
+        include_str!("../../../plugins/examples/network_stats.rhai"),
+    ),
+    (
+        "examples/pipe_summary.rhai",
+        include_str!("../../../plugins/examples/pipe_summary.rhai"),
+    ),
+    (
+        "examples/dead_ends.rhai",
+        include_str!("../../../plugins/examples/dead_ends.rhai"),
+    ),
+    (
+        "examples/low_pressure.rhai",
+        include_str!("../../../plugins/examples/low_pressure.rhai"),
+    ),
+    (
+        "examples/high_velocity.rhai",
+        include_str!("../../../plugins/examples/high_velocity.rhai"),
+    ),
+];
+
+fn builtin_offers() -> Vec<Offer> {
+    parse_repository(BUILTIN_XML, BUILTIN_BASE, BUILTIN_NAME).unwrap_or_default()
+}
+
+/// Their icons.
+const BUILTIN_ICONS: &[(&str, &[u8])] = &[
+    (
+        "examples/icons/count.png",
+        include_bytes!("../../../plugins/examples/icons/count.png"),
+    ),
+    (
+        "examples/icons/network_stats.png",
+        include_bytes!("../../../plugins/examples/icons/network_stats.png"),
+    ),
+    (
+        "examples/icons/pipe_summary.png",
+        include_bytes!("../../../plugins/examples/icons/pipe_summary.png"),
+    ),
+    (
+        "examples/icons/dead_ends.png",
+        include_bytes!("../../../plugins/examples/icons/dead_ends.png"),
+    ),
+    (
+        "examples/icons/low_pressure.png",
+        include_bytes!("../../../plugins/examples/icons/low_pressure.png"),
+    ),
+    (
+        "examples/icons/high_velocity.png",
+        include_bytes!("../../../plugins/examples/icons/high_velocity.png"),
+    ),
+];
+
+/// The script of a built-in offer (`builtin:/examples/…`).
+fn builtin_source(url: &str) -> Option<&'static str> {
+    let path = url.strip_prefix("builtin:/")?;
+    BUILTIN.iter().find(|(f, _)| *f == path).map(|(_, s)| *s)
+}
+
+fn builtin_icon(url: &str) -> Option<&'static [u8]> {
+    let path = url.strip_prefix("builtin:/")?;
+    BUILTIN_ICONS
+        .iter()
+        .find(|(f, _)| *f == path)
+        .map(|(_, b)| *b)
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Repository {
+    pub name: String,
+    pub url: String,
+    pub enabled: bool,
+}
+
+pub fn default_repositories() -> Vec<Repository> {
+    vec![Repository {
+        name: "WEPANET Plugins".into(),
+        url: DEFAULT_REPOSITORY.into(),
+        enabled: true,
+    }]
+}
+
+/// A plugin a repository offers.
+#[derive(Clone, Debug, PartialEq)]
+struct Offer {
+    name: String,
+    version: String,
+    description: String,
+    author: String,
+    tags: String,
+    homepage: String,
+    /// The script's URL.
+    url: String,
+    /// The icon's URL (PNG), if the plugin has one.
+    icon: String,
+    repository: String,
+}
+
+enum Reply {
+    Repository {
+        url: String,
+        result: Result<Vec<Offer>, String>,
+    },
+    Plugin {
+        offer: Offer,
+        result: Result<String, String>,
+    },
+    Icon {
+        url: String,
+        bytes: Option<Vec<u8>>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+enum Tab {
+    #[default]
+    All,
+    Installed,
+    NotInstalled,
+    Upgradeable,
+    Settings,
+}
+
+#[derive(Default)]
+pub struct ManagerState {
+    offers: Vec<Offer>,
+    /// Per repository URL: number of plugins, or the error reading it.
+    read: Vec<(String, Result<usize, String>)>,
+    pending: usize,
+    synced: bool,
+    tab: Tab,
+    selected: Option<String>,
+    filter: String,
+    /// Plugins being downloaded.
+    installing: Vec<String>,
+    message: Option<(bool, String)>,
+    new_name: String,
+    new_url: String,
+    inbox: Arc<Mutex<Vec<Reply>>>,
+    /// Offered plugins' icons by URL (None: asked for, or could not be read).
+    icons: std::collections::HashMap<String, Option<Vec<u8>>>,
+    /// Decoded icons, by URL or by `installed:` + plugin name.
+    textures: std::collections::HashMap<String, Option<egui::TextureHandle>>,
+}
+
+// ----- repositories -------------------------------------------------------------
+
+/// `file` as a URL: as it is, or relative to the repository's XML.
+fn resolve(base: &str, file: &str) -> String {
+    let file = file.trim();
+    if file.contains("://") {
+        return file.to_string();
+    }
+    let dir = base.rsplit_once('/').map_or(base, |(d, _)| d);
+    format!(
+        "{dir}/{}",
+        file.trim_start_matches("./").replace(' ', "%20")
+    )
+}
+
+fn parse_repository(xml: &str, url: &str, repository: &str) -> Result<Vec<Offer>, String> {
+    let doc = roxmltree::Document::parse(xml).map_err(|e| format!("not a plugin list: {e}"))?;
+    let root = doc.root_element();
+    if root.tag_name().name() != "plugins" {
+        return Err("not a plugin list (no <plugins> element)".into());
+    }
+    let mut out = Vec::new();
+    for p in root.children().filter(|n| n.has_tag_name("plugin")) {
+        let child = |tag: &str| {
+            p.children()
+                .find(|n| n.has_tag_name(tag))
+                .and_then(|n| n.text())
+                .map(|t| t.trim().to_string())
+                .unwrap_or_default()
+        };
+        let name = p.attribute("name").map(str::trim).unwrap_or_default();
+        let file = child("file");
+        if name.is_empty() || file.is_empty() {
+            continue;
+        }
+        out.push(Offer {
+            name: name.to_string(),
+            version: p.attribute("version").unwrap_or("").trim().to_string(),
+            description: child("description"),
+            author: child("author"),
+            tags: child("tags"),
+            homepage: child("homepage"),
+            url: resolve(url, &file),
+            icon: match child("icon") {
+                i if i.is_empty() => String::new(),
+                i => resolve(url, &i),
+            },
+            repository: repository.to_string(),
+        });
+    }
+    Ok(out)
+}
+
+/// Compares versions part by part, numerically where they are numbers.
+fn version_cmp(a: &str, b: &str) -> Ordering {
+    let parts =
+        |v: &str| -> Vec<String> { v.trim().split(['.', '-']).map(str::to_string).collect() };
+    let (pa, pb) = (parts(a), parts(b));
+    for k in 0..pa.len().max(pb.len()) {
+        let x = pa.get(k).map_or("0", String::as_str);
+        let y = pb.get(k).map_or("0", String::as_str);
+        let o = match (x.parse::<u64>(), y.parse::<u64>()) {
+            (Ok(x), Ok(y)) => x.cmp(&y),
+            _ => x.cmp(y),
+        };
+        if o != Ordering::Equal {
+            return o;
+        }
+    }
+    Ordering::Equal
+}
+
+fn fetch(
+    app: &EpanetApp,
+    ctx: &egui::Context,
+    url: String,
+    done: impl FnOnce(Result<String, String>) -> Reply + Send + 'static,
+) {
+    let inbox = app.plugin_manager.inbox.clone();
+    let ctx = ctx.clone();
+    ehttp::fetch(ehttp::Request::get(&url), move |res| {
+        let text = match res {
+            Ok(r) if r.ok => Ok(crate::io::decode_text(&r.bytes)),
+            Ok(r) => Err(format!("{} {}", r.status, r.status_text)),
+            Err(e) => Err(e),
+        };
+        if let Ok(mut q) = inbox.lock() {
+            q.push(done(text));
+        }
+        ctx.request_repaint();
+    });
+}
+
+/// Reads every enabled repository again.
+fn sync(app: &mut EpanetApp, ctx: &egui::Context) {
+    let m = &mut app.plugin_manager;
+    m.synced = true;
+    m.offers = builtin_offers();
+    m.read.clear();
+    m.message = None;
+    let repos: Vec<Repository> = app
+        .prefs
+        .plugin_repos
+        .iter()
+        .filter(|r| r.enabled)
+        .cloned()
+        .collect();
+    app.plugin_manager.pending = repos.len();
+    for r in repos {
+        let url = r.url.trim().to_string();
+        let name = r.name.clone();
+        let u = url.clone();
+        fetch(app, ctx, url, move |text| Reply::Repository {
+            url: u.clone(),
+            result: text.and_then(|xml| parse_repository(&xml, &u, &name)),
+        });
+    }
+}
+
+fn install(app: &mut EpanetApp, ctx: &egui::Context, offer: &Offer) {
+    if app.plugin_manager.installing.contains(&offer.name) {
+        return;
+    }
+    app.plugin_manager.installing.push(offer.name.clone());
+    let o = offer.clone();
+    if let Some(src) = builtin_source(&offer.url) {
+        if let Ok(mut q) = app.plugin_manager.inbox.lock() {
+            q.push(Reply::Plugin {
+                offer: o,
+                result: Ok(src.to_string()),
+            });
+        }
+        return;
+    }
+    fetch(app, ctx, offer.url.clone(), move |text| Reply::Plugin {
+        offer: o,
+        result: text,
+    });
+}
+
+/// Asks for the icons of the offered plugins not read yet.
+fn fetch_icons(app: &mut EpanetApp, ctx: &egui::Context) {
+    let wanted: Vec<String> = app
+        .plugin_manager
+        .offers
+        .iter()
+        .map(|o| o.icon.clone())
+        .filter(|u| !u.is_empty() && !app.plugin_manager.icons.contains_key(u))
+        .collect();
+    for url in wanted {
+        if let Some(b) = builtin_icon(&url) {
+            app.plugin_manager.icons.insert(url, Some(b.to_vec()));
+            continue;
+        }
+        app.plugin_manager.icons.insert(url.clone(), None);
+        let inbox = app.plugin_manager.inbox.clone();
+        let ctx = ctx.clone();
+        ehttp::fetch(ehttp::Request::get(&url), move |res| {
+            let bytes = res.ok().filter(|r| r.ok).map(|r| r.bytes);
+            if let Ok(mut q) = inbox.lock() {
+                q.push(Reply::Icon { url, bytes });
+            }
+            ctx.request_repaint();
+        });
+    }
+}
+
+/// Keeps the icon of an installed plugin with it (so it shows offline too).
+fn keep_icon(app: &mut EpanetApp, name: &str, icon_url: &str) {
+    let bytes = app.plugin_manager.icons.get(icon_url).cloned().flatten();
+    match bytes {
+        Some(b) => {
+            app.prefs.plugin_icons.insert(name.to_string(), b);
+        }
+        None => {
+            app.prefs.plugin_icons.remove(name);
+        }
+    }
+    app.plugin_manager
+        .textures
+        .remove(&format!("installed:{name}"));
+}
+
+fn texture(
+    app: &mut EpanetApp,
+    ctx: &egui::Context,
+    key: String,
+    bytes: Option<&[u8]>,
+) -> Option<egui::TextureId> {
+    if let Some(t) = app.plugin_manager.textures.get(&key) {
+        return t.as_ref().map(|t| t.id());
+    }
+    let bytes = bytes?;
+    let t = image::load_from_memory(bytes).ok().map(|img| {
+        let img = img.to_rgba8();
+        let size = [img.width() as usize, img.height() as usize];
+        let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
+        ctx.load_texture(
+            format!("plugin-icon {key}"),
+            color,
+            egui::TextureOptions::LINEAR,
+        )
+    });
+    let id = t.as_ref().map(|t| t.id());
+    app.plugin_manager.textures.insert(key, t);
+    id
+}
+
+/// The icon of an installed plugin, if its author gave it one.
+pub(crate) fn installed_icon(
+    app: &mut EpanetApp,
+    ctx: &egui::Context,
+    name: &str,
+) -> Option<egui::TextureId> {
+    let bytes = app.prefs.plugin_icons.get(name).cloned();
+    texture(app, ctx, format!("installed:{name}"), bytes.as_deref())
+}
+
+/// The icon of a row of the list: the repository's, else the installed one's.
+fn row_icon(app: &mut EpanetApp, ctx: &egui::Context, r: &Row) -> Option<egui::TextureId> {
+    if let Some(o) = &r.offer
+        && !o.icon.is_empty()
+    {
+        let bytes = app.plugin_manager.icons.get(&o.icon).cloned().flatten();
+        if let Some(t) = texture(app, ctx, o.icon.clone(), bytes.as_deref()) {
+            return Some(t);
+        }
+    }
+    installed_icon(app, ctx, &r.name)
+}
+
+/// Draws a plugin icon (or the default plugin icon) centred at `c`.
+pub(crate) fn paint_icon(
+    p: &egui::Painter,
+    tex: Option<egui::TextureId>,
+    c: egui::Pos2,
+    size: f32,
+    fg: Color32,
+) {
+    match tex {
+        Some(t) => {
+            p.image(
+                t,
+                egui::Rect::from_center_size(c, egui::vec2(size, size)),
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                Color32::WHITE,
+            );
+        }
+        None => icons::paint(p, Icon::Setup, c, size, fg),
+    }
+}
+
+fn uninstall(app: &mut EpanetApp, name: &str) {
+    crate::scripting::remove(app, name);
+    app.prefs.plugin_versions.remove(name);
+    app.prefs.disabled_plugins.remove(name);
+    app.prefs.plugin_icons.remove(name);
+    app.plugin_manager
+        .textures
+        .remove(&format!("installed:{name}"));
+    app.plugin_manager.message = Some((true, format!("\"{name}\" was uninstalled.")));
+}
+
+fn poll(app: &mut EpanetApp) {
+    let replies: Vec<Reply> = app
+        .plugin_manager
+        .inbox
+        .lock()
+        .map(|mut q| std::mem::take(&mut *q))
+        .unwrap_or_default();
+    for r in replies {
+        match r {
+            Reply::Repository { url, result } => {
+                let m = &mut app.plugin_manager;
+                m.pending = m.pending.saturating_sub(1);
+                match result {
+                    Ok(offers) => {
+                        m.read.push((url, Ok(offers.len())));
+                        for o in offers {
+                            // the first repository to offer a name wins, unless a later one is newer
+                            match m.offers.iter_mut().find(|x| x.name == o.name) {
+                                Some(x) if version_cmp(&o.version, &x.version).is_gt() => *x = o,
+                                Some(_) => {}
+                                None => m.offers.push(o),
+                            }
+                        }
+                        m.offers.sort_by_key(|o| o.name.to_ascii_lowercase());
+                    }
+                    Err(e) => m.read.push((url, Err(e))),
+                }
+            }
+            Reply::Plugin { offer, result } => {
+                app.plugin_manager.installing.retain(|n| n != &offer.name);
+                let file = offer
+                    .url
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or("plugin.rhai")
+                    .to_string();
+                let outcome = result.and_then(|src| crate::scripting::install(app, &file, &src));
+                app.plugin_manager.message = Some(match outcome {
+                    Ok(name) => {
+                        app.prefs
+                            .plugin_versions
+                            .insert(name.clone(), offer.version.clone());
+                        keep_icon(app, &name, &offer.icon);
+                        app.status = format!("Plugin \"{name}\" {} installed", offer.version);
+                        (
+                            true,
+                            format!(
+                                "\"{name}\" {} was installed: it is on the Plugins toolbar.",
+                                offer.version
+                            ),
+                        )
+                    }
+                    Err(e) => (false, format!("Could not install \"{}\": {e}", offer.name)),
+                });
+            }
+            Reply::Icon { url, bytes } => {
+                app.plugin_manager.icons.insert(url.clone(), bytes);
+                app.plugin_manager.textures.remove(&url);
+                // a plugin installed before its icon arrived
+                let late: Vec<String> = app
+                    .plugin_manager
+                    .offers
+                    .iter()
+                    .filter(|o| o.icon == url && !app.prefs.plugin_icons.contains_key(&o.name))
+                    .map(|o| o.name.clone())
+                    .filter(|n| app.prefs.plugin_versions.contains_key(n))
+                    .collect();
+                for n in late {
+                    keep_icon(app, &n, &url);
+                }
+            }
+        }
+    }
+}
+
+// ----- the window (laid out as QGIS's Plugins dialog) ----------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum State {
+    NotInstalled,
+    Installed,
+    Upgradeable,
+}
+
+fn state(app: &EpanetApp, installed: &[String], o: &Offer) -> State {
+    if !installed.contains(&o.name) {
+        return State::NotInstalled;
+    }
+    match app.prefs.plugin_versions.get(&o.name) {
+        Some(v) if version_cmp(&o.version, v).is_le() => State::Installed,
+        // newer, or installed from a file (version unknown)
+        _ => State::Upgradeable,
+    }
+}
+
+/// A row of the list: a repository's offer, or an installed plugin no
+/// repository offers (loaded from a file).
+struct Row {
+    name: String,
+    offer: Option<Offer>,
+    state: State,
+}
+
+fn rows(app: &EpanetApp) -> Vec<Row> {
+    let installed = crate::scripting::installed(app);
+    let mut rows: Vec<Row> = app
+        .plugin_manager
+        .offers
+        .iter()
+        .map(|o| Row {
+            name: o.name.clone(),
+            offer: Some(o.clone()),
+            state: state(app, &installed, o),
+        })
+        .collect();
+    for n in installed {
+        if !rows.iter().any(|r| r.name == n) {
+            rows.push(Row {
+                name: n,
+                offer: None,
+                state: State::Installed,
+            });
+        }
+    }
+    rows.sort_by_key(|r| r.name.to_ascii_lowercase());
+    rows
+}
+
+const SIDEBAR_W: f32 = 168.0;
+const BODY_H: f32 = 330.0;
+/// Width of the page right of the sidebar.
+const PAGE_W: f32 = 600.0;
+const LIST_W: f32 = 220.0;
+
+/// One entry of the sidebar; true when clicked.
+fn side_item(ui: &mut Ui, icon: Icon, label: &str, selected: bool) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(SIDEBAR_W, 36.0), egui::Sense::click());
+    let fg = Color32::from_gray(235);
+    if selected {
+        ui.painter().rect_filled(rect, 0.0, Color32::from_gray(40));
+    } else if resp.hovered() {
+        ui.painter().rect_filled(rect, 0.0, Color32::from_gray(80));
+    }
+    icons::paint(
+        ui.painter(),
+        icon,
+        rect.left_center() + egui::vec2(20.0, 0.0),
+        22.0,
+        fg,
+    );
+    ui.painter().text(
+        rect.left_center() + egui::vec2(42.0, 0.0),
+        egui::Align2::LEFT_CENTER,
+        label,
+        egui::FontId::proportional(13.5),
+        fg,
+    );
+    resp.clicked()
+}
+
+pub fn dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
+    let ctx = ui.ctx().clone();
+    poll(app);
+    fetch_icons(app, &ctx);
+    if !app.plugin_manager.synced {
+        sync(app, &ctx);
+    }
+    let all = rows(app);
+    let upgradeable = all.iter().filter(|r| r.state == State::Upgradeable).count();
+    if app.plugin_manager.tab == Tab::Upgradeable && upgradeable == 0 {
+        app.plugin_manager.tab = Tab::All;
+    }
+    let mut close = false;
+    ui.horizontal_top(|ui| {
+        // ---- sidebar ----
+        let (side, _) =
+            ui.allocate_exact_size(egui::vec2(SIDEBAR_W, BODY_H + 44.0), egui::Sense::hover());
+        ui.painter().rect_filled(side, 0.0, Color32::from_gray(64));
+        let mut side_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(side)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        side_ui.spacing_mut().item_spacing.y = 0.0;
+        let tab = app.plugin_manager.tab;
+        let mut items = vec![
+            (Tab::All, Icon::Summary, format!("All ({})", all.len())),
+            (
+                Tab::Installed,
+                Icon::Setup,
+                format!(
+                    "Installed ({})",
+                    all.iter()
+                        .filter(|r| r.state != State::NotInstalled)
+                        .count()
+                ),
+            ),
+            (
+                Tab::NotInstalled,
+                Icon::Import,
+                format!(
+                    "Not installed ({})",
+                    all.iter()
+                        .filter(|r| r.state == State::NotInstalled)
+                        .count()
+                ),
+            ),
+        ];
+        if upgradeable > 0 {
+            items.push((
+                Tab::Upgradeable,
+                Icon::Redo,
+                format!("Upgradeable ({upgradeable})"),
+            ));
+        }
+        for (t, icon, label) in items {
+            if side_item(&mut side_ui, icon, &label, tab == t) {
+                app.plugin_manager.tab = t;
+            }
+        }
+        if side_item(&mut side_ui, Icon::Open, "Install from File", false) {
+            crate::scripting::load(app, &ctx);
+        }
+        if side_item(
+            &mut side_ui,
+            Icon::Settings,
+            "Settings",
+            tab == Tab::Settings,
+        ) {
+            app.plugin_manager.tab = Tab::Settings;
+        }
+        ui.add_space(8.0);
+        // ---- page ----
+        ui.vertical(|ui| {
+            ui.set_width(PAGE_W);
+            if app.plugin_manager.tab == Tab::Settings {
+                ui.set_min_height(BODY_H);
+                settings(app, ui, &ctx);
+            } else {
+                list(app, ui, &ctx, all);
+            }
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                status_line(app, ui);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(egui::Button::new("Close").min_size(egui::vec2(80.0, 26.0)))
+                        .clicked()
+                    {
+                        close = true;
+                    }
+                    if ui
+                        .add(egui::Button::new("Help").min_size(egui::vec2(80.0, 26.0)))
+                        .clicked()
+                    {
+                        ui.ctx().open_url(egui::OpenUrl::new_tab(HELP));
+                    }
+                });
+            });
+        });
+    });
+    close
+}
+
+fn status_line(app: &EpanetApp, ui: &mut Ui) {
+    let m = &app.plugin_manager;
+    let red = Color32::from_rgb(0xc0, 0x30, 0x30);
+    if m.pending > 0 {
+        ui.spinner();
+        ui.label("Reading the repositories…");
+    } else if let Some((ok, text)) = &m.message {
+        ui.label(RichText::new(text).color(if *ok { ui.visuals().text_color() } else { red }));
+    } else {
+        let failed = m.read.iter().filter(|(_, r)| r.is_err()).count();
+        if failed > 0 {
+            ui.label(
+                RichText::new(format!(
+                    "Could not read {failed} repositories (see Settings)"
+                ))
+                .color(red),
+            )
+            .on_hover_text("The plugins built into WEPANET are offered all the same");
+        }
+    }
+}
+
+fn list(app: &mut EpanetApp, ui: &mut Ui, ctx: &egui::Context, all: Vec<Row>) {
+    let tab = app.plugin_manager.tab;
+    ui.add(
+        egui::TextEdit::singleline(&mut app.plugin_manager.filter)
+            .desired_width(f32::INFINITY)
+            .hint_text("🔍 Search name, description or tag…"),
+    );
+    ui.add_space(6.0);
+    let filter = app.plugin_manager.filter.trim().to_ascii_lowercase();
+    let shown: Vec<&Row> = all
+        .iter()
+        .filter(|r| match tab {
+            Tab::Installed => r.state != State::NotInstalled,
+            Tab::NotInstalled => r.state == State::NotInstalled,
+            Tab::Upgradeable => r.state == State::Upgradeable,
+            _ => true,
+        })
+        .filter(|r| {
+            filter.is_empty()
+                || r.name.to_ascii_lowercase().contains(&filter)
+                || r.offer.as_ref().is_some_and(|o| {
+                    o.description.to_ascii_lowercase().contains(&filter)
+                        || o.tags.to_ascii_lowercase().contains(&filter)
+                })
+        })
+        .collect();
+    if app
+        .plugin_manager
+        .selected
+        .as_ref()
+        .is_none_or(|s| !shown.iter().any(|r| &r.name == s))
+    {
+        app.plugin_manager.selected = shown.first().map(|r| r.name.clone());
+    }
+    let selected = shown
+        .iter()
+        .find(|r| app.plugin_manager.selected.as_deref() == Some(&r.name));
+    let mut act: Option<(bool, String)> = None; // (install, name)
+    let list_h = BODY_H - 40.0;
+    ui.horizontal_top(|ui| {
+        // ---- the list ----
+        egui::Frame::NONE
+            .stroke(egui::Stroke::new(1.0, Color32::from_gray(170)))
+            .fill(ui.visuals().extreme_bg_color)
+            .show(ui, |ui| {
+                ui.set_width(LIST_W);
+                egui::ScrollArea::vertical()
+                    .id_salt("plugin_list")
+                    .max_height(list_h)
+                    .min_scrolled_height(list_h)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
+                            ui.spacing_mut().item_spacing.y = 0.0;
+                            if shown.is_empty() {
+                                ui.label(RichText::new("  No plugins here.").weak());
+                            }
+                            for (k, r) in shown.iter().enumerate() {
+                                plugin_row(app, ui, r, k);
+                            }
+                        });
+                    });
+            });
+        // ---- the selected plugin ----
+        egui::Frame::NONE
+            .stroke(egui::Stroke::new(1.0, Color32::from_gray(170)))
+            .fill(ui.visuals().extreme_bg_color)
+            .inner_margin(10)
+            .show(ui, |ui| {
+                ui.set_width(PAGE_W - LIST_W - 30.0);
+                ui.set_height(list_h - 20.0);
+                ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                    if let Some(r) = selected {
+                        details(app, ui, r);
+                    }
+                });
+            });
+    });
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        let upgrades: Vec<&Offer> = all
+            .iter()
+            .filter(|r| r.state == State::Upgradeable)
+            .filter_map(|r| r.offer.as_ref())
+            .collect();
+        if ui
+            .add_enabled(!upgrades.is_empty(), egui::Button::new("Upgrade All"))
+            .clicked()
+        {
+            for o in upgrades.into_iter().cloned().collect::<Vec<_>>() {
+                install(app, ctx, &o);
+            }
+        }
+        let Some(r) = selected else { return };
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if app.plugin_manager.installing.contains(&r.name) {
+                ui.label("Downloading…");
+                ui.spinner();
+                return;
+            }
+            if r.offer.is_some() {
+                let label = match r.state {
+                    State::NotInstalled => "Install Plugin",
+                    State::Upgradeable => "Upgrade Plugin",
+                    State::Installed => "Reinstall Plugin",
+                };
+                if ui.button(label).clicked() {
+                    act = Some((true, r.name.clone()));
+                }
+            }
+            if ui
+                .add_enabled(
+                    r.state != State::NotInstalled,
+                    egui::Button::new("Uninstall Plugin"),
+                )
+                .clicked()
+            {
+                act = Some((false, r.name.clone()));
+            }
+        });
+    });
+    match act {
+        Some((true, name)) => {
+            if let Some(o) = all
+                .iter()
+                .find(|r| r.name == name)
+                .and_then(|r| r.offer.clone())
+            {
+                install(app, ctx, &o);
+            }
+        }
+        Some((false, name)) => uninstall(app, &name),
+        None => {}
+    }
+}
+
+/// A line of the list: a check box (enabled) for installed plugins, the name.
+fn plugin_row(app: &mut EpanetApp, ui: &mut Ui, r: &Row, k: usize) {
+    let ctx = ui.ctx().clone();
+    let tex = row_icon(app, &ctx, r);
+    let sel = app.plugin_manager.selected.as_deref() == Some(&r.name);
+    let (rect, resp) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 26.0), egui::Sense::click());
+    let v = ui.visuals();
+    let fill = if sel {
+        v.selection.bg_fill
+    } else if k % 2 == 1 {
+        v.faint_bg_color
+    } else {
+        Color32::TRANSPARENT
+    };
+    ui.painter().rect_filled(rect, 0.0, fill);
+    let fg = if sel {
+        v.selection.stroke.color
+    } else {
+        v.text_color()
+    };
+    // check box: installed and enabled
+    let boxr = egui::Rect::from_center_size(
+        rect.left_center() + egui::vec2(12.0, 0.0),
+        egui::vec2(13.0, 13.0),
+    );
+    let installed = r.state != State::NotInstalled;
+    let enabled = installed && !app.prefs.disabled_plugins.contains(&r.name);
+    let box_resp = installed.then(|| {
+        ui.interact(
+            boxr,
+            ui.id().with(("plugin_on", &r.name)),
+            egui::Sense::click(),
+        )
+    });
+    if installed {
+        ui.painter().rect(
+            boxr,
+            2.0,
+            Color32::WHITE,
+            egui::Stroke::new(1.0, Color32::from_gray(120)),
+            egui::StrokeKind::Inside,
+        );
+        if enabled {
+            let s = egui::Stroke::new(1.8, Color32::from_gray(30));
+            let c = boxr.center();
+            ui.painter()
+                .line_segment([c + egui::vec2(-4.0, 0.0), c + egui::vec2(-1.0, 3.0)], s);
+            ui.painter()
+                .line_segment([c + egui::vec2(-1.0, 3.0), c + egui::vec2(4.5, -3.5)], s);
+        }
+    }
+    paint_icon(
+        ui.painter(),
+        tex,
+        rect.left_center() + egui::vec2(35.0, 0.0),
+        20.0,
+        fg,
+    );
+    let mark = match r.state {
+        State::Upgradeable => "⬆ ",
+        _ => "",
+    };
+    ui.painter().text(
+        rect.left_center() + egui::vec2(48.0, 0.0),
+        egui::Align2::LEFT_CENTER,
+        format!("{mark}{}", r.name),
+        egui::FontId::proportional(13.0),
+        fg,
+    );
+    if let Some(b) = box_resp
+        && b.clicked()
+    {
+        if enabled {
+            app.prefs.disabled_plugins.insert(r.name.clone());
+        } else {
+            app.prefs.disabled_plugins.remove(&r.name);
+        }
+    } else if resp.clicked() {
+        app.plugin_manager.selected = Some(r.name.clone());
+    }
+}
+
+fn details(app: &mut EpanetApp, ui: &mut Ui, r: &Row) {
+    let installed_version = app.prefs.plugin_versions.get(&r.name).cloned();
+    let banner = |ui: &mut Ui, text: &str, fill: Color32| {
+        egui::Frame::NONE
+            .fill(fill)
+            .inner_margin(egui::Margin::symmetric(8, 4))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new(text).strong().color(Color32::from_gray(20)));
+            });
+        ui.add_space(6.0);
+    };
+    match r.state {
+        State::Upgradeable if r.offer.is_some() => banner(
+            ui,
+            "There is a new version of this plugin",
+            Color32::from_rgb(0xff, 0xe0, 0x8a),
+        ),
+        State::Installed if app.prefs.disabled_plugins.contains(&r.name) => banner(
+            ui,
+            "This plugin is installed but disabled (tick it in the list to enable it)",
+            Color32::from_gray(215),
+        ),
+        _ => {}
+    }
+    let tex = row_icon(app, &ui.ctx().clone(), r);
+    ui.horizontal(|ui| {
+        let (icon, _) = ui.allocate_exact_size(egui::vec2(44.0, 44.0), egui::Sense::hover());
+        let fg = ui.visuals().text_color();
+        paint_icon(ui.painter(), tex, icon.center(), 40.0, fg);
+        ui.label(RichText::new(&r.name).strong().size(24.0));
+    });
+    ui.add_space(6.0);
+    let Some(o) = &r.offer else {
+        ui.label(RichText::new("Installed from a file; no repository offers this plugin.").weak());
+        return;
+    };
+    if !o.description.is_empty() {
+        ui.label(RichText::new(&o.description).strong().size(15.0));
+        ui.add_space(10.0);
+    }
+    egui::Grid::new("plugin_info")
+        .num_columns(2)
+        .spacing([12.0, 6.0])
+        .show(ui, |ui| {
+            let key = |ui: &mut Ui, k: &str| {
+                ui.label(RichText::new(k).strong());
+            };
+            if !o.tags.is_empty() {
+                key(ui, "Tags");
+                ui.label(&o.tags);
+                ui.end_row();
+            }
+            if !o.homepage.is_empty() || !o.url.starts_with("builtin:") {
+                key(ui, "More info");
+                ui.horizontal(|ui| {
+                    if !o.homepage.is_empty() {
+                        ui.hyperlink_to("homepage", &o.homepage);
+                    }
+                    if !o.url.starts_with("builtin:") {
+                        ui.hyperlink_to("script", &o.url);
+                    }
+                });
+                ui.end_row();
+            }
+            if !o.author.is_empty() {
+                key(ui, "Author");
+                ui.label(&o.author);
+                ui.end_row();
+            }
+            match (r.state, &installed_version) {
+                (State::NotInstalled, _) => {}
+                (_, Some(v)) => {
+                    key(ui, "Installed version");
+                    ui.label(v);
+                    ui.end_row();
+                }
+                (_, None) => {
+                    key(ui, "Installed version");
+                    ui.label("from a file");
+                    ui.end_row();
+                }
+            }
+            key(ui, "Available version");
+            ui.label(&o.version);
+            ui.end_row();
+            key(ui, "Repository");
+            ui.label(&o.repository);
+            ui.end_row();
+        });
+}
+
+fn settings(app: &mut EpanetApp, ui: &mut Ui, ctx: &egui::Context) {
+    ui.label(RichText::new("Plugin Repositories").strong().size(15.0));
+    ui.label(
+        RichText::new(
+            "XML files listing plugins (see plugins/plugins.xml in the WEPANET project for the \
+format). The plugins of all enabled repositories are offered, along with those built into WEPANET.",
+        )
+        .weak(),
+    );
+    ui.add_space(8.0);
+    let mut remove = None;
+    let mut changed = false;
+    let read = app.plugin_manager.read.clone();
+    let red = Color32::from_rgb(0xc0, 0x30, 0x30);
+    for (k, r) in app.prefs.plugin_repos.iter_mut().enumerate() {
+        egui::Frame::NONE
+            .stroke(egui::Stroke::new(1.0, Color32::from_gray(190)))
+            .inner_margin(8)
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    changed |= ui
+                        .checkbox(&mut r.enabled, RichText::new(&r.name).strong())
+                        .changed();
+                    match read.iter().find(|(u, _)| u == r.url.trim()) {
+                        Some((_, Ok(n))) => {
+                            ui.label(RichText::new(format!("✔ {n} plugins")).weak());
+                        }
+                        Some((_, Err(e))) => {
+                            ui.label(RichText::new(format!("✖ could not read it: {e}")).color(red));
+                        }
+                        None if !r.enabled => {
+                            ui.label(RichText::new("disabled").weak());
+                        }
+                        None => {}
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Remove").clicked() {
+                            remove = Some(k);
+                        }
+                    });
+                });
+                ui.add(egui::Label::new(RichText::new(&r.url).monospace().size(11.5)).truncate())
+                    .on_hover_text(&r.url);
+            });
+        ui.add_space(4.0);
+    }
+    if let Some(k) = remove {
+        app.prefs.plugin_repos.remove(k);
+        changed = true;
+    }
+    ui.add_space(10.0);
+    ui.label(RichText::new("Add a Repository").strong());
+    let m = &mut app.plugin_manager;
+    egui::Grid::new("add_repo")
+        .num_columns(2)
+        .spacing([8.0, 6.0])
+        .show(ui, |ui| {
+            ui.label("Name:");
+            ui.add(
+                egui::TextEdit::singleline(&mut m.new_name)
+                    .desired_width(200.0)
+                    .hint_text("optional"),
+            );
+            ui.end_row();
+            ui.label("URL:");
+            ui.add(
+                egui::TextEdit::singleline(&mut m.new_url)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("https://…/plugins.xml"),
+            );
+            ui.end_row();
+        });
+    let url = m.new_url.trim().to_string();
+    let ok = url.starts_with("http://") || url.starts_with("https://");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        if ui.add_enabled(ok, egui::Button::new("Add")).clicked() {
+            let name = match app.plugin_manager.new_name.trim() {
+                "" => url.rsplit('/').nth(1).unwrap_or("Repository").to_string(),
+                n => n.to_string(),
+            };
+            app.prefs.plugin_repos.retain(|r| r.url.trim() != url);
+            app.prefs.plugin_repos.push(Repository {
+                name,
+                url,
+                enabled: true,
+            });
+            app.plugin_manager.new_name.clear();
+            app.plugin_manager.new_url.clear();
+            changed = true;
+        }
+        if ui.button("Reload All Repositories").clicked() {
+            changed = true;
+        }
+        if app.prefs.plugin_repos != default_repositories()
+            && ui.button("Restore Default").clicked()
+        {
+            app.prefs.plugin_repos = default_repositories();
+            changed = true;
+        }
+    });
+    if changed {
+        sync(app, ctx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const XML: &str = include_str!("../../../plugins/plugins.xml");
+
+    #[test]
+    fn reads_the_project_repository() {
+        let offers = parse_repository(XML, DEFAULT_REPOSITORY, "WEPANET Plugins").unwrap();
+        assert!(offers.len() >= 6);
+        let d = offers.iter().find(|o| o.name == "Dead Ends").unwrap();
+        assert_eq!(d.version, "1.0");
+        assert_eq!(
+            d.url,
+            "https://raw.githubusercontent.com/KIOS-Research/WEPANET/main/plugins/examples/dead_ends.rhai"
+        );
+        // every plugin listed is in the project, and calls itself by the listed name
+        for o in &offers {
+            let file = o.url.split("/plugins/").nth(1).unwrap();
+            let (_, src) = BUILTIN
+                .iter()
+                .find(|(f, _)| *f == file)
+                .unwrap_or_else(|| panic!("{file} is not in plugins/"));
+            assert!(
+                src.contains(&format!("fn name() {{ \"{}\" }}", o.name)),
+                "{}",
+                o.name
+            );
+        }
+    }
+
+    #[test]
+    fn repository_errors_and_urls() {
+        assert!(parse_repository("<html></html>", "u", "r").is_err());
+        assert!(parse_repository("not xml", "u", "r").is_err());
+        assert_eq!(
+            resolve("https://a.org/x/plugins.xml", "p/a b.rhai"),
+            "https://a.org/x/p/a%20b.rhai"
+        );
+        assert_eq!(
+            resolve("https://a.org/x/plugins.xml", "https://b.org/c.rhai"),
+            "https://b.org/c.rhai"
+        );
+    }
+
+    #[test]
+    fn compares_versions() {
+        assert!(version_cmp("1.10", "1.9").is_gt());
+        assert!(version_cmp("1.0", "1").is_eq());
+        assert!(version_cmp("2.0.1", "2.0").is_gt());
+        assert!(version_cmp("1.0", "1.0.1").is_lt());
+    }
+
+    #[test]
+    fn every_plugin_has_an_icon_built_in() {
+        for o in builtin_offers() {
+            assert!(!o.icon.is_empty(), "{} has no <icon>", o.name);
+            let png = builtin_icon(&o.icon).unwrap_or_else(|| panic!("{} not built in", o.icon));
+            let img = image::load_from_memory(png).unwrap();
+            assert_eq!((img.width(), img.height()), (64, 64), "{}", o.icon);
+            assert!(builtin_source(&o.url).is_some(), "{}", o.url);
+        }
+    }
+
+    #[test]
+    fn installs_upgrades_and_uninstalls() {
+        let ctx = egui::Context::default();
+        let mut app = EpanetApp::new(&eframe::CreationContext::_new_kittest(ctx.clone()));
+        // from the built-in repository: no network needed
+        app.plugin_manager.offers = builtin_offers();
+        fetch_icons(&mut app, &ctx);
+        let mut o = builtin_offers()
+            .into_iter()
+            .find(|o| o.name == "Dead Ends")
+            .unwrap();
+        install(&mut app, &ctx, &o);
+        poll(&mut app);
+        let installed = crate::scripting::installed(&app);
+        assert!(installed.contains(&"Dead Ends".to_string()));
+        assert_eq!(state(&app, &installed, &o), State::Installed);
+        // its icon is kept with it, for the toolbar
+        assert!(app.prefs.plugin_icons.contains_key("Dead Ends"));
+        let mut out = ctx.run_ui(Default::default(), |_| {
+            assert!(installed_icon(&mut app, &ctx, "Dead Ends").is_some());
+            assert!(installed_icon(&mut app, &ctx, "Count").is_none());
+        });
+        out.textures_delta.clear();
+        o.version = "1.1".into();
+        assert_eq!(state(&app, &installed, &o), State::Upgradeable);
+        uninstall(&mut app, "Dead Ends");
+        let installed = crate::scripting::installed(&app);
+        assert_eq!(state(&app, &installed, &o), State::NotInstalled);
+        assert!(!app.prefs.plugin_versions.contains_key("Dead Ends"));
+        assert!(!app.prefs.plugin_icons.contains_key("Dead Ends"));
+    }
+
+    /// The window as drawn: each piece of text and where it is.
+    fn layout(app: &mut EpanetApp, ctx: &egui::Context) -> Vec<(String, egui::Pos2)> {
+        let input = || egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1400.0, 900.0),
+            )),
+            ..Default::default()
+        };
+        let mut texts = Vec::new();
+        for _ in 0..3 {
+            let mut out = ctx.run_ui(input(), |ui| crate::dialogs::show(app, ui.ctx()));
+            out.textures_delta.clear();
+            texts = out
+                .shapes
+                .iter()
+                .filter_map(|c| match &c.shape {
+                    egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos)),
+                    _ => None,
+                })
+                .collect();
+        }
+        texts
+    }
+
+    #[test]
+    fn window_is_laid_out_as_in_qgis() {
+        let ctx = egui::Context::default();
+        let mut app = EpanetApp::new(&eframe::CreationContext::_new_kittest(ctx.clone()));
+        app.prefs.plugin_repos.clear(); // built-in plugins only: no network
+        app.dialog = crate::app::Dialog::PluginManager;
+        let t = layout(&mut app, &ctx);
+        let at = |s: &str| {
+            t.iter()
+                .find(|(x, _)| x == s)
+                .map(|(_, p)| *p)
+                .unwrap_or_else(|| panic!("no {s:?} in {t:?}"))
+        };
+        // the sidebar: one entry below the other
+        let side = [
+            "All (6)",
+            "Installed (0)",
+            "Not installed (6)",
+            "Install from File",
+            "Settings",
+        ]
+        .map(at);
+        for w in side.windows(2) {
+            assert!(
+                (w[0].x - w[1].x).abs() < 1.0 && w[1].y > w[0].y + 20.0,
+                "{side:?}"
+            );
+        }
+        // the list: one plugin below the other, right of the sidebar
+        let list = ["Count", "Dead Ends", "High Velocity", "Low Pressure"].map(at);
+        for w in list.windows(2) {
+            assert!(
+                (w[0].x - w[1].x).abs() < 1.0 && w[1].y > w[0].y + 15.0,
+                "{list:?}"
+            );
+        }
+        assert!(list[0].x > side[0].x + 120.0);
+        // the details right of the list, the buttons below; a window of sensible width
+        let tags = at("Tags");
+        assert!(tags.x > list[0].x + 150.0, "{tags:?}");
+        // labels and their values side by side, not on top of each other
+        let author = at("Author");
+        assert!(
+            t.iter()
+                .any(|(_, p)| (p.y - author.y).abs() < 4.0 && p.x > author.x + 50.0),
+            "no value beside {author:?}"
+        );
+        let close = at("Close");
+        assert!(
+            close.y > list[3].y && close.x - side[0].x < 800.0,
+            "{close:?} {side:?}"
+        );
+        // Settings: the URL on one line
+        app.plugin_manager.tab = Tab::Settings;
+        app.prefs.plugin_repos = default_repositories();
+        app.plugin_manager.synced = true; // do not go online
+        let t = layout(&mut app, &ctx);
+        assert!(
+            t.iter()
+                .any(|(s, _)| s.contains("raw.githubusercontent.com/KIOS-Research")),
+            "{t:?}"
+        );
+    }
+}

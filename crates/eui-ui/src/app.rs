@@ -149,6 +149,7 @@ pub enum Dialog {
     Elevations,
     FireFlowCurve,
     Benchmarks,
+    PluginManager,
     ConfirmDelete,
     ConfirmReplace,
 }
@@ -224,6 +225,14 @@ pub struct Prefs {
     pub setup: crate::setup::SetupDefaults,
     /// Loaded user plugins: (file name, Rhai source).
     pub user_plugins: Vec<(String, String)>,
+    /// Plugin Manager: the repositories it reads, and the version of each
+    /// plugin installed from one (by plugin name).
+    pub plugin_repos: Vec<crate::plugin_manager::Repository>,
+    pub plugin_versions: std::collections::BTreeMap<String, String>,
+    /// Installed plugins unticked in the Plugin Manager: kept, but off the toolbar.
+    pub disabled_plugins: std::collections::BTreeSet<String>,
+    /// Icons (PNG) of plugins installed from a repository, by plugin name.
+    pub plugin_icons: std::collections::BTreeMap<String, Vec<u8>>,
     pub animate_fps: f32,
     pub auto_length: bool,
     // Program Preferences
@@ -288,6 +297,10 @@ impl Default for Prefs {
             link_legend_framed: true,
             setup: Default::default(),
             user_plugins: Vec::new(),
+            plugin_repos: crate::plugin_manager::default_repositories(),
+            plugin_versions: Default::default(),
+            disabled_plugins: Default::default(),
+            plugin_icons: Default::default(),
             animate_fps: 4.0,
             auto_length: false,
             blink_marker: true,
@@ -362,6 +375,7 @@ pub struct EpanetApp {
     pub(crate) run_message: String,
     pub(crate) rpt: crate::reports::ReportState,
     pub(crate) catalog: crate::catalog::CatalogState,
+    pub(crate) plugin_manager: crate::plugin_manager::ManagerState,
     pub(crate) data_view: crate::data_view::DataViewState,
     /// Preferences as they were when the Preferences dialog opened (for Cancel).
     pub(crate) prefs_backup: Option<Prefs>,
@@ -460,6 +474,7 @@ impl EpanetApp {
             run_message: String::new(),
             rpt: Default::default(),
             catalog: Default::default(),
+            plugin_manager: Default::default(),
             data_view: Default::default(),
             prefs_backup: None,
             period: 0,

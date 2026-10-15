@@ -68,6 +68,7 @@ pub fn show(app: &mut EpanetApp, ctx: &egui::Context) {
         Dialog::Elevations => "Elevations",
         Dialog::FireFlowCurve => "Fire Flow Curve",
         Dialog::Benchmarks => "WaterBenchmarkHub Networks",
+        Dialog::PluginManager => "Plugin Manager",
         Dialog::ConfirmDelete => "Confirm Deletion",
         Dialog::ConfirmReplace => "Unsaved Changes",
     };
@@ -107,6 +108,7 @@ pub fn show(app: &mut EpanetApp, ctx: &egui::Context) {
             Dialog::About => 470.0,
             Dialog::Preferences => 330.0,
             Dialog::Benchmarks => 880.0,
+            Dialog::PluginManager => 800.0,
             _ => 320.0,
         })
         .max_width(if dialog == Dialog::Welcome {
@@ -157,6 +159,7 @@ pub fn show(app: &mut EpanetApp, ctx: &egui::Context) {
                     Dialog::Elevations => crate::plugins::elevations(app, ui),
                     Dialog::FireFlowCurve => crate::plugins::curve(app, ui),
                     Dialog::Benchmarks => crate::catalog::dialog(app, ui),
+                    Dialog::PluginManager => crate::plugin_manager::dialog(app, ui),
                     Dialog::None => true,
                 };
                 close = if own_panel || message {

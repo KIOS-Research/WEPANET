@@ -41,28 +41,17 @@ allow cross-origin requests, which `raw.githubusercontent.com` does):
     <description>Junctions connected to a single link</description>
     <author>Your name</author>
     <file>examples/dead_ends.rhai</file>  <!-- a URL, or a path relative to this file -->
+    <icon>examples/icons/dead_ends.png</icon>  <!-- PNG, about 64x64; optional -->
     <tags>network, water quality</tags>
     <homepage>https://…</homepage>
   </plugin>
 </plugins>
 ```
 
-`name` must be the name the script gives in `fn name()`. Raise `version`
+The icon shows in the Plugin Manager and on the plugin's toolbar button (it is
+kept with the plugin when installed). `name` must be the name the script gives
+in `fn name()`. Raise `version`
 whenever the script changes.
-
-## The AI Assistant
-
-**Plugins > AI Assistant** opens a chat with a large language model about the
-open project: it is told the project's size, options, the selected object and
-the latest results. Asked to change the network, find objects or compute
-something, it writes a plugin script, which runs (sandboxed, on a copy of the
-project, undoable) when you click **Run script**.
-
-It works with any OpenAI-compatible API. The default is
-[Groq](https://console.groq.com/keys), which gives free keys; OpenAI,
-OpenRouter or a local [Ollama](https://ollama.com) (`http://localhost:11434/v1`)
-work too. The key is kept only on your computer (in the browser's storage for
-the web app) and sent only to the API you chose.
 
 ## The shape of a plugin
 

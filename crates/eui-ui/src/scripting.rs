@@ -414,20 +414,9 @@ pub fn poll(app: &mut EpanetApp) {
         }
     }
     for item in app.scripts.inbox.drain() {
-        match item.and_then(|(file, bytes)| {
-            let source = crate::io::decode_text(&bytes);
-            describe(&file, &source)
-        }) {
-            Ok(p) => {
-                app.status = format!("Plugin \"{}\" loaded", p.name);
-                app.prefs
-                    .user_plugins
-                    .retain(|(f, s)| describe(f, s).map_or(true, |q| q.name != p.name));
-                app.prefs
-                    .user_plugins
-                    .push((p.file.clone(), p.source.clone()));
-                app.scripts.plugins.retain(|q| q.name != p.name);
-                app.scripts.plugins.push(p);
+        match item.and_then(|(file, bytes)| install(app, &file, &crate::io::decode_text(&bytes))) {
+            Ok(name) => {
+                app.status = format!("Plugin \"{name}\" loaded");
                 app.prefs.menu_tab = crate::app::MenuTab::Plugins;
             }
             Err(e) => {
@@ -436,6 +425,27 @@ pub fn poll(app: &mut EpanetApp) {
             }
         }
     }
+}
+
+/// Adds a plugin (replacing one of the same name) and keeps it for the next
+/// session. Returns its name.
+pub fn install(app: &mut EpanetApp, file: &str, source: &str) -> Result<String, String> {
+    let p = describe(file, source)?;
+    let name = p.name.clone();
+    app.prefs
+        .user_plugins
+        .retain(|(f, s)| describe(f, s).map_or(true, |q| q.name != name));
+    app.prefs
+        .user_plugins
+        .push((p.file.clone(), p.source.clone()));
+    app.scripts.plugins.retain(|q| q.name != name);
+    app.scripts.plugins.push(p);
+    Ok(name)
+}
+
+/// Names of the loaded plugins.
+pub fn installed(app: &EpanetApp) -> Vec<String> {
+    app.scripts.plugins.iter().map(|p| p.name.clone()).collect()
 }
 
 /// Asks for a plugin file to load.
@@ -463,6 +473,18 @@ pub fn run(app: &mut EpanetApp, plugin: &str, item: &str) {
     else {
         return;
     };
+    let _ = run_source(app, &p.name, &p.source, Some(item));
+}
+
+/// Runs a script, as a plugin runs: its `run(item)` when `item` is given,
+/// else its top-level code (then `run("Run")`, if it defines one). Returns a
+/// one-line account of what it did, or the error it stopped with.
+pub fn run_source(
+    app: &mut EpanetApp,
+    name: &str,
+    source: &str,
+    item: Option<&str>,
+) -> Result<String, String> {
     let rows = |ids: &[String]| {
         ids.iter()
             .enumerate()
@@ -494,45 +516,79 @@ pub fn run(app: &mut EpanetApp, plugin: &str, item: &str) {
         status: None,
     }));
     let e = engine(ctx.clone());
+    let call_run = |ast: &rhai::AST, item: &str| {
+        e.call_fn::<Dynamic>(
+            &mut Scope::new(),
+            ast,
+            "run",
+            (ImmutableString::from(item),),
+        )
+    };
     let outcome = e
-        .compile(&p.source)
+        .compile(source)
         .map_err(|x| x.to_string())
         .and_then(|ast| {
-            e.call_fn::<Dynamic>(
-                &mut Scope::new(),
-                &ast,
-                "run",
-                (ImmutableString::from(item),),
-            )
+            match item {
+                Some(item) => call_run(&ast, item),
+                None => e
+                    .eval_ast_with_scope::<Dynamic>(&mut Scope::new(), &ast)
+                    .and_then(|v| {
+                        if ast
+                            .iter_functions()
+                            .any(|f| f.name == "run" && f.params.len() == 1)
+                        {
+                            call_run(&ast, "Run")
+                        } else {
+                            Ok(v)
+                        }
+                    }),
+            }
             .map_err(|x| x.to_string())
         });
     drop(e);
-    let c = Rc::try_unwrap(ctx).ok().map(RefCell::into_inner);
-    let Some(c) = c else {
-        return;
-    };
+    let c = Rc::try_unwrap(ctx)
+        .ok()
+        .map(RefCell::into_inner)
+        .ok_or_else(|| "the script is still in use".to_string())?;
     let mut messages = c.messages;
     if let Err(x) = &outcome {
         messages.push(format!("The plugin stopped with an error:\n{x}"));
     }
+    let mut done = Vec::new();
     if outcome.is_ok() && c.changed {
         app.checkpoint();
         app.net = c.net;
-        app.status = format!("{} changed the project (Undo reverts it)", p.name);
+        app.status = format!("{name} changed the project (Undo reverts it)");
+        done.push("changed the project (Undo reverts it)".to_string());
     }
     if let Some(s) = c.status {
         app.status = s;
     }
     if let Some(e) = c.select {
         app.select(Some(e));
+        done.push("selected an object".into());
     }
     if let Some(t) = c.table {
+        done.push(format!(
+            "showed the table \"{}\" ({} rows)",
+            t.0,
+            t.1.len().saturating_sub(1)
+        ));
         app.scripts.table = Some(t);
         app.dialog = Dialog::PluginTable;
     } else if !messages.is_empty() {
         app.plugins.message = messages.join("\n");
         app.dialog = Dialog::PluginMessage;
     }
+    let _ = outcome?;
+    if !messages.is_empty() {
+        done.push(format!("said: {}", messages.join(" / ")));
+    }
+    Ok(if done.is_empty() {
+        "ran without changing or showing anything".into()
+    } else {
+        done.join("; ")
+    })
 }
 
 /// The table a plugin showed.
@@ -643,6 +699,47 @@ mod tests {
         let (_, rows) = b.table.clone().expect("a table");
         assert!(rows.len() > 1, "{rows:?}");
         assert!(b.select.is_some());
+    }
+
+    #[test]
+    fn every_repository_plugin_runs_every_command() {
+        let out = eui_engine::run_blocking(eui_core::examples::NET1).unwrap();
+        let res = SimResults::from_out(&out.out).unwrap();
+        let rows = |ids: &[String]| {
+            ids.iter()
+                .enumerate()
+                .map(|(k, id)| (id.clone(), k))
+                .collect()
+        };
+        for (file, src) in crate::plugin_manager::BUILTIN {
+            let p = describe(file, src).unwrap_or_else(|e| panic!("{file}: {e}"));
+            for item in &p.menu {
+                for with_results in [false, true] {
+                    let c = ctx();
+                    if with_results {
+                        let mut b = c.borrow_mut();
+                        b.node_rows = rows(&res.node_ids);
+                        b.link_rows = rows(&res.link_ids);
+                        b.results = Some(res.clone());
+                    }
+                    let e = engine(c.clone());
+                    let ast = e.compile(*src).unwrap();
+                    let _ = e
+                        .call_fn::<Dynamic>(
+                            &mut Scope::new(),
+                            &ast,
+                            "run",
+                            (ImmutableString::from(item.as_str()),),
+                        )
+                        .unwrap_or_else(|x| panic!("{file} / {item}: {x}"));
+                    let b = c.borrow();
+                    assert!(
+                        b.table.is_some() || !b.messages.is_empty(),
+                        "{file} / {item} showed nothing"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

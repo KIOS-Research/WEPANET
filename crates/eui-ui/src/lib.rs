@@ -22,6 +22,7 @@ mod import_shp;
 mod io;
 mod map;
 mod menu;
+mod plugin_manager;
 mod plugins;
 mod reports;
 mod scripting;

@@ -17,6 +17,7 @@ ehttp.workspace = true
 log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+roxmltree.workspace = true
 image.workspace = true
 proj4rs.workspace = true
 rhai.workspace = true

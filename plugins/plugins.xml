@@ -4,7 +4,8 @@
   reads this file and offers the plugins listed here; any other repository
   can be added there by the URL of its XML file.
 
-  <file> is the plugin's Rhai script: a URL, or a path relative to this file.
+  <file> is the plugin's Rhai script and <icon> its icon (PNG, about 64x64):
+  each a URL, or a path relative to this file.
   Raise <version> when a plugin changes, so installed copies are offered the
   upgrade. See docs/plugins.md to write a plugin.
 -->
@@ -13,6 +14,7 @@
     <description>Counts the junctions or the pipes of the network</description>
     <author>WEPANET (Elad Salomons' EPANET-Plugins)</author>
     <file>examples/count.rhai</file>
+    <icon>examples/icons/count.png</icon>
     <tags>network, statistics</tags>
     <homepage>https://github.com/KIOS-Research/WEPANET/tree/main/plugins</homepage>
   </plugin>
@@ -20,6 +22,7 @@
     <description>Element counts, total pipe length and junction elevation range</description>
     <author>WEPANET</author>
     <file>examples/network_stats.rhai</file>
+    <icon>examples/icons/network_stats.png</icon>
     <tags>network, statistics</tags>
     <homepage>https://github.com/KIOS-Research/WEPANET/tree/main/plugins</homepage>
   </plugin>
@@ -27,6 +30,7 @@
     <description>Total pipe length and count for each diameter</description>
     <author>WEPANET</author>
     <file>examples/pipe_summary.rhai</file>
+    <icon>examples/icons/pipe_summary.png</icon>
     <tags>pipes, statistics</tags>
     <homepage>https://github.com/KIOS-Research/WEPANET/tree/main/plugins</homepage>
   </plugin>
@@ -34,6 +38,7 @@
     <description>Junctions connected to a single link, where water can stagnate</description>
     <author>WEPANET</author>
     <file>examples/dead_ends.rhai</file>
+    <icon>examples/icons/dead_ends.png</icon>
     <tags>network, water quality</tags>
     <homepage>https://github.com/KIOS-Research/WEPANET/tree/main/plugins</homepage>
   </plugin>
@@ -41,6 +46,7 @@
     <description>Junctions whose pressure drops below a limit during the simulation</description>
     <author>WEPANET</author>
     <file>examples/low_pressure.rhai</file>
+    <icon>examples/icons/low_pressure.png</icon>
     <tags>results, pressure</tags>
     <homepage>https://github.com/KIOS-Research/WEPANET/tree/main/plugins</homepage>
   </plugin>
@@ -48,6 +54,7 @@
     <description>Pipes whose velocity rises above a limit during the simulation</description>
     <author>WEPANET</author>
     <file>examples/high_velocity.rhai</file>
+    <icon>examples/icons/high_velocity.png</icon>
     <tags>results, velocity</tags>
     <homepage>https://github.com/KIOS-Research/WEPANET/tree/main/plugins</homepage>
   </plugin>
