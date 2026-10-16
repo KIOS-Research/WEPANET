@@ -506,7 +506,9 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
         painter.text(
             rect.center(),
             Align2::CENTER_CENTER,
-            "Use Project > Add to place nodes, or open an .inp file (you can also drop one here)",
+            crate::i18n::tr(
+                "Use Project > Add to place nodes, or open an .inp file (you can also drop one here)",
+            ),
             FontId::proportional(15.0),
             ui.visuals().weak_text_color(),
         );

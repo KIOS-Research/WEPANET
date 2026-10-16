@@ -191,7 +191,7 @@ pub fn show(app: &mut EpanetApp, ctx: &egui::Context) {
             ui.painter().text(
                 bar.left_center() + vec2(10.0, 0.0),
                 Align2::LEFT_CENTER,
-                title,
+                crate::i18n::tr(title),
                 FontId::proportional(14.5),
                 ui.visuals().text_color(),
             );
@@ -392,7 +392,10 @@ pub(crate) fn buttons(ui: &mut Ui, labels: &[&str]) -> Option<usize> {
         ui.add_space(((ui.available_width() - total) / 2.0).max(0.0));
         ui.spacing_mut().item_spacing.x = gap;
         for (k, l) in labels.iter().enumerate() {
-            if ui.add_sized([w, 30.0], egui::Button::new(*l)).clicked() {
+            if ui
+                .add_sized([w, 30.0], egui::Button::new(crate::i18n::tr(l)))
+                .clicked()
+            {
                 clicked = Some(k);
             }
         }
@@ -495,9 +498,24 @@ fn preferences(app: &mut EpanetApp, ui: &mut Ui) -> bool {
         crate::widgets::checkbox(ui, &mut clear_recent, "Clear Recent Projects List");
         ui.separator();
         ui.horizontal(|ui| {
-            ui.label("Numerical Precision");
+            ui.label(crate::i18n::tr("Numerical Precision"));
             ui.add_space(30.0);
             ui.add(egui::DragValue::new(&mut app.prefs.decimals).range(0..=6));
+        });
+        ui.horizontal(|ui| {
+            ui.label(crate::i18n::tr("Language"));
+            ui.add_space(30.0);
+            let current = crate::i18n::all()
+                .iter()
+                .find(|l| l.code == app.prefs.language)
+                .map_or("English", |l| l.name.as_str());
+            egui::ComboBox::from_id_salt("prefs_language")
+                .selected_text(current)
+                .show_ui(ui, |ui| {
+                    for l in crate::i18n::all() {
+                        ui.selectable_value(&mut app.prefs.language, l.code.to_string(), &l.name);
+                    }
+                });
         });
     });
     ui.add_space(12.0);

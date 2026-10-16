@@ -257,6 +257,8 @@ pub struct Prefs {
     pub auto_backup: bool,
     /// Decimal places shown in reports and computed results.
     pub decimals: usize,
+    /// Interface language code (see `i18n`).
+    pub language: String,
 }
 
 impl Default for Prefs {
@@ -324,6 +326,7 @@ impl Default for Prefs {
             open_last: false,
             auto_backup: false,
             decimals: 2,
+            language: "en".into(),
         }
     }
 }
@@ -1587,6 +1590,7 @@ impl eframe::App for EpanetApp {
         }
         self.drain_inbox();
         crate::style::set_decimals(self.prefs.decimals);
+        crate::i18n::set(&self.prefs.language);
         for event in io::take_save_events() {
             self.finish_save(event);
         }

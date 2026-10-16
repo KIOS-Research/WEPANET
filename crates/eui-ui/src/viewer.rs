@@ -8,6 +8,7 @@ use crate::style::{LinkTheme, NodeTheme};
 
 /// A panel title bar in the menu color, as EPANET-UI draws them.
 pub(crate) fn panel_header(ui: &mut Ui, title: &str, color: Color32) {
+    let title = crate::i18n::tr(title);
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::hover());
     ui.painter().rect_filled(rect, 0.0, color);
     ui.painter().text(
@@ -30,7 +31,7 @@ pub(crate) fn group_box(ui: &mut Ui, title: &str, add: impl FnOnce(&mut Ui)) {
         .inner_margin(egui::Margin::symmetric(10, 6))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(RichText::new(title).font(crate::fonts::bold(12.5)));
+            ui.label(RichText::new(crate::i18n::tr(title)).font(crate::fonts::bold(12.5)));
             ui.add_space(2.0);
             add(ui);
         });
@@ -87,7 +88,7 @@ fn theme_combo<T: Copy + PartialEq>(
     split: usize,
 ) {
     egui::ComboBox::from_id_salt(id)
-        .selected_text(current)
+        .selected_text(crate::i18n::tr(&current))
         .width(130.0)
         .height(f32::INFINITY)
         .show_ui(ui, |ui| {
@@ -96,15 +97,19 @@ fn theme_combo<T: Copy + PartialEq>(
                 // the EPANET-MSX species follow the other themes
                 if k == split {
                     ui.separator();
-                    ui.label(egui::RichText::new("EPANET-MSX species").weak().small());
+                    ui.label(
+                        egui::RichText::new(crate::i18n::tr("EPANET-MSX species"))
+                            .weak()
+                            .small(),
+                    );
                 }
                 let t = *t;
                 let resp = ui
                     .add_enabled(
                         *enabled,
-                        egui::Button::selectable(*value == t, label.as_str()),
+                        egui::Button::selectable(*value == t, crate::i18n::tr(label)),
                     )
-                    .on_disabled_hover_text("Run an analysis first");
+                    .on_disabled_hover_text(crate::i18n::tr("Run an analysis first"));
                 if resp.clicked() {
                     *value = t;
                 }
@@ -122,7 +127,7 @@ fn contents(app: &mut EpanetApp, ui: &mut Ui) {
     });
 
     group_box(ui, "Themes", |ui| {
-        ui.label("Nodes");
+        ui.label(crate::i18n::tr("Nodes"));
         ui.horizontal(|ui| {
             let has_results = app.results.is_some();
             let items: Vec<(NodeTheme, String, bool)> = app
@@ -149,14 +154,14 @@ fn contents(app: &mut EpanetApp, ui: &mut Ui) {
             ui.add_space((ui.available_width() - 38.0).max(0.0));
             if ui
                 .add(pencil_button())
-                .on_hover_text("Edit the node legend")
+                .on_hover_text(crate::i18n::tr("Edit the node legend"))
                 .clicked()
             {
                 crate::dialogs::open_legend_editor(app, true);
             }
         });
         ui.add_space(4.0);
-        ui.label("Links");
+        ui.label(crate::i18n::tr("Links"));
         ui.horizontal(|ui| {
             let has_results = app.results.is_some();
             let items: Vec<(LinkTheme, String, bool)> = app
@@ -183,7 +188,7 @@ fn contents(app: &mut EpanetApp, ui: &mut Ui) {
             ui.add_space((ui.available_width() - 38.0).max(0.0));
             if ui
                 .add(pencil_button())
-                .on_hover_text("Edit the link legend")
+                .on_hover_text(crate::i18n::tr("Edit the link legend"))
                 .clicked()
             {
                 crate::dialogs::open_legend_editor(app, false);
@@ -198,7 +203,7 @@ fn contents(app: &mut EpanetApp, ui: &mut Ui) {
             let n = res.n_periods;
             let t = res.period_time(app.period);
             let label = if res.duration == 0 || n <= 1 {
-                "Single period".to_string()
+                crate::i18n::tr("Single period").to_string()
             } else {
                 format!(
                     "{}  ({})",
@@ -217,7 +222,7 @@ fn contents(app: &mut EpanetApp, ui: &mut Ui) {
             ui.add_space(4.0);
             ui.spacing_mut().slider_width = (ui.available_width() - 110.0).max(40.0);
             ui.horizontal(|ui| {
-                let label = if app.animating { "Stop" } else { "Animate" };
+                let label = crate::i18n::tr(if app.animating { "Stop" } else { "Animate" });
                 if ui
                     .add_enabled(n > 1, egui::Button::new(label).min_size(vec2(84.0, 28.0)))
                     .clicked()
@@ -227,7 +232,7 @@ fn contents(app: &mut EpanetApp, ui: &mut Ui) {
                 let mut fps = app.prefs.animate_fps as f64;
                 let r = crate::widgets::slider(ui, n > 1, &mut fps, 0.5..=20.0, true, None);
                 app.prefs.animate_fps = fps as f32;
-                r.on_hover_text("Animation speed");
+                r.on_hover_text(crate::i18n::tr("Animation speed"));
             });
         });
     }
@@ -243,7 +248,9 @@ fn contents(app: &mut EpanetApp, ui: &mut Ui) {
             app.prefs.basemap != crate::basemap::BasemapKind::None,
             crate::widgets::Checkbox::new(&mut app.prefs.show_basemap, "Basemap"),
         )
-        .on_disabled_hover_text("Add a basemap from the Map toolbar (Basemap ▾)");
+        .on_disabled_hover_text(crate::i18n::tr(
+            "Add a basemap from the Map toolbar (Basemap ▾)",
+        ));
         crate::widgets::checkbox(ui, &mut app.prefs.show_overview, "Overview Map");
     });
 }

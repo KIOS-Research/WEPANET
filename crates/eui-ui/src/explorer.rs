@@ -6,6 +6,7 @@ use eui_core::props::{self, Element, OptionCategory, PropKind};
 use eui_core::{LinkKind, LinkVar, NodeKind, NodeVar};
 
 use crate::app::{EpanetApp, ExplorerItem};
+use crate::i18n::tr;
 use crate::style;
 use crate::viewer::panel_header;
 
@@ -25,8 +26,10 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
             } else {
                 Color32::WHITE
             };
-            let max_tree = (ui.available_height() - 120.0).max(80.0);
-            egui::Panel::top("explorer_tree")
+            // Not below the default: the first frame (in the browser) can be
+            // laid out before the window has its real height.
+            let max_tree = (ui.available_height() - 120.0).max(400.0);
+            egui::Panel::top("project_tree")
                 .default_size(400.0)
                 .size_range(60.0..=max_tree)
                 .resizable(true)
@@ -73,9 +76,9 @@ fn tree(app: &mut EpanetApp, ui: &mut Ui) {
             _ => false,
         };
         let text = if empty {
-            RichText::new(label).weak()
+            RichText::new(tr(label)).weak()
         } else {
-            RichText::new(label)
+            RichText::new(tr(label))
         };
         if ui.selectable_label(app.explorer == it, text).clicked() {
             app.explorer = it;
@@ -98,7 +101,7 @@ fn tree(app: &mut EpanetApp, ui: &mut Ui) {
         }
     };
     item(ui, app, "Title / Notes", ExplorerItem::Title);
-    egui::CollapsingHeader::new("Analysis Options")
+    egui::CollapsingHeader::new(tr("Analysis Options"))
         .default_open(true)
         .show(ui, |ui| {
             for c in OptionCategory::ALL {
@@ -109,7 +112,7 @@ fn tree(app: &mut EpanetApp, ui: &mut Ui) {
     item(ui, app, "Network Links", ExplorerItem::Links);
     item(ui, app, "Time Patterns", ExplorerItem::Patterns);
     item(ui, app, "Data Curves", ExplorerItem::Curves);
-    egui::CollapsingHeader::new("Control Actions")
+    egui::CollapsingHeader::new(tr("Control Actions"))
         .default_open(true)
         .show(ui, |ui| {
             item(ui, app, "Simple Controls", ExplorerItem::SimpleControls);
@@ -159,7 +162,7 @@ fn hint_box(app: &EpanetApp, ui: &mut Ui) {
         .frame(egui::Frame::NONE)
         .show(ui, |ui| {
             let text = if app.prop_hint.is_empty() {
-                "Press Enter to record an edit, F1 for Help"
+                tr("Press Enter to record an edit, F1 for Help")
             } else {
                 &app.prop_hint
             };
@@ -208,7 +211,7 @@ fn item_header(ui: &mut Ui, color: Color32, title: &str, nav: bool) -> i32 {
                     }
                     ui.centered_and_justified(|ui| {
                         ui.label(
-                            RichText::new(title)
+                            RichText::new(tr(title))
                                 .font(crate::fonts::bold(13.5))
                                 .color(Color32::WHITE),
                         )
@@ -230,7 +233,7 @@ fn editor(app: &mut EpanetApp, ui: &mut Ui) {
             item_header(
                 ui,
                 menu,
-                &format!("Analysis Options - {}", cat.label()),
+                &format!("{} - {}", tr("Analysis Options"), tr(cat.label())),
                 false,
             );
             options_editor(app, ui, cat);
@@ -307,7 +310,7 @@ fn prop_row(
     kind: PropKind,
     units: &str,
 ) -> Option<String> {
-    ui.label(name);
+    ui.label(tr(name));
     let mut out = None;
     match kind {
         PropKind::ReadOnly => {
@@ -367,8 +370,8 @@ fn grid(ui: &mut Ui, id: &str, add: impl FnOnce(&mut Ui)) {
                 .spacing([8.0, 5.0])
                 .min_col_width(40.0)
                 .show(ui, |ui| {
-                    ui.label(RichText::new("Property").strong());
-                    ui.label(RichText::new("Value").strong());
+                    ui.label(RichText::new(tr("Property")).strong());
+                    ui.label(RichText::new(tr("Value")).strong());
                     ui.label("");
                     ui.end_row();
                     add(ui);
@@ -708,7 +711,7 @@ fn result_rows(app: &EpanetApp, ui: &mut Ui, sel: Element) {
             Element::Link(_) => &["Flow Rate", "Status"],
         };
         for n in names {
-            ui.label(*n);
+            ui.label(tr(n));
             result_cell(ui, "N/A");
             ui.label("");
             ui.end_row();
@@ -716,7 +719,7 @@ fn result_rows(app: &EpanetApp, ui: &mut Ui, sel: Element) {
         return;
     };
     let ro = |ui: &mut Ui, name: &str, v: Option<f32>, units: String| {
-        ui.label(name);
+        ui.label(tr(name));
         result_cell(ui, &v.map_or("N/A".into(), |v| style::fmt_fixed(v as f64)));
         ui.label(RichText::new(units).weak());
         ui.end_row();
@@ -817,7 +820,7 @@ fn result_rows(app: &EpanetApp, ui: &mut Ui, sel: Element) {
                     );
                 }
             }
-            ui.label("Status");
+            ui.label(tr("Status"));
             let s = app.link_result(i, LinkVar::Status).unwrap_or(-1.0) as i32;
             result_cell(
                 ui,
@@ -873,8 +876,8 @@ fn options_grid(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
                 .spacing([10.0, 6.0])
                 .min_col_width(150.0)
                 .show(ui, |ui| {
-                    ui.label(RichText::new("Property").strong());
-                    ui.label(RichText::new("Value").strong());
+                    ui.label(RichText::new(tr("Property")).strong());
+                    ui.label(RichText::new(tr("Value")).strong());
                     ui.end_row();
                     add(ui);
                 });
@@ -1063,7 +1066,7 @@ fn title_editor(app: &mut EpanetApp, ui: &mut Ui) {
     egui::Frame::NONE
         .inner_margin(egui::Margin::symmetric(8, 6))
         .show(ui, |ui| {
-            ui.label("Title");
+            ui.label(tr("Title"));
             let title = app.net.title.first().cloned().unwrap_or_default();
             let notes = app
                 .net
@@ -1080,7 +1083,7 @@ fn title_editor(app: &mut EpanetApp, ui: &mut Ui) {
             let r1 = ui.add(egui::TextEdit::singleline(tb).desired_width(f32::INFINITY));
             let new_title = tb.clone();
             ui.add_space(6.0);
-            ui.label("Notes");
+            ui.label(tr("Notes"));
             let nb = app
                 .buffers
                 .entry("Notes".into())

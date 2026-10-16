@@ -6,6 +6,7 @@ use egui::{Align2, Color32, CornerRadius, FontId, Rect, Response, Sense, Stroke,
 use eui_core::{LinkKind, NodeKind};
 
 use crate::app::{Dialog, EpanetApp, MenuTab, ReportKind, Tool, ViewMode};
+use crate::i18n::tr;
 use crate::icons::{self, Icon};
 use crate::style;
 
@@ -80,6 +81,7 @@ pub(crate) fn toolbar_fill(ui: &Ui) -> Color32 {
 }
 
 fn menu_tab(ui: &mut Ui, name: &str, selected: bool, form: Color32) -> Response {
+    let name = tr(name);
     let font = crate::fonts::bold(12.5);
     let w = ui.fonts_mut(|f| {
         f.layout_no_wrap(name.to_string(), font.clone(), Color32::WHITE)
@@ -128,7 +130,7 @@ fn speed_bar(app: &mut EpanetApp, ui: &mut Ui) {
                         .rect_filled(rect, CornerRadius::same(3), Color32::WHITE);
                 }
                 icons::paint(ui.painter(), icon, rect.center(), 16.0, dark);
-                resp.on_hover_text(tip).clicked()
+                resp.on_hover_text(tr(tip)).clicked()
             };
             // Right-to-left layout: listed in reverse visual order.
             if small(ui, Icon::Help, "Help") {
@@ -193,9 +195,10 @@ fn tool_button_with(
     tip: &str,
 ) -> Response {
     let (caption, dropdown) = match caption.strip_suffix(" ▾") {
-        Some(c) => (c, true),
-        None => (caption, false),
+        Some(c) => (tr(c), true),
+        None => (tr(caption), false),
     };
+    let tip = tr(tip);
     let font = FontId::proportional(12.0);
     let text_w = ui.fonts_mut(|f| {
         f.layout_no_wrap(caption.to_string(), font.clone(), Color32::WHITE)
@@ -250,7 +253,7 @@ fn tool_button_with(
     if enabled {
         resp.on_hover_text(tip)
     } else {
-        resp.on_hover_text(format!("{tip}\n(not available yet)"))
+        resp.on_hover_text(format!("{tip}\n({})", tr("not available yet")))
     }
 }
 
@@ -851,8 +854,9 @@ pub fn file_menu(app: &mut EpanetApp, ctx: &egui::Context) {
                             Sense::hover()
                         },
                     );
+                    let label = tr(label);
                     if resp.hovered() {
-                        hint = help.to_string();
+                        hint = tr(help).to_string();
                         if enabled {
                             ui.painter()
                                 .rect_filled(r, 0.0, Color32::from_rgb(0xcc, 0xe4, 0xf7));
@@ -962,6 +966,7 @@ pub fn file_menu(app: &mut EpanetApp, ctx: &egui::Context) {
                     .layout(egui::Layout::top_down(egui::Align::Min)),
             );
             let heading = |ui: &mut Ui, title: &str| {
+                let title = tr(title);
                 let (r, _) =
                     ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
                 ui.painter().rect_filled(
@@ -1000,7 +1005,7 @@ pub fn file_menu(app: &mut EpanetApp, ctx: &egui::Context) {
                     FontId::proportional(13.5),
                     text,
                 );
-                resp.on_hover_text(tip).clicked()
+                resp.on_hover_text(tr(tip)).clicked()
             };
             if importing {
                 heading(&mut child, "Import Network Data From");
@@ -1045,11 +1050,11 @@ pub fn file_menu(app: &mut EpanetApp, ctx: &egui::Context) {
                     child.painter().text(
                         r.left_top() + vec2(44.0, 24.0),
                         Align2::LEFT_CENTER,
-                        *label,
+                        tr(label),
                         FontId::proportional(15.0),
                         if *enabled { text } else { v.weak_text_color() },
                     );
-                    if resp.on_hover_text(*tip).clicked() && *enabled {
+                    if resp.on_hover_text(tr(tip)).clicked() && *enabled {
                         crate::import_shp::open(app);
                         ctx.data_mut(|d| d.insert_temp(import_id, false));
                         close = true;
@@ -1070,7 +1075,10 @@ pub fn file_menu(app: &mut EpanetApp, ctx: &egui::Context) {
                 }
                 if app.prefs.recent.is_empty() || cfg!(target_arch = "wasm32") {
                     child.add_space(4.0);
-                    child.label(egui::RichText::new("  There are no recent projects").weak());
+                    child.label(
+                        egui::RichText::new(format!("  {}", tr("There are no recent projects")))
+                            .weak(),
+                    );
                     child.add_space(10.0);
                 }
                 heading(&mut child, "Sample Projects");
@@ -1080,7 +1088,7 @@ pub fn file_menu(app: &mut EpanetApp, ctx: &egui::Context) {
                         "Net2" => "Fluoride tracer study",
                         _ => "Dual-source system, source tracing",
                     };
-                    if row(&mut child, &format!("{name}.inp"), desc) {
+                    if row(&mut child, &format!("{name}.inp"), tr(desc)) {
                         app.load_example(name, inp);
                         close = true;
                     }

@@ -304,6 +304,7 @@ fn item(
     enabled: bool,
     mark: impl FnOnce(&egui::Painter, egui::Pos2, Color32),
 ) -> egui::Response {
+    let label = crate::i18n::tr(label);
     let font = egui::FontId::proportional(13.0);
     let text_w = ui.fonts_mut(|f| {
         f.layout_no_wrap(label.to_string(), font.clone(), Color32::WHITE)

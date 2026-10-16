@@ -4,6 +4,7 @@
 use egui::{Align2, Color32, FontId, Sense, Stroke, Ui, vec2};
 
 use crate::app::EpanetApp;
+use crate::i18n::tr;
 use crate::style;
 
 /// One fixed-width cell with centered text and a divider on its right.
@@ -20,7 +21,7 @@ fn cell(ui: &mut Ui, width: f32, text: &str, fill: Option<Color32>) -> egui::Res
     ui.painter().text(
         rect.center(),
         Align2::CENTER_CENTER,
-        text,
+        tr(text),
         FontId::proportional(13.0),
         fg,
     );
@@ -58,20 +59,21 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
                 cell(
                     ui,
                     112.0,
-                    &format!("Flow: {}", app.net.flow_units().to_lowercase()),
+                    &format!("{}: {}", tr("Flow"), app.net.flow_units().to_lowercase()),
                     None,
                 );
                 cell(
                     ui,
                     128.0,
-                    &format!("Pressure: {}", app.pressure_units()),
+                    &format!("{}: {}", tr("Pressure"), app.pressure_units()),
                     None,
                 );
                 cell(
                     ui,
                     140.0,
                     &format!(
-                        "Head Loss: {}",
+                        "{}: {}",
+                        tr("Head Loss"),
                         app.net
                             .option("OPTIONS", "HEADLOSS")
                             .unwrap_or_else(|| "H-W".into())
@@ -82,7 +84,8 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
                     ui,
                     140.0,
                     &format!(
-                        "Demands: {}",
+                        "{}: {}",
+                        tr("Demands"),
                         app.net
                             .option("OPTIONS", "DEMAND MODEL")
                             .unwrap_or_else(|| "DDA".into())
@@ -100,11 +103,11 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
                     Some(_) => cell(
                         ui,
                         190.0,
-                        "Quality: EPANET-MSX",
+                        &format!("{}: EPANET-MSX", tr("Quality")),
                         Some(Color32::from_rgb(0xd4, 0xed, 0xda)),
                     )
-                    .on_hover_text("EPANET-MSX runs with each analysis — click to edit"),
-                    None => cell(ui, 190.0, &format!("Quality: {q}"), None),
+                    .on_hover_text(tr("EPANET-MSX runs with each analysis — click to edit")),
+                    None => cell(ui, 190.0, &format!("{}: {}", tr("Quality"), tr(&q)), None),
                 };
                 if msx.is_some() && resp.interact(Sense::click()).clicked() {
                     crate::msx::open_editor(app);

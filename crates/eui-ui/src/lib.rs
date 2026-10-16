@@ -17,6 +17,7 @@ mod fonts;
 mod forms;
 mod geometry;
 mod help;
+mod i18n;
 mod icons;
 mod images;
 mod import;

@@ -52,7 +52,7 @@ impl<'a> Checkbox<'a> {
     pub fn new(checked: &'a mut bool, text: impl Into<WidgetText>) -> Self {
         Checkbox {
             checked,
-            text: text.into(),
+            text: crate::i18n::tr_widget(text.into()),
         }
     }
 }
@@ -119,7 +119,7 @@ impl RadioButton {
     pub fn new(selected: bool, text: impl Into<WidgetText>) -> Self {
         RadioButton {
             selected,
-            text: text.into(),
+            text: crate::i18n::tr_widget(text.into()),
         }
     }
 }
