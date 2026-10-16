@@ -23,6 +23,7 @@ proj4rs.workspace = true
 rhai.workspace = true
 zip.workspace = true
 flate2.workspace = true
+crs-definitions.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 rhai = { workspace = true, features = ["wasm-bindgen"] }

@@ -107,7 +107,9 @@ pub fn show(app: &mut EpanetApp, ctx: &egui::Context) {
     };
     let mut close = false;
     egui::Window::new(title)
-        .id(egui::Id::new(("dialog", title)))
+        // the version makes egui forget sizes remembered by earlier builds
+        // (the Basemap source window had grown wide)
+        .id(egui::Id::new(("dialog", title, 2)))
         .title_bar(false)
         .collapsible(false)
         .resizable(dialog == Dialog::ErrorCodes)

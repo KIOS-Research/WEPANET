@@ -8,7 +8,7 @@
 //! go through the coordinate transformation, so it lines up in any projection.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use egui::{Align2, Color32, FontId, Pos2, Rect, RichText, Shape, Ui, pos2, vec2};
 use proj4rs::proj::Proj;
@@ -116,7 +116,11 @@ const KNOWN_CRS: &[(u32, &str, &str)] = &[
         "WGS 84, longitude/latitude",
         "+proj=longlat +datum=WGS84 +no_defs",
     ),
-    (3857, "WGS 84 / Pseudo-Mercator (web maps)", ""),
+    (
+        3857,
+        "WGS 84 / Pseudo-Mercator (web maps)",
+        "+proj=merc +a=6378137 +b=6378137 +lat_ts=0 +lon_0=0 +x_0=0 +y_0=0 +k=1 +units=m +nadgrids=@null +wktext +no_defs",
+    ),
     (
         2100,
         "GGRS87 / Greek Grid (ΕΓΣΑ87)",
@@ -130,6 +134,19 @@ const KNOWN_CRS: &[(u32, &str, &str)] = &[
          +towgs84=8.846,-4.394,-1.122,-0.00237,-0.146528,0.130428,0.783926 +units=m +no_defs",
     ),
     (
+        3088,
+        "NAD83 / Kentucky Single Zone",
+        "+proj=lcc +lat_1=37.08333333333334 +lat_2=38.66666666666666 +lat_0=36.33333333333334 \
+         +lon_0=-85.75 +x_0=1500000 +y_0=1000000 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs",
+    ),
+    (
+        3089,
+        "NAD83 / Kentucky Single Zone (ftUS)",
+        "+proj=lcc +lat_1=37.08333333333334 +lat_2=38.66666666666666 +lat_0=36.33333333333334 \
+         +lon_0=-85.75 +x_0=1500000 +y_0=1000000 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=us-ft \
+         +no_defs",
+    ),
+    (
         27700,
         "OSGB36 / British National Grid",
         "+proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 +x_0=400000 +y_0=-100000 +ellps=airy \
@@ -137,41 +154,95 @@ const KNOWN_CRS: &[(u32, &str, &str)] = &[
     ),
 ];
 
-/// The proj string of an EPSG code: the list above, plus every UTM zone
-/// (WGS 84: 326xx north, 327xx south; ETRS89: 258xx; NAD83: 269xx).
+/// The proj string of an EPSG code: the list above, else the EPSG database
+/// (every coordinate system with a proj definition).
 fn epsg_proj(code: u32) -> Option<String> {
     if let Some((_, _, p)) = KNOWN_CRS.iter().find(|c| c.0 == code) {
         return Some(p.to_string());
     }
-    let zone = code % 100;
-    let utm = |extra: &str| {
-        (1..=60)
-            .contains(&zone)
-            .then(|| format!("+proj=utm +zone={zone} {extra} +units=m +no_defs"))
-    };
-    match code / 100 {
-        326 => utm("+datum=WGS84"),
-        327 => utm("+south +datum=WGS84"),
-        258 => utm("+ellps=GRS80 +towgs84=0,0,0,0,0,0,0"),
-        269 => utm("+datum=NAD83"),
-        _ => None,
-    }
+    let def = crs_definitions::from_code(u16::try_from(code).ok()?)?;
+    (!def.proj4.is_empty()).then(|| def.proj4.to_string())
 }
 
-/// A short description of an EPSG code, for the settings dialog.
+/// A short description of an EPSG code, for the settings dialog: its name
+/// from the list above or the EPSG database, else the projection and units.
 fn epsg_name(code: u32) -> Option<String> {
     if let Some((_, name, _)) = KNOWN_CRS.iter().find(|c| c.0 == code) {
         return Some(name.to_string());
     }
+    if let Some(name) = CRS_NAMES.lines().find_map(|l| {
+        let (c, n) = l.split_once('\t')?;
+        (c.parse() == Ok(code)).then_some(n)
+    }) {
+        return Some(name.to_string());
+    }
     let zone = code % 100;
-    match code / 100 {
+    let utm = match code / 100 {
         326 => Some(format!("WGS 84 / UTM zone {zone}N")),
         327 => Some(format!("WGS 84 / UTM zone {zone}S")),
         258 => Some(format!("ETRS89 / UTM zone {zone}N")),
         269 => Some(format!("NAD83 / UTM zone {zone}N")),
         _ => None,
+    };
+    let proj = epsg_proj(code)?;
+    if utm.is_some() && proj.contains("+proj=utm") {
+        return utm;
     }
-    .filter(|_| epsg_proj(code).is_some())
+    let param = |k: &str| {
+        proj.split_whitespace()
+            .find_map(|p| p.strip_prefix(k))
+            .map(str::to_string)
+    };
+    let units = match param("+units=").as_deref() {
+        Some("m") => "meters".to_string(),
+        Some("us-ft") => "US feet".to_string(),
+        Some("ft") => "feet".to_string(),
+        Some(u) => u.to_string(),
+        None if param("+proj=").as_deref() == Some("longlat") => "degrees".to_string(),
+        None => "meters".to_string(),
+    };
+    Some(format!(
+        "{} projection, {units}",
+        param("+proj=").unwrap_or_default()
+    ))
+}
+
+/// Names of the EPSG coordinate systems (code, tab, name; deprecated ones
+/// left out), taken from the WKT definitions of the `crs-definitions` crate.
+const CRS_NAMES: &str = include_str!("crs_names.tsv");
+
+/// A coordinate system of the list: code, name, "epsg:code name" in
+/// lower case for searching.
+type CrsEntry = (u32, String, String);
+
+/// The coordinate systems that can be used, for the list of the source dialog.
+fn crs_list() -> &'static [CrsEntry] {
+    static LIST: OnceLock<Vec<CrsEntry>> = OnceLock::new();
+    LIST.get_or_init(|| {
+        CRS_NAMES
+            .lines()
+            .filter_map(|l| {
+                let (code, name) = l.split_once('\t')?;
+                let code: u32 = code.parse().ok()?;
+                Geo::parse(&format!("EPSG:{code}")).ok()?;
+                let label = name.to_string();
+                let lower = format!("epsg:{code} {name}").to_lowercase();
+                Some((code, label, lower))
+            })
+            .collect()
+    })
+}
+
+/// The CRS Units entry of an EPSG code.
+fn epsg_units(code: u32) -> usize {
+    let proj = epsg_proj(code).unwrap_or_default();
+    if code == 4326 || proj.contains("+proj=longlat") {
+        3
+    } else if proj.contains("+units=us-ft") || proj.contains("+units=ft") {
+        1
+    } else {
+        2
+    }
 }
 
 /// Converts network coordinates to and from longitude/latitude (degrees).
@@ -200,7 +271,7 @@ impl Geo {
                     4326 => return Ok(Geo::LonLat),
                     3857 | 900913 => return Ok(Geo::WebMercator),
                     _ => epsg_proj(code).ok_or(format!(
-                        "EPSG:{code} is not in the list; enter its proj string"
+                        "EPSG:{code} is not a known EPSG code; enter its proj string"
                     ))?,
                 }
             }
@@ -244,6 +315,22 @@ impl Geo {
             }
         }
     }
+}
+
+/// Whether `geo` turns the network's extent `b` into real longitudes and
+/// latitudes, i.e. the network can be in that coordinate system.
+fn fits(geo: &Geo, b: [f64; 4]) -> bool {
+    [
+        [b[0], b[1]],
+        [b[2], b[3]],
+        [(b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0],
+    ]
+    .into_iter()
+    .all(|p| geo.to_lonlat(p).is_some_and(valid_lonlat))
+}
+
+fn valid_lonlat([lon, lat]: [f64; 2]) -> bool {
+    (-180.0..=180.0).contains(&lon) && (-90.0..=90.0).contains(&lat)
 }
 
 /// Whether coordinates within `b` can only be longitude/latitude.
@@ -322,6 +409,8 @@ pub struct BasemapState {
     /// EPSG code being typed in the source dialog.
     crs_edit: Option<String>,
     units_edit: usize,
+    /// The Coordinate Reference System Selector, while open.
+    selector: Option<CrsSelector>,
     source_error: Option<String>,
     pub georef: Option<Georef>,
     pub align: Option<Align>,
@@ -536,7 +625,11 @@ fn draw_tiles(
 ) -> Result<(), String> {
     let view = app.view.clone();
     let gray = app.prefs.basemap_gray;
+    let bounds = app.bounds();
     let geo = geo(app)?;
+    if bounds.is_some_and(|b| !fits(geo, b)) {
+        return Err("the network's coordinates are not in the chosen coordinate system".into());
+    }
     // tile-space coordinates of a screen point
     let unit_at = |p: Pos2| geo.to_lonlat(view.to_world(rect, p)).map(to_unit);
 
@@ -761,13 +854,27 @@ pub fn dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
         let lonlat = app.bounds().is_some_and(looks_lonlat);
         // Longitude/latitude (EPSG:4326) unless another system was chosen for this file.
         let custom = !empty && saved.as_deref().is_some_and(|c| c != "4326");
+        let saved_proj = app
+            .prefs
+            .basemap_crs
+            .get(&app.file_name)
+            .filter(|c| !c.starts_with("EPSG:"))
+            .cloned();
         app.basemap.crs_edit = Some(if custom {
             saved.unwrap_or_default()
-        } else {
+        } else if let Some(p) = saved_proj.filter(|_| !empty) {
+            p
+        } else if empty || lonlat {
             "4326".into()
+        } else {
+            // projected coordinates: the user has to say which system
+            String::new()
         });
-        app.basemap.units_edit = if !custom || lonlat {
+        let chosen = app.basemap.crs_edit.as_deref().unwrap_or_default();
+        app.basemap.units_edit = if empty || lonlat {
             3
+        } else if !chosen.is_empty() {
+            crs_units(chosen)
         } else {
             units.unwrap_or(2)
         };
@@ -833,36 +940,70 @@ pub fn dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
         .iter()
         .map(|&k| (k, thumbnail(app, &ctx, k)))
         .collect();
+    let recent = app.prefs.crs_recent.clone();
     let st = &mut app.basemap;
     let edit = st.crs_edit.as_mut().unwrap();
     let units = &mut st.units_edit;
+    let selector = &mut st.selector;
     group(ui, "Internet Map Providers", &mut |ui| {
-        ui.horizontal(|ui| {
-            ui.add_enabled_ui(!empty, |ui| {
-                ui.vertical(|ui| {
-                    ui.label("CRS EPSG");
-                    ui.add(egui::TextEdit::singleline(edit).desired_width(120.0));
-                    let name = edit.trim().parse().ok().and_then(epsg_name);
-                    ui.label(RichText::new(name.unwrap_or_default()).weak().size(11.0));
-                });
+        ui.add_enabled_ui(!empty, |ui| {
+            // QGIS's CRS widget: the chosen system and the recently used
+            // ones in a drop-down, the full selector behind the globe button
+            ui.horizontal(|ui| {
+                ui.label("CRS");
                 ui.label(RichText::new(" ? ").color(crate::widgets::ACCENT).strong())
                     .on_hover_text(
-                        "The EPSG code of the coordinate system the network's coordinates are in, \
-                         e.g. 4326 for longitude/latitude, 2100 for the Greek Grid, 6312 for Cyprus, \
-                         326zz for UTM zone zz north. Find it at https://epsg.io.",
+                        "The coordinate system the network's coordinates are in, e.g. \
+                         EPSG:4326 for longitude/latitude, 2100 for the Greek Grid, 6312 for \
+                         Cyprus, 3089 for Kentucky (US feet). The globe button lists every \
+                         EPSG system and takes a proj string for others.",
                     );
-                ui.add_space(30.0);
-                ui.vertical(|ui| {
-                    ui.label("CRS Units");
-                    egui::ComboBox::from_id_salt("basemap_units")
-                        .selected_text(UNITS[*units])
-                        .width(130.0)
-                        .show_ui(ui, |ui| {
-                            for (k, u) in UNITS.iter().enumerate() {
-                                ui.selectable_value(units, k, *u);
+            });
+            ui.horizontal(|ui| {
+                // a fixed width: the available one would widen the window every frame
+                let w = 340.0;
+                egui::ComboBox::from_id_salt("basemap_crs")
+                    .selected_text(crs_label(edit))
+                    .width(w)
+                    .truncate()
+                    .show_ui(ui, |ui| {
+                        let mut items: Vec<String> = Vec::new();
+                        for c in std::iter::once(edit.trim().to_string())
+                            .chain(recent.iter().cloned())
+                            .chain(["4326".to_string()])
+                        {
+                            if !c.is_empty() && !items.contains(&c) {
+                                items.push(c);
                             }
-                        });
-                });
+                        }
+                        for c in items {
+                            if ui
+                                .selectable_label(edit.trim() == c, crs_label(&c))
+                                .clicked()
+                            {
+                                *units = crs_units(&c);
+                                *edit = c;
+                            }
+                        }
+                    });
+                if globe_button(ui)
+                    .on_hover_text("Select CRS (Coordinate Reference System Selector)")
+                    .clicked()
+                {
+                    *selector = Some(CrsSelector::new(edit));
+                }
+            });
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label("CRS Units");
+                egui::ComboBox::from_id_salt("basemap_units")
+                    .selected_text(UNITS[*units])
+                    .width(130.0)
+                    .show_ui(ui, |ui| {
+                        for (k, u) in UNITS.iter().enumerate() {
+                            ui.selectable_value(units, k, *u);
+                        }
+                    });
             });
         });
         ui.add_space(10.0);
@@ -922,6 +1063,19 @@ pub fn dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
     if let Some(err) = &st.source_error {
         ui.label(RichText::new(err).color(Color32::from_rgb(0xc0, 0x39, 0x2b)));
     }
+    let chosen = app
+        .basemap
+        .selector
+        .as_mut()
+        .and_then(|s| crs_selector(&ctx, s, &recent));
+    if let Some(choice) = chosen {
+        app.basemap.selector = None;
+        if let Some(c) = choice {
+            app.basemap.units_edit = crs_units(&c);
+            app.basemap.crs_edit = Some(c);
+            app.basemap.source_error = None;
+        }
+    }
     let mut close = false;
     match pick {
         Some(BasemapKind::Image) => {
@@ -931,12 +1085,25 @@ pub fn dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
         Some(kind) => {
             let code = app.basemap.crs_edit.clone().unwrap_or_default();
             let units = app.basemap.units_edit;
-            let def = if units == 3 && code.trim().is_empty() {
+            let code = code.trim();
+            let def = if units == 3 && code.is_empty() {
                 "EPSG:4326".to_string()
+            } else if code.starts_with('+') {
+                // a proj string
+                code.to_string()
             } else {
-                format!("EPSG:{}", code.trim())
+                format!("EPSG:{}", code.trim_start_matches("EPSG:"))
             };
-            match Geo::parse(&def) {
+            let bounds = app.bounds();
+            let parsed = Geo::parse(&def).and_then(|g| match bounds {
+                Some(b) if !fits(&g, b) => Err(format!(
+                    "The network's coordinates ({:.0}, {:.0}) are not in {def}",
+                    (b[0] + b[2]) / 2.0,
+                    (b[1] + b[3]) / 2.0
+                )),
+                _ => Ok(g),
+            });
+            match parsed {
                 Err(e) => {
                     app.basemap.source_error = Some(if code.trim().is_empty() {
                         "Enter the EPSG code of the network's coordinates".into()
@@ -945,6 +1112,11 @@ pub fn dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
                     })
                 }
                 Ok(_) => {
+                    let key = def.strip_prefix("EPSG:").unwrap_or(&def).to_string();
+                    let recent = &mut app.prefs.crs_recent;
+                    recent.retain(|c| *c != key);
+                    recent.insert(0, key);
+                    recent.truncate(10);
                     app.prefs.basemap_crs.insert(app.file_name.clone(), def);
                     app.net
                         .set_option("BACKDROP", "UNITS", &UNITS[units].to_ascii_uppercase());
@@ -965,6 +1137,394 @@ pub fn dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
         app.basemap.crs_edit = None;
     }
     close
+}
+
+/// How a coordinate system of the CRS field reads: "EPSG:6312 - CGRS93 /
+/// Cyprus Local Transverse Mercator", or the proj string of a custom one.
+fn crs_label(c: &str) -> String {
+    let c = c.trim();
+    if c.is_empty() {
+        "Select the coordinate system…".into()
+    } else if c.starts_with('+') {
+        format!("Custom CRS: {c}")
+    } else {
+        let code = c.trim_start_matches("EPSG:");
+        match code.parse().ok().and_then(epsg_name) {
+            Some(name) => format!("EPSG:{code} - {name}"),
+            None => format!("EPSG:{code}"),
+        }
+    }
+}
+
+/// The CRS Units entry of a coordinate system of the CRS field.
+fn crs_units(c: &str) -> usize {
+    let c = c.trim();
+    if c.starts_with('+') {
+        if c.contains("+proj=longlat") {
+            3
+        } else if c.contains("+units=us-ft") || c.contains("+units=ft") {
+            1
+        } else {
+            2
+        }
+    } else {
+        c.trim_start_matches("EPSG:").parse().map_or(2, epsg_units)
+    }
+}
+
+/// The globe button beside the CRS field.
+fn globe_button(ui: &mut Ui) -> egui::Response {
+    let resp = ui.add(egui::Button::new("").min_size(vec2(30.0, 24.0)));
+    let fg = ui.visuals().widgets.style(&resp).fg_stroke.color;
+    crate::icons::paint(
+        ui.painter(),
+        crate::icons::Icon::Basemap,
+        resp.rect.center(),
+        16.0,
+        fg,
+    );
+    resp
+}
+
+/// The state of QGIS's Coordinate Reference System Selector.
+pub struct CrsSelector {
+    filter: String,
+    /// A proj string instead of a predefined system.
+    custom: bool,
+    proj: String,
+    selected: Option<u32>,
+    /// Whether the list still has to scroll to the selected system.
+    scroll: bool,
+}
+
+impl CrsSelector {
+    fn new(current: &str) -> Self {
+        let c = current.trim();
+        let custom = c.starts_with('+');
+        CrsSelector {
+            filter: String::new(),
+            custom,
+            proj: if custom { c.to_string() } else { String::new() },
+            selected: c.trim_start_matches("EPSG:").parse().ok(),
+            scroll: true,
+        }
+    }
+}
+
+/// A projection's name from its proj short name.
+fn method_name(p: &str) -> &str {
+    match p {
+        "longlat" => "Geographic (longitude/latitude)",
+        "tmerc" | "etmerc" => "Transverse Mercator",
+        "utm" => "Universal Transverse Mercator (UTM)",
+        "lcc" => "Lambert Conformal Conic",
+        "merc" => "Mercator",
+        "stere" | "sterea" => "Stereographic",
+        "aea" => "Albers Equal Area",
+        "laea" => "Lambert Azimuthal Equal Area",
+        "omerc" => "Oblique Mercator",
+        "cass" => "Cassini-Soldner",
+        "eqc" => "Equidistant Cylindrical",
+        "somerc" => "Swiss Oblique Mercator",
+        "krovak" => "Krovak",
+        "poly" => "Polyconic",
+        _ => p,
+    }
+}
+
+/// The units and method of a proj string, for the Properties box.
+fn proj_properties(proj: &str) -> (String, String) {
+    let param = |k: &str| proj.split_whitespace().find_map(|p| p.strip_prefix(k));
+    let method = param("+proj=").unwrap_or_default();
+    let units = match param("+units=") {
+        Some("m") => "meters",
+        Some("us-ft") => "US survey feet",
+        Some("ft") => "feet",
+        Some(u) => u,
+        None if method == "longlat" => "degrees",
+        None => "meters",
+    };
+    (units.to_string(), method_name(method).to_string())
+}
+
+/// Where the second column (Authority ID) of the selector tables starts.
+fn crs_split(r: Rect) -> f32 {
+    r.left() + r.width() * 0.68
+}
+
+/// One row of a selector table: the name, and the authority id in a second
+/// column.
+fn crs_row(ui: &mut Ui, selected: bool, name: &str, id: &str, stripe: bool) -> egui::Response {
+    let h = ui.spacing().interact_size.y;
+    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h), egui::Sense::click());
+    let v = ui.visuals();
+    if selected {
+        ui.painter().rect_filled(r, 0.0, v.selection.bg_fill);
+    } else if resp.hovered() {
+        ui.painter()
+            .rect_filled(r, 0.0, v.widgets.hovered.weak_bg_fill);
+    } else if stripe {
+        ui.painter().rect_filled(r, 0.0, v.faint_bg_color);
+    }
+    let color = if selected {
+        v.selection.stroke.color
+    } else {
+        v.text_color()
+    };
+    let split = crs_split(r);
+    let font = FontId::proportional(13.0);
+    let clip = Rect::from_min_max(r.min, pos2(split - 6.0, r.max.y)).intersect(ui.clip_rect());
+    ui.painter().with_clip_rect(clip).text(
+        r.left_center() + vec2(6.0, 0.0),
+        Align2::LEFT_CENTER,
+        name,
+        font.clone(),
+        color,
+    );
+    ui.painter().text(
+        pos2(split + 6.0, r.center().y),
+        Align2::LEFT_CENTER,
+        id,
+        font,
+        color,
+    );
+    resp.on_hover_text(name)
+}
+
+/// The header of a selector table.
+fn crs_header(ui: &mut Ui) {
+    let h = ui.spacing().interact_size.y;
+    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), egui::Sense::hover());
+    let v = ui.visuals();
+    ui.painter()
+        .rect_filled(r, 0.0, v.widgets.noninteractive.bg_fill);
+    let font = FontId::proportional(13.0);
+    let color = v.strong_text_color();
+    ui.painter().text(
+        r.left_center() + vec2(6.0, 0.0),
+        Align2::LEFT_CENTER,
+        "Coordinate Reference System",
+        font.clone(),
+        color,
+    );
+    ui.painter().text(
+        pos2(crs_split(r) + 6.0, r.center().y),
+        Align2::LEFT_CENTER,
+        "Authority ID",
+        font,
+        color,
+    );
+}
+
+/// A bordered box for the selector's tables.
+fn crs_box<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    egui::Frame::NONE
+        .stroke(egui::Stroke::new(1.0, Color32::from_gray(190)))
+        .inner_margin(egui::Margin::same(1))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            add(ui)
+        })
+        .inner
+}
+
+/// A selector table of coordinate systems; returns whether a row was
+/// double-clicked.
+fn crs_table(
+    ui: &mut Ui,
+    id: &str,
+    height: f32,
+    rows: &[&CrsEntry],
+    selected: &mut Option<u32>,
+    scroll: &mut bool,
+) -> bool {
+    let mut double = false;
+    crs_box(ui, |ui| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        crs_header(ui);
+        let h = ui.spacing().interact_size.y;
+        let mut area = egui::ScrollArea::vertical().id_salt(id);
+        if std::mem::take(scroll)
+            && let Some(k) = rows.iter().position(|e| Some(e.0) == *selected)
+        {
+            area = area.vertical_scroll_offset((k as f32 * h - height / 2.0).max(0.0));
+        }
+        area.min_scrolled_height(height)
+            .max_height(height)
+            .auto_shrink([false, false])
+            .show_rows(ui, h, rows.len(), |ui, range| {
+                for k in range {
+                    let e = rows[k];
+                    let r = crs_row(
+                        ui,
+                        *selected == Some(e.0),
+                        &e.1,
+                        &format!("EPSG:{}", e.0),
+                        k % 2 == 1,
+                    );
+                    if r.clicked() {
+                        *selected = Some(e.0);
+                    }
+                    if r.double_clicked() {
+                        *selected = Some(e.0);
+                        double = true;
+                    }
+                }
+            });
+    });
+    double
+}
+
+/// QGIS's Coordinate Reference System Selector: every EPSG system (with a
+/// filter), the recently used ones and the chosen one's properties, or a
+/// custom proj string. Returns Some once closed: with the chosen system
+/// ("6312" or a proj string) on OK, None on Cancel.
+fn crs_selector(
+    ctx: &egui::Context,
+    sel: &mut CrsSelector,
+    recent: &[String],
+) -> Option<Option<String>> {
+    let mut result = None;
+    let modal = egui::Modal::new(egui::Id::new("crs_selector")).show(ctx, |ui| {
+        ui.set_width(560.0);
+        ui.label(
+            RichText::new(crate::i18n::tr("Coordinate Reference System Selector"))
+                .size(17.0)
+                .color(crate::widgets::ACCENT),
+        );
+        ui.label("Select the coordinate system the network's coordinates are in.");
+        ui.add_space(6.0);
+        egui::ComboBox::from_id_salt("crs_kind")
+            .selected_text(if sel.custom {
+                "Custom CRS"
+            } else {
+                "Predefined CRS"
+            })
+            .width(544.0)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut sel.custom, false, "Predefined CRS");
+                ui.selectable_value(&mut sel.custom, true, "Custom CRS");
+            });
+        ui.add_space(6.0);
+        let mut ok = false;
+        let mut proj = None;
+        if sel.custom {
+            ui.label("Proj string (e.g. +proj=tmerc +lat_0=0 +lon_0=24 +k=0.9996 …)");
+            ui.add(
+                egui::TextEdit::multiline(&mut sel.proj)
+                    .desired_rows(4)
+                    .desired_width(f32::INFINITY)
+                    .font(egui::TextStyle::Monospace),
+            );
+            let p = sel.proj.trim();
+            match Geo::parse(p) {
+                Ok(_) => proj = Some(p.to_string()),
+                Err(e) if !p.is_empty() => {
+                    ui.label(RichText::new(e).color(Color32::from_rgb(0xc0, 0x39, 0x2b)));
+                }
+                Err(_) => {}
+            }
+        } else {
+            ui.horizontal(|ui| {
+                ui.label("Filter");
+                ui.add(
+                    egui::TextEdit::singleline(&mut sel.filter)
+                        .hint_text("code or name, e.g. Kentucky, 2100, UTM zone 36N")
+                        .desired_width(f32::INFINITY),
+                );
+            });
+            let words: Vec<String> = sel
+                .filter
+                .split_whitespace()
+                .map(str::to_lowercase)
+                .collect();
+            let matches = |c: &CrsEntry| words.iter().all(|w| c.2.contains(w.as_str()));
+            let all = crs_list();
+            ui.add_space(6.0);
+            ui.label(RichText::new("Recently Used Coordinate Reference Systems").strong());
+            let used: Vec<&CrsEntry> = recent
+                .iter()
+                .filter_map(|c| c.parse::<u32>().ok())
+                .filter_map(|code| all.iter().find(|e| e.0 == code))
+                .filter(|e| matches(e))
+                .collect();
+            ok |= crs_table(ui, "crs_recent", 90.0, &used, &mut sel.selected, &mut false);
+            ui.add_space(6.0);
+            let rows: Vec<&CrsEntry> = all.iter().filter(|e| matches(e)).collect();
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Predefined Coordinate Reference Systems").strong());
+                ui.label(RichText::new(format!("({})", rows.len())).weak());
+            });
+            ok |= crs_table(
+                ui,
+                "crs_all",
+                230.0,
+                &rows,
+                &mut sel.selected,
+                &mut sel.scroll,
+            );
+            proj = sel.selected.and_then(epsg_proj);
+        }
+        // the chosen system's properties
+        ui.add_space(6.0);
+        crs_box(ui, |ui| {
+            egui::Frame::NONE
+                .inner_margin(egui::Margin::same(8))
+                .show(ui, |ui| {
+                    ui.set_min_height(86.0);
+                    ui.set_width(ui.available_width());
+                    let name = if sel.custom {
+                        Some("Custom CRS".to_string())
+                    } else {
+                        sel.selected.and_then(epsg_name)
+                    };
+                    match (&name, &proj) {
+                        (Some(name), Some(proj)) => {
+                            let (units, method) = proj_properties(proj);
+                            ui.label(RichText::new(name).strong());
+                            ui.label(format!("•  Units: {units}"));
+                            ui.label(format!("•  Method: {method}"));
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(proj.as_str()).monospace().weak().size(11.0),
+                                )
+                                .wrap(),
+                            );
+                        }
+                        _ => {
+                            ui.label(RichText::new("No coordinate system selected").weak());
+                        }
+                    }
+                });
+        });
+        ui.add_space(10.0);
+        let chosen = if sel.custom {
+            proj.clone()
+        } else {
+            sel.selected.map(|c| c.to_string())
+        };
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.button("Help").clicked() {
+                crate::help::open(ui.ctx(), "Using a Basemap");
+            }
+            if ui.button("Cancel").clicked() {
+                result = Some(None);
+            }
+            if ui
+                .add_enabled(chosen.is_some(), egui::Button::new("OK"))
+                .clicked()
+            {
+                ok = true;
+            }
+        });
+        if ok && chosen.is_some() {
+            result = Some(chosen);
+        }
+    });
+    if modal.should_close() && result.is_none() {
+        result = Some(None);
+    }
+    result
 }
 
 /// The Basemap ▾ drop-down of the Map toolbar, as EPANET-UI's.
@@ -1445,9 +2005,169 @@ mod tests {
     }
 
     #[test]
+    fn kentucky_single_zone_ky10() {
+        // ky10.inp (ASCE TF WDST) is in Kentucky State Plane, US feet:
+        // its center should land in eastern Kentucky.
+        let g = Geo::parse("EPSG:3089").unwrap();
+        let b = [5709604.87, 3801262.0, 5810617.2, 3912293.0];
+        assert!(fits(&g, b));
+        let [lon, lat] = g.to_lonlat([5_760_000.0, 3_856_000.0]).unwrap();
+        assert!(
+            (-84.0..-82.0).contains(&lon) && (37.0..38.5).contains(&lat),
+            "{lon} {lat}"
+        );
+        // the false origin (1 500 000 m, 1 000 000 m) is the projection center
+        let [lon, lat] = g.to_lonlat([4_921_250.0, 3_280_833.333]).unwrap();
+        assert!(
+            (lon + 85.75).abs() < 1e-4 && (lat - 36.3333).abs() < 1e-3,
+            "{lon} {lat}"
+        );
+        // not longitude/latitude
+        assert!(!fits(&Geo::LonLat, b));
+    }
+
+    #[test]
+    fn epsg_database() {
+        // from the EPSG database: Lambert-93 (France), Kentucky North (ftUS),
+        // Gauss-Krüger (Germany), and every code there with a supported projection
+        for (code, lonlat) in [
+            (2154, [2.35, 48.85]),
+            (2246, [-84.5, 38.05]),
+            (31468, [11.57, 48.14]),
+        ] {
+            let g = Geo::parse(&format!("EPSG:{code}")).unwrap();
+            let p = g.lonlat_to(lonlat).unwrap();
+            let q = g.to_lonlat(p).unwrap();
+            assert!(
+                (q[0] - lonlat[0]).abs() < 1e-6 && (q[1] - lonlat[1]).abs() < 1e-6,
+                "{code}"
+            );
+        }
+        assert_eq!(
+            epsg_name(2246).as_deref(),
+            Some("NAD83 / Kentucky North (ftUS)")
+        );
+        assert!(epsg_proj(60000).is_none());
+        let ok = (2000..=32767)
+            .filter(|&c| epsg_proj(c).is_some())
+            .filter(|&c| Geo::parse(&format!("EPSG:{c}")).is_ok())
+            .count();
+        assert!(ok > 4000, "{ok}");
+    }
+
+    #[test]
+    fn crs_list_search() {
+        let list = crs_list();
+        assert!(list.len() > 4000, "{}", list.len());
+        let ky: Vec<u32> = list
+            .iter()
+            .filter(|c| c.2.contains("kentucky") && c.2.contains("single"))
+            .map(|c| c.0)
+            .collect();
+        assert!(ky.contains(&3089), "{ky:?}");
+        assert!(
+            list.iter()
+                .any(|c| c.0 == 2100 && c.1.contains("Greek Grid"))
+        );
+        assert_eq!(epsg_units(3089), 1);
+        assert_eq!(epsg_units(2100), 2);
+        assert_eq!(epsg_units(4326), 3);
+    }
+
+    /// The selector as drawn: its pieces of text and the modal's rectangle.
+    fn draw_selector(sel: &mut CrsSelector, recent: &[String]) -> (Vec<String>, Rect) {
+        let ctx = egui::Context::default();
+        let input = || egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1400.0, 900.0))),
+            ..Default::default()
+        };
+        let mut texts = Vec::new();
+        let mut area = Rect::NOTHING;
+        for _ in 0..3 {
+            let mut out = ctx.run_ui(input(), |ui| {
+                crs_selector(ui.ctx(), sel, recent);
+            });
+            out.textures_delta.clear();
+            texts.clear();
+            area = Rect::NOTHING;
+            for c in &out.shapes {
+                if let Shape::Text(t) = &c.shape {
+                    texts.push(t.galley.text().to_string());
+                    area = area.union(t.visual_bounding_rect());
+                }
+            }
+        }
+        (texts, area)
+    }
+
+    #[test]
+    fn crs_selector_lists_and_filters() {
+        let mut sel = CrsSelector::new("6312");
+        let (texts, area) = draw_selector(&mut sel, &["6312".into(), "2100".into()]);
+        for t in [
+            "Coordinate Reference System Selector",
+            "Recently Used Coordinate Reference Systems",
+            "Predefined Coordinate Reference Systems",
+            "CGRS93 / Cyprus Local Transverse Mercator",
+            "EPSG:2100",
+            "Authority ID",
+            "•  Units: meters",
+            "•  Method: Transverse Mercator",
+            "OK",
+            "Cancel",
+        ] {
+            assert!(texts.iter().any(|x| x == t), "{t} missing in {texts:?}");
+        }
+        assert!(area.height() < 860.0, "{area:?}");
+        sel.filter = "kentucky single".into();
+        sel.selected = Some(3089);
+        let (texts, _) = draw_selector(&mut sel, &[]);
+        assert!(texts.iter().any(|x| x == "EPSG:3089"), "{texts:?}");
+        assert!(
+            texts.iter().any(|x| x == "•  Units: US survey feet"),
+            "{texts:?}"
+        );
+        assert!(!texts.iter().any(|x| x == "EPSG:2100"));
+        assert_eq!(
+            crs_label("3089"),
+            "EPSG:3089 - NAD83 / Kentucky Single Zone (ftUS)"
+        );
+        assert_eq!(crs_units("3089"), 1);
+    }
+
+    /// The Select a Basemap Source window keeps its width (the CRS drop-down
+    /// must not widen it frame after frame).
+    #[test]
+    fn source_dialog_keeps_its_width() {
+        let (ctx, mut app) = crate::msx::tests::new_app();
+        app.basemap.crs_edit = Some("3089".into());
+        app.dialog = crate::app::Dialog::Basemap;
+        let input = || egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 900.0))),
+            ..Default::default()
+        };
+        let mut widths = Vec::new();
+        for _ in 0..12 {
+            let mut out = ctx.run_ui(input(), |ui| crate::dialogs::show(&mut app, ui.ctx()));
+            out.textures_delta.clear();
+            let mut area = Rect::NOTHING;
+            for c in &out.shapes {
+                if let Shape::Text(t) = &c.shape
+                    && t.galley.text() == "Select a Basemap Source"
+                {
+                    area = c.clip_rect;
+                }
+            }
+            widths.push(area.width());
+        }
+        let last = *widths.last().unwrap();
+        assert!(last < 560.0, "{widths:?}");
+        assert_eq!(widths[5], last, "{widths:?}");
+    }
+    #[test]
     fn utm_codes() {
         assert!(epsg_proj(32634).is_some());
-        assert!(epsg_proj(32761).is_none());
+        assert!(epsg_proj(32799).is_none());
         assert_eq!(epsg_name(32636).as_deref(), Some("WGS 84 / UTM zone 36N"));
     }
 }

@@ -213,6 +213,8 @@ pub struct Prefs {
     pub basemap_gray: bool,
     /// Coordinate system of each file's map ("EPSG:nnnn" or a proj string).
     pub basemap_crs: HashMap<String, String>,
+    /// Recently used coordinate systems ("6312" or a proj string), newest first.
+    pub crs_recent: Vec<String>,
     // layers
     pub show_junctions: bool,
     pub show_tanks: bool,
@@ -295,6 +297,7 @@ impl Default for Prefs {
             basemap_fade: 0.3,
             basemap_gray: false,
             basemap_crs: HashMap::new(),
+            crs_recent: Vec::new(),
             show_junctions: true,
             show_tanks: true,
             show_links: true,

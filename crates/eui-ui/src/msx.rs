@@ -878,7 +878,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::style::{LinkTheme, NodeTheme};
 
-    fn new_app() -> (egui::Context, EpanetApp) {
+    pub(crate) fn new_app() -> (egui::Context, EpanetApp) {
         let ctx = egui::Context::default();
         let app = EpanetApp::new(&eframe::CreationContext::_new_kittest(ctx.clone()));
         (ctx, app)
