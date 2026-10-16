@@ -6,13 +6,49 @@ small scripting language with a syntax close to JavaScript and Rust, or in
 desktop application; nothing has to be compiled.
 
 A plugin lives in a folder named like the plugin, holding its script, named
-the same way, and its icon, `icon.png` (a PNG of about 64x64; optional):
+the same way, its `metadata.txt` and its icon, `icon.png` (a PNG of about
+64x64; optional):
 
 ```text
 Low Pressure/
     Low Pressure.rhai
+    metadata.txt
     icon.png
 ```
+
+`metadata.txt` tells the Plugin Manager the plugin's version, authors,
+changelog and links (optional, but every plugin should have one):
+
+```ini
+[general]
+name=Low Pressure
+version=1.1
+description=Junctions whose pressure drops below a limit during the simulation
+author=Your name, Another author
+email=you@example.org
+about=A longer text, shown in the Plugin Manager.
+    A line that starts with a space continues the one above it.
+tracker=https://github.com/you/your-plugin/issues
+repository=https://github.com/you/your-plugin
+homepage=https://…
+tags=results, pressure
+icon=icon.png
+wepanetMinimumVersion=0.1
+experimental=False
+deprecated=False
+
+changelog=2026-11-01  Low Pressure 1.1:
+        Faster.
+    2026-10-14  Low Pressure 1.0:
+        First version.
+```
+
+`name`, `version`, `description` and `author` are mandatory, and `name` must
+be the name the script gives itself. `wepanetMinimumVersion` and
+`wepanetMaximumVersion` (optional) keep the plugin from being installed in
+WEPANET versions it does not work with; `icon` names its icon in the folder.
+Lines starting with `#` or `;` are comments. A Python plugin finds the file in
+`wepanet.plugin_dir`.
 
 Install plugins with **Plugins > Manage Plugins**: from a repository, or with
 **Install from ZIP**, which takes a ZIP of the plugin's folder (or the script
@@ -38,7 +74,7 @@ of them can be installed from the Plugin Manager:
 
 ## The Plugin Manager and plugin repositories
 
-As in QGIS, the Plugin Manager offers the plugins of **repositories**: XML
+Plugin Manager offers the plugins of **repositories**: XML
 files listing plugins, read from their URLs. WEPANET's own repository is
 [`plugins/plugins.xml`](../plugins/plugins.xml); add others under
 **Settings** in the Plugin Manager. Installed plugins are offered an
@@ -52,7 +88,7 @@ plugin in the list hides it from the toolbar without uninstalling it.
 To publish plugins, put them and a `plugins.xml` anywhere they can be
 downloaded from (a GitHub repository works; browsers need the server to allow
 cross-origin requests, which `raw.githubusercontent.com` does). Each plugin's
-`<download>` is a ZIP of its folder, as QGIS plugins are, or, for a plugin
+`<download>` is a ZIP of its folder or for a plugin
 that is just a script and its icon, the folder itself:
 
 ```xml
@@ -72,7 +108,11 @@ that is just a script and its icon, the folder itself:
 The icon shows in the Plugin Manager and on the plugin's toolbar button (it is
 kept with the plugin when installed). `name` must be the name the script gives
 in `fn name()`. Raise `version`
-whenever the script changes.
+whenever the script changes, in `plugins.xml` and in the plugin's
+`metadata.txt` alike. The details the Plugin Manager shows (about, changelog,
+bug tracker, code repository, email) come from `metadata.txt`; a repository
+may also give them in `<about>`, `<changelog>`, `<tracker>`, `<repository>`,
+`<email>`, `<experimental>` and `<deprecated>`.
 
 ## The shape of a plugin
 
@@ -251,3 +291,26 @@ replaces the project as one step that **Undo** takes back.
 | `status(text)` | text for the status bar |
 | `progress(text)` | shown on the status bar while the plugin runs |
 | `set_network(path_or_text)` | replaces the project with an input file |
+
+## The Python Console
+
+**Plugins > Python Console** opens a panel under the map, Python
+Console: Python lines run one after the other in one session, which keeps its
+variables, with `wepanet` already imported. Each line sees the project as it
+is then (an edit or an analysis since the last line is passed on first), and
+what it asks WEPANET to show (a table, a selection, a new project with
+`set_network`) is shown as for a plugin; what it prints is shown in the
+console. A block (`for`, `def`, …) goes on with the `...` prompt and ends
+with an empty line; Up and Down go through the lines typed before.
+
+```python
+>>> from epyt import epanet
+>>> d = epanet(wepanet.inp_file, display_msg=False)
+>>> d.getNodeCount()
+11
+```
+
+`pip install <package>` installs a package (in the browser from PyPI, with
+Pyodide's micropip). The console uses the same Python as the plugins: Pyodide
+in the browser, the local Python on the desktop, where closing the console
+ends its session.

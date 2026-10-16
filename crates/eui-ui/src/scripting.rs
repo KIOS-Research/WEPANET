@@ -473,7 +473,7 @@ pub fn poll(app: &mut EpanetApp) {
         }
     }
     for item in app.scripts.inbox.drain() {
-        match item.and_then(|(file, bytes)| install_file(app, &file, &bytes)) {
+        match item.and_then(|(file, bytes)| install_file(app, &file, &bytes, None)) {
             Ok(name) => {
                 app.status = format!("Plugin \"{name}\" loaded");
                 app.prefs.menu_tab = crate::app::MenuTab::Plugins;
@@ -495,14 +495,17 @@ pub(crate) struct ZipPlugin {
     pub script: String,
     pub source: String,
     pub icon: Option<Vec<u8>>,
+    /// Its `metadata.txt`, if it has one.
+    pub meta: Option<crate::plugin_meta::Metadata>,
     /// The other files of its folder (sub-folders too, e.g. translations or
     /// Python modules), by their path in it.
     pub files: Vec<(String, Vec<u8>)>,
 }
 
 /// A plugin packed in a ZIP of its folder: the script (`.rhai` or `.py`,
-/// named like the plugin; the shallowest one), its icon (`icon.png`, or
-/// another PNG beside the script) and whatever else the folder holds.
+/// named like the plugin; the shallowest one), its `metadata.txt`, its icon
+/// (the one the metadata names, else `icon.png`, else another PNG beside the
+/// script) and whatever else the folder holds.
 pub(crate) fn read_zip(bytes: &[u8]) -> Result<ZipPlugin, String> {
     let mut z = zip::ZipArchive::new(std::io::Cursor::new(bytes))
         .map_err(|e| format!("not a ZIP file: {e}"))?;
@@ -546,21 +549,34 @@ pub(crate) fn read_zip(bytes: &[u8]) -> Result<ZipPlugin, String> {
             .ok_or("the ZIP holds several scripts; name the plugin's like its folder")?,
     };
     let folder = dir(script);
-    let pngs: Vec<&(String, Vec<u8>)> = files
-        .iter()
-        .filter(|(n, _)| dir(n) == folder && n.to_ascii_lowercase().ends_with(".png"))
-        .collect();
-    let icon = pngs
-        .iter()
-        .find(|(n, _)| base(n).eq_ignore_ascii_case("icon.png"))
-        .or(pngs.first())
-        .map(|(_, b)| b.clone());
-    // the rest of the folder, by safe relative paths
     let prefix = if folder.is_empty() {
         String::new()
     } else {
         format!("{folder}/")
     };
+    let meta = files
+        .iter()
+        .find(|(n, _)| dir(n) == folder && base(n).eq_ignore_ascii_case(crate::plugin_meta::FILE))
+        .map(|(_, b)| crate::plugin_meta::parse(&crate::io::decode_text(b)))
+        .transpose()?;
+    let named = meta
+        .as_ref()
+        .map(|m| format!("{prefix}{}", m.icon.trim().trim_start_matches("./")));
+    let pngs: Vec<&(String, Vec<u8>)> = files
+        .iter()
+        .filter(|(n, _)| dir(n) == folder && n.to_ascii_lowercase().ends_with(".png"))
+        .collect();
+    let icon = files
+        .iter()
+        .find(|(n, _)| named.as_ref().is_some_and(|i| n == i && !i.ends_with('/')))
+        .or_else(|| {
+            pngs.iter()
+                .find(|(n, _)| base(n).eq_ignore_ascii_case("icon.png"))
+                .or(pngs.first())
+                .copied()
+        })
+        .map(|(_, b)| b.clone());
+    // the rest of the folder, by safe relative paths
     let rest: Vec<(String, Vec<u8>)> = files
         .iter()
         .filter(|(n, _)| n != script)
@@ -584,29 +600,66 @@ pub(crate) fn read_zip(bytes: &[u8]) -> Result<ZipPlugin, String> {
         script: base(script),
         source: crate::io::decode_text(source),
         icon,
+        meta,
         files: rest,
     })
 }
 
 /// Installs a plugin from a file: a ZIP of its folder (all of it is kept
-/// with the plugin), or its script alone.
+/// with the plugin), or its script alone, with the `metadata.txt` of its
+/// folder if it has one (`meta`, for a script).
 pub(crate) fn install_file(
     app: &mut EpanetApp,
     file: &str,
     bytes: &[u8],
+    meta: Option<&str>,
 ) -> Result<String, String> {
-    if !bytes.starts_with(b"PK") {
-        let name = install(app, file, &crate::io::decode_text(bytes))?;
-        app.prefs.plugin_files.remove(&name);
-        return Ok(name);
+    let (script, source, icon, meta, files) = if bytes.starts_with(b"PK") {
+        let z = read_zip(bytes)?;
+        (z.script, z.source, Some(z.icon), z.meta, z.files)
+    } else {
+        let files = meta
+            .map(|m| vec![(crate::plugin_meta::FILE.to_string(), m.as_bytes().to_vec())])
+            .unwrap_or_default();
+        let meta = meta.map(crate::plugin_meta::parse).transpose()?;
+        (
+            file.to_string(),
+            crate::io::decode_text(bytes),
+            None,
+            meta,
+            files,
+        )
+    };
+    if let Some(m) = &meta {
+        let named = describe(&script, &source)?.name;
+        if m.name != named {
+            return Err(format!(
+                "{} names the plugin \"{}\" but its script \"{named}\"",
+                crate::plugin_meta::FILE,
+                m.name
+            ));
+        }
+        m.check_version()?;
     }
-    let z = read_zip(bytes)?;
-    let name = install(app, &z.script, &z.source)?;
-    crate::plugin_manager::set_icon(app, &name, z.icon);
-    if z.files.is_empty() {
+    let name = install(app, &script, &source)?;
+    if let Some(icon) = icon {
+        crate::plugin_manager::set_icon(app, &name, icon);
+    }
+    match meta {
+        Some(m) => {
+            app.prefs
+                .plugin_versions
+                .insert(name.clone(), m.version.clone());
+            app.prefs.plugin_meta.insert(name.clone(), m);
+        }
+        None => {
+            app.prefs.plugin_meta.remove(&name);
+        }
+    }
+    if files.is_empty() {
         app.prefs.plugin_files.remove(&name);
     } else {
-        app.prefs.plugin_files.insert(name.clone(), z.files);
+        app.prefs.plugin_files.insert(name.clone(), files);
     }
     Ok(name)
 }
@@ -719,6 +772,7 @@ pub fn remove(app: &mut EpanetApp, name: &str) {
         .user_plugins
         .retain(|(f, s)| describe(f, s).map_or(true, |p| p.name != name));
     app.prefs.plugin_files.remove(name);
+    app.prefs.plugin_meta.remove(name);
     app.status = format!("Plugin \"{name}\" removed");
 }
 
@@ -1057,7 +1111,7 @@ mod tests {
             ("Low Pressure/icon.png", icon),
             ("Low Pressure/README.md", b"notes"),
         ]);
-        let name = install_file(&mut app, "Low Pressure.zip", &z).unwrap();
+        let name = install_file(&mut app, "Low Pressure.zip", &z, None).unwrap();
         assert_eq!(name, "Low Pressure");
         assert!(installed(&app).contains(&name));
         assert_eq!(app.prefs.plugin_icons.get(&name).unwrap(), icon);
@@ -1085,7 +1139,7 @@ mod tests {
         paths.sort();
         assert_eq!(paths, ["helpers.py", "i18n/el.json", "ui/dialog.py"]);
         assert_eq!(
-            install_file(&mut app, "x.zip", &z).unwrap(),
+            install_file(&mut app, "x.zip", &z, None).unwrap(),
             "EPyT Pressure Check"
         );
         assert_eq!(app.prefs.plugin_files["EPyT Pressure Check"].len(), 3);
@@ -1102,9 +1156,54 @@ mod tests {
         remove(&mut app, "EPyT Pressure Check");
         assert!(!app.prefs.plugin_files.contains_key("EPyT Pressure Check"));
         // the script alone still works; a ZIP without one does not
-        assert!(install_file(&mut app, "Count.rhai", COUNT.as_bytes()).is_ok());
-        let e = install_file(&mut app, "x.zip", &zip_of(&[("a/icon.png", icon_bytes())]));
+        assert!(install_file(&mut app, "Count.rhai", COUNT.as_bytes(), None).is_ok());
+        let e = install_file(
+            &mut app,
+            "x.zip",
+            &zip_of(&[("a/icon.png", icon_bytes())]),
+            None,
+        );
         assert!(e.unwrap_err().contains("no plugin script"));
+    }
+
+    /// A ZIP's `metadata.txt` gives the plugin's version, authors and icon.
+    #[test]
+    fn installs_with_its_metadata() {
+        let mut app = EpanetApp::new(&eframe::CreationContext::_new_kittest(
+            egui::Context::default(),
+        ));
+        let meta = "[general]\nname=Count\nversion=2.1\ndescription=d\nauthor=A, B\n\
+                    icon=img/logo.png\nchangelog=2.1:\n  Faster.\n";
+        let z = zip_of(&[
+            ("Count/Count.rhai", COUNT.as_bytes()),
+            ("Count/metadata.txt", meta.as_bytes()),
+            ("Count/icon.png", b"not this"),
+            ("Count/img/logo.png", icon_bytes()),
+        ]);
+        let name = install_file(&mut app, "Count.zip", &z, None).unwrap();
+        let m = &app.prefs.plugin_meta[&name];
+        assert_eq!((m.version.as_str(), m.author.as_str()), ("2.1", "A, B"));
+        assert_eq!(m.changelog, "2.1:\nFaster.");
+        assert_eq!(app.prefs.plugin_versions[&name], "2.1");
+        assert_eq!(app.prefs.plugin_icons[&name], icon_bytes());
+        // it stays in the plugin's folder, for Python plugins to read
+        assert!(
+            app.prefs.plugin_files[&name]
+                .iter()
+                .any(|(p, _)| p == "metadata.txt")
+        );
+        // a script with the metadata of its folder
+        install_file(&mut app, "Count.rhai", COUNT.as_bytes(), Some(meta)).unwrap();
+        assert_eq!(app.prefs.plugin_meta[&name].version, "2.1");
+        assert_eq!(app.prefs.plugin_files[&name].len(), 1);
+        // it must name the plugin as its script does, and suit this WEPANET
+        let wrong = meta.replace("name=Count", "name=Other");
+        let e = install_file(&mut app, "Count.rhai", COUNT.as_bytes(), Some(&wrong));
+        assert!(e.unwrap_err().contains("\"Other\""));
+        let newer = format!("{meta}wepanetMinimumVersion=99\n");
+        assert!(install_file(&mut app, "Count.rhai", COUNT.as_bytes(), Some(&newer)).is_err());
+        remove(&mut app, &name);
+        assert!(!app.prefs.plugin_meta.contains_key(&name));
     }
 
     fn icon_bytes() -> &'static [u8] {

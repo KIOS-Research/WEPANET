@@ -1,6 +1,8 @@
-// Runs WEPANET's Python plugins with Pyodide (CPython in WebAssembly), off the
-// main thread. Each run gets a fresh folder with the files WEPANET sends, and
-// python_runner.py runs the plugin there (see crates/eui-ui/src/python.rs).
+// Runs WEPANET's Python plugins and its Python Console with Pyodide (CPython
+// in WebAssembly), off the main thread. Each plugin run gets a fresh folder
+// with the files WEPANET sends, and python_runner.py runs the plugin there; the
+// console keeps one session of python_runner.py, fed line by line (see
+// crates/eui-ui/src/python.rs). Messages are handled one at a time.
 // A module worker: Pyodide 314's pyodide.js does not load with importScripts
 const PYODIDE = 'https://cdn.jsdelivr.net/pyodide/v314.0.7/full/';
 
@@ -57,8 +59,62 @@ async function install(py, id, source, requirements) {
   }
 }
 
-self.onmessage = async (e) => {
-  const { id, files, requirements } = e.data;
+function writeFiles(FS, dir, files) {
+  FS.mkdirTree(dir);
+  for (const [name, bytes] of Object.entries(files)) {
+    const path = dir + '/' + name;
+    FS.mkdirTree(path.slice(0, path.lastIndexOf('/')));
+    FS.writeFile(path, bytes);
+  }
+}
+
+// The console's session: python_runner.py loaded once, as a module.
+let consoleScope = null;
+
+// A line typed in the console; resolves to console_push's JSON answer.
+async function consoleLine(id, files, line, reload) {
+  const py = await python(id);
+  const dir = '/home/pyodide/wepanet_console';
+  if (files) writeFiles(py.FS, dir, files);
+  if (!consoleScope) {
+    if (!files || !files['python_runner.py']) throw new Error('the console has no runner');
+    consoleScope = py.toPy({ __name__: 'wepanet_runner' });
+    py.runPython(new TextDecoder().decode(files['python_runner.py']), { globals: consoleScope });
+  }
+  const answer = (output) => JSON.stringify({ output, more: false, response: null, network: null });
+  // pip install <packages>, outside a block: micropip
+  const words = line.trim().replace(/^%/, '').split(/\s+/);
+  const session = consoleScope.get('_console');
+  const inBlock = session && session.buffer.length > 0;
+  if (words[0] === 'pip' && words[1] === 'install' && words.length > 2 && !inBlock) {
+    try {
+      await install(py, id, '', words.slice(2));
+      return answer('Installed ' + words.slice(2).join(', ') + '\n');
+    } catch (err) {
+      return answer(String((err && err.message) || err) + '\n');
+    }
+  }
+  // the packages of Pyodide's distribution the line imports
+  try { await py.loadPackagesFromImports(line, { messageCallback: () => {} }); } catch (_) {}
+  current = id;
+  try {
+    return consoleScope.get('console_push')(dir, line, reload);
+  } finally {
+    current = null;
+  }
+}
+
+async function handle(data) {
+  const { id, files, requirements } = data;
+  if (data.console) {
+    try {
+      const { files: f, line, reload } = data.console;
+      self.postMessage({ id, result: await consoleLine(id, f, line, reload) });
+    } catch (err) {
+      self.postMessage({ id, error: String((err && err.message) || err) });
+    }
+    return;
+  }
   try {
     const py = await python(id);
     const decoder = new TextDecoder();
@@ -66,12 +122,7 @@ self.onmessage = async (e) => {
     const FS = py.FS;
     const dir = '/home/pyodide/wepanet';
     try { py.runPython(`import shutil; shutil.rmtree(${JSON.stringify(dir)}, ignore_errors=True)`); } catch (_) {}
-    FS.mkdirTree(dir);
-    for (const [name, bytes] of Object.entries(files)) {
-      const path = dir + '/' + name;
-      FS.mkdirTree(path.slice(0, path.lastIndexOf('/')));
-      FS.writeFile(path, bytes);
-    }
+    writeFiles(FS, dir, files);
     post(id, 'Running…');
     current = id;
     try {
@@ -90,4 +141,9 @@ self.onmessage = async (e) => {
   } catch (err) {
     self.postMessage({ id, error: String((err && err.message) || err) });
   }
+}
+
+let queue = Promise.resolve();
+self.onmessage = (e) => {
+  queue = queue.then(() => handle(e.data));
 };

@@ -1,4 +1,4 @@
-//! The Plugin Manager (Plugins > Manage Plugins), after QGIS's: plugins are
+//! The Plugin Manager (Plugins > Manage Plugins): plugins are
 //! offered by repositories — XML files listing each plugin's name, version,
 //! description and where to download it — read from their URLs. WEPANET's own
 //! repository is `plugins/plugins.xml` of this project; any other can be
@@ -19,7 +19,6 @@
 //! </plugins>
 //! ```
 
-use std::cmp::Ordering;
 use std::sync::{Arc, Mutex};
 
 use egui::{Color32, RichText, Ui};
@@ -27,6 +26,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::EpanetApp;
 use crate::icons::{self, Icon};
+use crate::plugin_meta::version_cmp;
 
 const HELP: &str = "https://github.com/KIOS-Research/WEPANET/blob/main/docs/plugins.md";
 
@@ -72,8 +72,15 @@ pub(crate) const BUILTIN: &[(&str, &str)] = &[
     ),
 ];
 
+/// The built-in repository, with what each plugin's `metadata.txt` adds.
 fn builtin_offers() -> Vec<Offer> {
-    parse_repository(BUILTIN_XML, BUILTIN_BASE, BUILTIN_NAME).unwrap_or_default()
+    let mut offers = parse_repository(BUILTIN_XML, BUILTIN_BASE, BUILTIN_NAME).unwrap_or_default();
+    for o in &mut offers {
+        if let Some(m) = builtin_meta(&o.url).and_then(|t| crate::plugin_meta::parse(t).ok()) {
+            o.add_meta(&m);
+        }
+    }
+    offers
 }
 
 /// Their icons.
@@ -107,6 +114,51 @@ const BUILTIN_ICONS: &[(&str, &[u8])] = &[
         include_bytes!("../../../plugins/EPyT Pressure Check/icon.png"),
     ),
 ];
+
+/// Their `metadata.txt`.
+const BUILTIN_META: &[(&str, &str)] = &[
+    (
+        "Count/metadata.txt",
+        include_str!("../../../plugins/Count/metadata.txt"),
+    ),
+    (
+        "Network Statistics/metadata.txt",
+        include_str!("../../../plugins/Network Statistics/metadata.txt"),
+    ),
+    (
+        "Pipe Summary/metadata.txt",
+        include_str!("../../../plugins/Pipe Summary/metadata.txt"),
+    ),
+    (
+        "Dead Ends/metadata.txt",
+        include_str!("../../../plugins/Dead Ends/metadata.txt"),
+    ),
+    (
+        "Low Pressure/metadata.txt",
+        include_str!("../../../plugins/Low Pressure/metadata.txt"),
+    ),
+    (
+        "High Velocity/metadata.txt",
+        include_str!("../../../plugins/High Velocity/metadata.txt"),
+    ),
+    (
+        "EPyT Pressure Check/metadata.txt",
+        include_str!("../../../plugins/EPyT Pressure Check/metadata.txt"),
+    ),
+];
+
+/// The `metadata.txt` of a built-in plugin's folder (`builtin:/Count`).
+fn builtin_meta(folder: &str) -> Option<&'static str> {
+    let path = format!(
+        "{}/{}",
+        folder.strip_prefix("builtin:/")?.replace("%20", " "),
+        crate::plugin_meta::FILE
+    );
+    BUILTIN_META
+        .iter()
+        .find(|(f, _)| *f == path)
+        .map(|(_, s)| *s)
+}
 
 /// The script of a built-in offer (`builtin:/Count/Count.rhai`, …).
 fn builtin_source(url: &str) -> Option<&'static str> {
@@ -158,8 +210,8 @@ fn core_offers() -> Vec<Offer> {
             tags: c.tags.into(),
             homepage: crate::plugins::PLUGINS_REPO.into(),
             url: format!("core:{}", c.name),
-            icon: String::new(),
             repository: CORE_REPOSITORY.into(),
+            ..Default::default()
         })
         .collect()
 }
@@ -188,7 +240,7 @@ pub fn default_repositories() -> Vec<Repository> {
 }
 
 /// A plugin a repository offers.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 struct Offer {
     name: String,
     version: String,
@@ -196,6 +248,15 @@ struct Offer {
     author: String,
     tags: String,
     homepage: String,
+    /// From its `metadata.txt` (or the repository's XML).
+    about: String,
+    email: String,
+    changelog: String,
+    tracker: String,
+    /// Where its code is.
+    code: String,
+    experimental: bool,
+    deprecated: bool,
     /// Where to download it: a ZIP of the plugin's folder, the folder itself
     /// (holding `<name>.rhai` or `<name>.py`, and `icon.png`), or (in older
     /// lists, `<file>`) its script.
@@ -205,6 +266,29 @@ struct Offer {
     repository: String,
 }
 
+impl Offer {
+    /// Takes what a plugin's `metadata.txt` says of it (all but its name).
+    fn add_meta(&mut self, m: &crate::plugin_meta::Metadata) {
+        let set = |to: &mut String, v: &str| {
+            if !v.trim().is_empty() {
+                *to = v.to_string();
+            }
+        };
+        set(&mut self.version, &m.version);
+        set(&mut self.description, &m.description);
+        set(&mut self.author, &m.author);
+        set(&mut self.tags, &m.tags);
+        set(&mut self.homepage, &m.homepage);
+        set(&mut self.about, &m.about);
+        set(&mut self.email, &m.email);
+        set(&mut self.changelog, &m.changelog);
+        set(&mut self.tracker, &m.tracker);
+        set(&mut self.code, &m.repository);
+        self.experimental |= m.experimental;
+        self.deprecated |= m.deprecated;
+    }
+}
+
 enum Reply {
     Repository {
         url: String,
@@ -212,8 +296,9 @@ enum Reply {
     },
     Plugin {
         offer: Box<Offer>,
-        /// The file downloaded and its bytes.
-        result: Result<(String, Vec<u8>), String>,
+        /// The file downloaded, its bytes, and (for a script) the
+        /// `metadata.txt` of its folder.
+        result: Result<(String, Vec<u8>, Option<String>), String>,
     },
     Icon {
         url: String,
@@ -327,38 +412,30 @@ fn parse_repository(xml: &str, url: &str, repository: &str) -> Result<Vec<Offer>
             _ if is_script(&download) => String::new(),
             _ => format!("{download}/icon.png"),
         };
+        let flag = |tag: &str| child(tag).eq_ignore_ascii_case("true");
         out.push(Offer {
             name: name.to_string(),
             version: p.attribute("version").unwrap_or("").trim().to_string(),
             description: child("description"),
-            author: child("author"),
+            author: match child("author") {
+                a if a.is_empty() => child("author_name"),
+                a => a,
+            },
             tags: child("tags"),
             homepage: child("homepage"),
+            about: child("about"),
+            email: child("email"),
+            changelog: child("changelog"),
+            tracker: child("tracker"),
+            code: child("repository"),
+            experimental: flag("experimental"),
+            deprecated: flag("deprecated"),
             url: download,
             icon,
             repository: repository.to_string(),
         });
     }
     Ok(out)
-}
-
-/// Compares versions part by part, numerically where they are numbers.
-fn version_cmp(a: &str, b: &str) -> Ordering {
-    let parts =
-        |v: &str| -> Vec<String> { v.trim().split(['.', '-']).map(str::to_string).collect() };
-    let (pa, pb) = (parts(a), parts(b));
-    for k in 0..pa.len().max(pb.len()) {
-        let x = pa.get(k).map_or("0", String::as_str);
-        let y = pb.get(k).map_or("0", String::as_str);
-        let o = match (x.parse::<u64>(), y.parse::<u64>()) {
-            (Ok(x), Ok(y)) => x.cmp(&y),
-            _ => x.cmp(y),
-        };
-        if o != Ordering::Equal {
-            return o;
-        }
-    }
-    Ordering::Equal
 }
 
 fn fetch(
@@ -435,7 +512,11 @@ fn install(app: &mut EpanetApp, ctx: &egui::Context, offer: &Offer) {
             &app.plugin_manager.inbox,
             Reply::Plugin {
                 offer: Box::new(offer.clone()),
-                result: Ok((file_name(u), src.as_bytes().to_vec())),
+                result: Ok((
+                    file_name(u),
+                    src.as_bytes().to_vec(),
+                    builtin_meta(&offer.url).map(str::to_string),
+                )),
             },
         );
         return;
@@ -462,16 +543,34 @@ fn reply(inbox: &Inbox, r: Reply) {
 }
 
 /// Downloads the first of `urls` that can be read: the offer's ZIP or
-/// script, or the script its folder holds.
+/// script, or the script its folder holds (and then its `metadata.txt`).
 fn download(inbox: Inbox, ctx: egui::Context, offer: Offer, mut urls: Vec<String>) {
     let url = urls.remove(0);
     ehttp::fetch(ehttp::Request::get(&url), move |res| {
         match res {
+            Ok(r) if r.ok && !is_zip(&offer.url) && !is_script(&offer.url) => {
+                let meta = format!("{}/{}", offer.url, crate::plugin_meta::FILE);
+                ehttp::fetch(ehttp::Request::get(&meta), move |res| {
+                    let meta = res
+                        .ok()
+                        .filter(|m| m.ok)
+                        .map(|m| crate::io::decode_text(&m.bytes));
+                    reply(
+                        &inbox,
+                        Reply::Plugin {
+                            offer: Box::new(offer),
+                            result: Ok((file_name(&url), r.bytes, meta)),
+                        },
+                    );
+                    ctx.request_repaint();
+                });
+                return;
+            }
             Ok(r) if r.ok => reply(
                 &inbox,
                 Reply::Plugin {
                     offer: Box::new(offer),
-                    result: Ok((file_name(&url), r.bytes)),
+                    result: Ok((file_name(&url), r.bytes, None)),
                 },
             ),
             _ if !urls.is_empty() => return download(inbox, ctx, offer, urls),
@@ -667,8 +766,9 @@ fn poll(app: &mut EpanetApp) {
             }
             Reply::Plugin { offer, result } => {
                 app.plugin_manager.installing.retain(|n| n != &offer.name);
-                let outcome = result
-                    .and_then(|(file, bytes)| crate::scripting::install_file(app, &file, &bytes));
+                let outcome = result.and_then(|(file, bytes, meta)| {
+                    crate::scripting::install_file(app, &file, &bytes, meta.as_deref())
+                });
                 app.plugin_manager.message = Some(match outcome {
                     Ok(name) => {
                         app.prefs
@@ -710,7 +810,7 @@ fn poll(app: &mut EpanetApp) {
     }
 }
 
-// ----- the window (laid out as QGIS's Plugins dialog) ----------------------------
+// ----- the window ----------------------------------------------------------------
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum State {
@@ -1177,6 +1277,32 @@ fn details(app: &mut EpanetApp, ui: &mut Ui, r: &Row) {
         ),
         _ => {}
     }
+    // a plugin installed from a file: what its metadata.txt says
+    let from_file = r.offer.is_none();
+    let offer = r.offer.clone().or_else(|| {
+        let m = app.prefs.plugin_meta.get(&r.name)?;
+        let mut o = Offer {
+            name: r.name.clone(),
+            ..Default::default()
+        };
+        o.add_meta(m);
+        Some(o)
+    });
+    if let Some(o) = &offer {
+        if o.deprecated {
+            banner(
+                ui,
+                "This plugin is deprecated",
+                Color32::from_rgb(0xff, 0xb0, 0xa8),
+            );
+        } else if o.experimental {
+            banner(
+                ui,
+                "This plugin is experimental",
+                Color32::from_rgb(0xff, 0xd0, 0xa0),
+            );
+        }
+    }
     let tex = row_icon(app, &ui.ctx().clone(), r);
     ui.horizontal(|ui| {
         let (icon, _) = ui.allocate_exact_size(egui::vec2(44.0, 44.0), egui::Sense::hover());
@@ -1185,14 +1311,32 @@ fn details(app: &mut EpanetApp, ui: &mut Ui, r: &Row) {
         ui.label(RichText::new(&r.name).strong().size(24.0));
     });
     ui.add_space(6.0);
-    let Some(o) = &r.offer else {
+    let Some(o) = &offer else {
         ui.label(RichText::new("Installed from a file; no repository offers this plugin.").weak());
         return;
     };
+    egui::ScrollArea::vertical()
+        .id_salt("plugin_details")
+        .auto_shrink([false, true])
+        .show(ui, |ui| info(ui, r, o, from_file, installed_version));
+}
+
+/// The description, metadata and versions of a plugin.
+fn info(ui: &mut Ui, r: &Row, o: &Offer, from_file: bool, installed_version: Option<String>) {
     if !o.description.is_empty() {
         ui.label(RichText::new(&o.description).strong().size(15.0));
-        ui.add_space(10.0);
+        ui.add_space(6.0);
     }
+    if !o.about.is_empty() {
+        ui.label(&o.about);
+        ui.add_space(6.0);
+    }
+    if from_file {
+        ui.label(RichText::new("Installed from a file; no repository offers this plugin.").weak());
+        ui.add_space(6.0);
+    }
+    let download =
+        !(o.url.is_empty() || o.url.starts_with("builtin:") || o.url.starts_with("core:"));
     egui::Grid::new("plugin_info")
         .num_columns(2)
         .spacing([12.0, 6.0])
@@ -1205,23 +1349,33 @@ fn details(app: &mut EpanetApp, ui: &mut Ui, r: &Row) {
                 ui.label(&o.tags);
                 ui.end_row();
             }
-            if !o.homepage.is_empty()
-                || !(o.url.starts_with("builtin:") || o.url.starts_with("core:"))
-            {
+            let links = [
+                ("homepage", &o.homepage),
+                ("bug tracker", &o.tracker),
+                ("code repository", &o.code),
+                ("download", &o.url),
+            ];
+            let links: Vec<_> = links
+                .into_iter()
+                .filter(|(k, u)| !u.is_empty() && (*k != "download" || download))
+                .collect();
+            if !links.is_empty() {
                 key(ui, "More info");
-                ui.horizontal(|ui| {
-                    if !o.homepage.is_empty() {
-                        ui.hyperlink_to("homepage", &o.homepage);
-                    }
-                    if !(o.url.starts_with("builtin:") || o.url.starts_with("core:")) {
-                        ui.hyperlink_to("download", &o.url);
+                ui.horizontal_wrapped(|ui| {
+                    for (k, u) in links {
+                        ui.hyperlink_to(k, u);
                     }
                 });
                 ui.end_row();
             }
             if !o.author.is_empty() {
                 key(ui, "Author");
-                ui.label(&o.author);
+                ui.add(egui::Label::new(&o.author).wrap());
+                ui.end_row();
+            }
+            if !o.email.is_empty() {
+                key(ui, "Email");
+                ui.hyperlink_to(&o.email, format!("mailto:{}", o.email));
                 ui.end_row();
             }
             match (r.state, &installed_version) {
@@ -1237,13 +1391,21 @@ fn details(app: &mut EpanetApp, ui: &mut Ui, r: &Row) {
                     ui.end_row();
                 }
             }
-            key(ui, "Available version");
-            ui.label(&o.version);
-            ui.end_row();
-            key(ui, "Repository");
-            ui.label(&o.repository);
-            ui.end_row();
+            if !from_file {
+                key(ui, "Available version");
+                ui.label(&o.version);
+                ui.end_row();
+                key(ui, "Repository");
+                ui.label(&o.repository);
+                ui.end_row();
+            }
         });
+    if !o.changelog.is_empty() {
+        ui.add_space(6.0);
+        egui::CollapsingHeader::new(RichText::new("Changelog").strong())
+            .id_salt(("plugin_changelog", &o.name))
+            .show(ui, |ui| ui.label(&o.changelog));
+    }
 }
 
 fn settings(app: &mut EpanetApp, ui: &mut Ui, ctx: &egui::Context) {
@@ -1430,14 +1592,6 @@ mod tests {
     }
 
     #[test]
-    fn compares_versions() {
-        assert!(version_cmp("1.10", "1.9").is_gt());
-        assert!(version_cmp("1.0", "1").is_eq());
-        assert!(version_cmp("2.0.1", "2.0").is_gt());
-        assert!(version_cmp("1.0", "1.0.1").is_lt());
-    }
-
-    #[test]
     fn every_plugin_has_an_icon_built_in() {
         for o in builtin_offers() {
             assert!(!o.icon.is_empty(), "{} has no <icon>", o.name);
@@ -1450,6 +1604,39 @@ mod tests {
                 o.url
             );
         }
+    }
+
+    /// Each plugin's metadata.txt is read, and agrees with plugins.xml.
+    #[test]
+    fn every_plugin_has_its_metadata() {
+        let listed = parse_repository(BUILTIN_XML, BUILTIN_BASE, BUILTIN_NAME).unwrap();
+        assert_eq!(listed.len(), BUILTIN_META.len());
+        for o in &listed {
+            let text = builtin_meta(&o.url).unwrap_or_else(|| panic!("{} has none", o.name));
+            let m = crate::plugin_meta::parse(text).unwrap();
+            assert_eq!(
+                (&m.name, &m.version, &m.description, &m.author),
+                (&o.name, &o.version, &o.description, &o.author),
+                "{}/metadata.txt and plugins.xml differ",
+                o.name
+            );
+            assert!(m.check_version().is_ok(), "{}", o.name);
+            assert!(!m.about.is_empty() && !m.changelog.is_empty(), "{}", o.name);
+        }
+        // the offers carry it
+        let d = builtin_offers()
+            .into_iter()
+            .find(|o| o.name == "Dead Ends")
+            .unwrap();
+        assert!(d.about.contains("stagnate") && d.tracker.ends_with("/issues"));
+        // and what an XML says
+        let xml = r#"<plugins><plugin name="Q" version="2"><download>q.zip</download>
+            <author_name>Me</author_name><about>Long</about><tracker>t</tracker>
+            <repository>c</repository><experimental>True</experimental></plugin></plugins>"#;
+        let q = &parse_repository(xml, "https://r.org/plugins.xml", "r").unwrap()[0];
+        assert_eq!((q.author.as_str(), q.about.as_str()), ("Me", "Long"));
+        assert_eq!((q.tracker.as_str(), q.code.as_str()), ("t", "c"));
+        assert!(q.experimental && !q.deprecated);
     }
 
     #[test]
@@ -1468,8 +1655,9 @@ mod tests {
         let installed = crate::scripting::installed(&app);
         assert!(installed.contains(&"Dead Ends".to_string()));
         assert_eq!(state(&app, &installed, &o), State::Installed);
-        // its icon is kept with it, for the toolbar
+        // its icon is kept with it, for the toolbar, and its metadata
         assert!(app.prefs.plugin_icons.contains_key("Dead Ends"));
+        assert_eq!(app.prefs.plugin_meta["Dead Ends"].version, "1.0");
         let mut out = ctx.run_ui(Default::default(), |_| {
             assert!(installed_icon(&mut app, &ctx, "Dead Ends").is_some());
             assert!(installed_icon(&mut app, &ctx, "Count").is_none());
@@ -1482,6 +1670,7 @@ mod tests {
         assert_eq!(state(&app, &installed, &o), State::NotInstalled);
         assert!(!app.prefs.plugin_versions.contains_key("Dead Ends"));
         assert!(!app.prefs.plugin_icons.contains_key("Dead Ends"));
+        assert!(!app.prefs.plugin_meta.contains_key("Dead Ends"));
     }
 
     /// The window as drawn: each piece of text and where it is.
@@ -1510,7 +1699,7 @@ mod tests {
     }
 
     #[test]
-    fn window_is_laid_out_as_in_qgis() {
+    fn window_is_laid_out() {
         let ctx = egui::Context::default();
         let mut app = EpanetApp::new(&eframe::CreationContext::_new_kittest(ctx.clone()));
         app.prefs.plugin_repos.clear(); // built-in plugins only: no network

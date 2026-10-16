@@ -1,17 +1,26 @@
-"""WEPANET's runner of Python plugins.
+"""WEPANET's Python: the runner of Python plugins and the Python Console.
 
-WEPANET runs it in a folder holding the plugin (plugin.py), the project
-(network.inp), the request (request.json) and, after an analysis, its results
-(results.bin), and the other files of the plugin's folder in plugin/: with
-the local Python on the desktop, with Pyodide in the browser. The plugin imports `wepanet` to read the project and its results and
-to show what it found; everything it prints is shown as a message. The runner
-answers in response.json (and network_out.inp when the plugin changed the
-project).
+WEPANET gives it a folder holding the project (network.inp), the request
+(request.json) and, after an analysis, its results (results.bin); for a
+plugin also the plugin (plugin.py) and, in plugin/, the other files of the
+plugin's folder. It runs with the local Python on the desktop, with Pyodide
+in the browser. Python code imports `wepanet` to read the project and its
+results and to show what it found.
 
-    python python_runner.py <folder>
+    python python_runner.py <folder>             runs plugin.py's run(item);
+                                                 answers in response.json (and
+                                                 network_out.inp when the plugin
+                                                 changed the project)
+    python python_runner.py --console <folder>   the Python Console: reads
+                                                 {"line", "reload"} JSON lines,
+                                                 answers "@@console {...}" lines
+
+In the browser the module is loaded once and `run_plugin(folder)` and
+`console_push(folder, line, reload)` are called.
 """
 
 import array
+import code
 import io
 import json
 import linecache
@@ -21,18 +30,6 @@ import sys
 import traceback
 import types
 import warnings
-
-work = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else ".")
-os.chdir(work)
-with open("request.json", encoding="utf-8") as f:
-    request = json.load(f)
-response = {
-    "messages": [],
-    "status": None,
-    "table": None,
-    "select": None,
-    "error": None,
-}
 
 NODE_VARS = ["demand", "head", "pressure", "quality"]
 LINK_VARS = [
@@ -45,13 +42,28 @@ LINK_VARS = [
     "reaction",
     "friction",
 ]
-_results = request.get("results")
+
+work = None
+request = {}
+response = {}
+_results = None
 _values = None
 
 
-def _progress(text):
+def _new_response():
+    global response
+    response = {
+        "messages": [],
+        "status": None,
+        "table": None,
+        "select": None,
+        "error": None,
+    }
+
+
+def _write_line(line):
     out = sys.__stdout__
-    line = "@@progress " + " ".join(str(text).split()) + "\n"
+    line = line + "\n"
     try:
         if hasattr(out, "buffer"):
             out.buffer.write(line.encode("utf-8"))
@@ -59,14 +71,18 @@ def _progress(text):
             out.write(line)
         out.flush()
     except (OSError, ValueError, AttributeError):
-        pass  # progress is a courtesy
+        pass
+
+
+def _progress(text):
+    _write_line("@@progress " + " ".join(str(text).split()))
 
 
 def _blob():
     global _values
     if _values is None:
         _values = array.array("f")
-        with open("results.bin", "rb") as f:
+        with open(os.path.join(work, "results.bin"), "rb") as f:
             _values.frombytes(f.read())
         if sys.byteorder != "little":
             _values.byteswap()
@@ -117,16 +133,25 @@ def _link_at(p, v, r):
 
 wepanet = types.ModuleType("wepanet")
 wepanet.__doc__ = "WEPANET's project, its results, and what a plugin shows."
-wepanet.work_dir = work
-#: The project as an EPANET input file, e.g. for EPyT: epanet(wepanet.inp_file).
-wepanet.inp_file = os.path.join(work, "network.inp")
-wepanet.item = request.get("item")
-#: The plugin's own folder: the other files of its ZIP (modules, which it can
-#: import, translations, …).
-wepanet.plugin_dir = os.path.join(work, "plugin")
-os.makedirs(wepanet.plugin_dir, exist_ok=True)
-sys.path.insert(0, wepanet.plugin_dir)
 wepanet.in_browser = sys.platform == "emscripten"
+
+
+def load(folder):
+    """Reads the project and its results from WEPANET's folder."""
+    global work, request, _results, _values
+    work = os.path.abspath(folder)
+    with open(os.path.join(work, "request.json"), encoding="utf-8") as f:
+        request = json.load(f)
+    _results = request.get("results")
+    _values = None
+    wepanet.work_dir = work
+    #: The project as an EPANET input file, e.g. for EPyT: epanet(wepanet.inp_file).
+    wepanet.inp_file = os.path.join(work, "network.inp")
+    wepanet.item = request.get("item")
+    #: The plugin's own folder: the other files of its ZIP (modules, which it
+    #: can import, translations, …).
+    wepanet.plugin_dir = os.path.join(work, "plugin")
+    os.makedirs(wepanet.plugin_dir, exist_ok=True)
 
 
 def _text(*args):
@@ -134,7 +159,7 @@ def _text(*args):
 
 
 def message(*args):
-    """Shows a message when the plugin is over."""
+    """Shows a message when the plugin is over (in the console: at once)."""
     response["messages"].append(_text(*args))
 
 
@@ -282,7 +307,8 @@ for _f in [
     link_series,
 ]:
     setattr(wepanet, _f.__name__, _f)
-sys.modules["wepanet"] = wepanet
+
+# ----- plugins ----------------------------------------------------------------
 
 
 def _plugin_traceback(e):
@@ -294,56 +320,173 @@ def _plugin_traceback(e):
     return "".join(lines).strip()
 
 
-# Warnings (e.g. a library missing an optional package) are shown only with
-# an error, which they may explain.
-warned = []
-warnings.showwarning = lambda message, category, *_: warned.append(
-    f"{category.__name__}: {message}"
-)
-printed = io.StringIO()
-stdout, stderr = sys.stdout, sys.stderr
-sys.stdout = sys.stderr = printed
-try:
-    with open("plugin.py", encoding="utf-8") as f:
-        source = f.read()
-    scope = {"__name__": "wepanet_plugin", "__file__": request["file"]}
-    # tracebacks show the plugin's lines
-    linecache.cache[request["file"]] = (
-        len(source),
-        None,
-        source.splitlines(True),
-        request["file"],
+def run_plugin(folder):
+    """Runs plugin.py's run(item); answers in response.json."""
+    load(folder)
+    os.chdir(work)
+    sys.modules["wepanet"] = wepanet
+    sys.path.insert(0, wepanet.plugin_dir)
+    _new_response()
+    # Warnings (e.g. a library missing an optional package) are shown only
+    # with an error, which they may explain.
+    warned = []
+    show = warnings.showwarning
+    warnings.showwarning = lambda message, category, *_: warned.append(
+        f"{category.__name__}: {message}"
     )
-    exec(compile(source, request["file"], "exec"), scope)
-    item = request.get("item")
-    if item is not None:
-        run = scope.get("run")
-        if not callable(run):
-            raise RuntimeError("the plugin has no def run(item)")
-        run(item)
-except SystemExit:
-    pass
-except ImportError as e:
-    hint = ""
-    if e.name and not wepanet.in_browser:
-        hint = (
-            f"\n\nInstall it for the Python WEPANET runs ({sys.executable}):\n"
-            f"    {os.path.basename(sys.executable)} -m pip install {e.name}"
+    printed = io.StringIO()
+    stdout, stderr = sys.stdout, sys.stderr
+    sys.stdout = sys.stderr = printed
+    try:
+        with open("plugin.py", encoding="utf-8") as f:
+            source = f.read()
+        scope = {"__name__": "wepanet_plugin", "__file__": request["file"]}
+        # tracebacks show the plugin's lines
+        linecache.cache[request["file"]] = (
+            len(source),
+            None,
+            source.splitlines(True),
+            request["file"],
         )
-    response["error"] = _plugin_traceback(e) + hint
-except BaseException as e:  # noqa: BLE001 - every error is the plugin's to report
-    response["error"] = _plugin_traceback(e)
-finally:
-    sys.stdout, sys.stderr = stdout, stderr
-    # Pyodide keeps its modules from run to run: forget the plugin's own
-    for _name, _module in list(sys.modules.items()):
-        _file = getattr(_module, "__file__", None) or ""
-        if os.path.abspath(_file).startswith(wepanet.plugin_dir + os.sep):
-            del sys.modules[_name]
-if response["error"] and warned:
-    response["error"] += "\n\nWarnings:\n" + "\n".join(dict.fromkeys(warned))
-said = printed.getvalue().strip()
-if said:
-    response["messages"].insert(0, said)
-with open("response.json", "w", encoding="utf-8") as f:
-    json.dump(response, f)
+        exec(compile(source, request["file"], "exec"), scope)
+        item = request.get("item")
+        if item is not None:
+            run = scope.get("run")
+            if not callable(run):
+                raise RuntimeError("the plugin has no def run(item)")
+            run(item)
+    except SystemExit:
+        pass
+    except ImportError as e:
+        hint = ""
+        if e.name and not wepanet.in_browser:
+            hint = (
+                f"\n\nInstall it for the Python WEPANET runs ({sys.executable}):\n"
+                f"    {os.path.basename(sys.executable)} -m pip install {e.name}"
+            )
+        response["error"] = _plugin_traceback(e) + hint
+    except BaseException as e:  # noqa: BLE001 - every error is the plugin's to report
+        response["error"] = _plugin_traceback(e)
+    finally:
+        sys.stdout, sys.stderr = stdout, stderr
+        warnings.showwarning = show
+        if wepanet.plugin_dir in sys.path:
+            sys.path.remove(wepanet.plugin_dir)
+        # Pyodide keeps its modules from run to run: forget the plugin's own
+        for name, module in list(sys.modules.items()):
+            file = getattr(module, "__file__", None) or ""
+            if os.path.abspath(file).startswith(wepanet.plugin_dir + os.sep):
+                del sys.modules[name]
+    if response["error"] and warned:
+        response["error"] += "\n\nWarnings:\n" + "\n".join(dict.fromkeys(warned))
+    said = printed.getvalue().strip()
+    if said:
+        response["messages"].insert(0, said)
+    with open("response.json", "w", encoding="utf-8") as f:
+        json.dump(response, f)
+
+
+# ----- the Python Console -------------------------------------------------------
+
+_console = None
+_console_dir = None
+
+
+def _help(*args, **kwargs):
+    """help(object) shows the documentation of an object, e.g. help(wepanet)."""
+    if not args and not kwargs:
+        print(_help.__doc__)
+        return
+    import pydoc
+
+    print(pydoc.render_doc(*args, renderer=pydoc.plaintext, **kwargs))
+
+
+def _no_input(*_):
+    raise RuntimeError("input() is not available in the console")
+
+
+def _pip_install(packages):
+    """`pip install` typed in the console (in the browser, WEPANET installs
+    the packages before the line reaches Python)."""
+    import subprocess
+
+    r = subprocess.run(
+        [sys.executable, "-m", "pip", "install", *packages],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    print((r.stdout + r.stderr).strip())
+
+
+def console_push(folder, line, reload):
+    """Runs a line typed in the Python Console (a block ends with an empty
+    line). Returns JSON: what it printed, whether a block goes on, what it
+    asked WEPANET to show, and the project it left (or null)."""
+    global _console, _console_dir
+    if _console is None:
+        _console = code.InteractiveConsole(
+            {
+                "__name__": "__console__",
+                "wepanet": wepanet,
+                "help": _help,
+                "input": _no_input,
+            },
+            filename="<console>",
+        )
+    if reload or _console_dir != folder:
+        _console_dir = folder
+        load(folder)
+    # in the browser a plugin may have run in between, elsewhere
+    os.chdir(os.path.abspath(folder))
+    sys.modules["wepanet"] = wepanet
+    out_file = os.path.join(work, "network_out.inp")
+    if os.path.exists(out_file):
+        os.remove(out_file)
+    _new_response()
+    printed = io.StringIO()
+    stdout, stderr = sys.stdout, sys.stderr
+    sys.stdout = sys.stderr = printed
+    try:
+        pip = line.strip().removeprefix("%").split()
+        if pip[:2] == ["pip", "install"] and len(pip) > 2 and not _console.buffer:
+            more = False
+            _pip_install(pip[2:])
+        else:
+            more = _console.push(line)
+    except SystemExit:
+        more = False
+        print("The console stays open: close it with its Close button.")
+    finally:
+        sys.stdout, sys.stderr = stdout, stderr
+    network = None
+    if os.path.exists(out_file):
+        with open(out_file, encoding="utf-8") as f:
+            network = f.read()
+    output = printed.getvalue()
+    if response["messages"]:
+        output += "\n".join(response["messages"]) + "\n"
+    response["messages"] = []
+    return json.dumps(
+        {"output": output, "more": bool(more), "response": response, "network": network}
+    )
+
+
+def _console_loop(folder):
+    for raw in sys.stdin.buffer:
+        try:
+            msg = json.loads(raw.decode("utf-8"))
+        except ValueError:
+            continue
+        _write_line(
+            "@@console " + console_push(folder, msg.get("line", ""), msg.get("reload", False))
+        )
+
+
+if __name__ == "__main__":
+    if len(sys.argv) > 2 and sys.argv[1] == "--console":
+        _console_loop(sys.argv[2])
+    else:
+        run_plugin(sys.argv[1] if len(sys.argv) > 1 else ".")

@@ -747,6 +747,18 @@ fn plugins_toolbar(app: &mut EpanetApp, ui: &mut Ui) {
         ui.ctx()
             .open_url(egui::OpenUrl::new_tab(crate::plugins::PLUGINS_REPO));
     }
+    if tool_button(
+        ui,
+        Icon::Console,
+        "Python Console",
+        true,
+        app.python.console.open,
+        "Python, with the project in `wepanet`",
+    )
+    .clicked()
+    {
+        crate::python::console::toggle(app);
+    }
     // Installed plugins: the core ones (built in), then the scripts.
     let on = |app: &EpanetApp, name: &str| !app.prefs.disabled_plugins.contains(name);
     let core: Vec<&str> = crate::plugin_manager::CORE

@@ -18,8 +18,14 @@
 //! Web Worker (`apps/web/engine/python.js`). Either way `python_runner.py`
 //! runs the plugin in a folder holding the project (`network.inp`), the
 //! results of the last analysis and, in `plugin/`, the rest of the plugin's
-//! own folder (its modules, translations, …: see `wepanet.plugin_dir`), and answers with what to show; a changed
-//! project replaces the current one in a step Undo can take back.
+//! own folder (its modules, translations, …: see `wepanet.plugin_dir`), and
+//! answers with what to show; a changed project replaces the current one in
+//! a step Undo can take back. The same runner keeps the session of the
+//! Python Console ([`console`]).
+
+pub(crate) mod console;
+
+pub use console::ConsoleState;
 
 use std::sync::mpsc;
 
@@ -83,6 +89,8 @@ type Outcome = Result<(Response, Option<String>), String>;
 enum Msg {
     Progress(String),
     Done(Outcome),
+    /// The console's answer to a line (JSON), or why its Python stopped.
+    Console(Result<String, String>),
 }
 
 /// A plugin running in Python.
@@ -94,6 +102,7 @@ struct Job {
 #[derive(Default)]
 pub struct PythonState {
     job: Option<Job>,
+    pub console: ConsoleState,
 }
 
 // ----- reading a plugin's header ---------------------------------------------
@@ -185,13 +194,29 @@ fn requirements(source: &str) -> Vec<String> {
 
 // ----- running -----------------------------------------------------------------
 
-/// The files of a run: the runner, the plugin, the request, the project and
-/// the results of its last analysis.
+/// The files of a plugin's run: the runner, the plugin and its folder, the
+/// request, the project and the results of its last analysis.
 fn files(app: &EpanetApp, p: &UserPlugin, item: &str) -> Vec<(String, Vec<u8>)> {
+    let mut out = project_files(app, &p.name, &p.file, Some(item));
+    out.push(("plugin.py".to_string(), p.source.as_bytes().to_vec()));
+    // the rest of the plugin's folder (its modules, translations, …)
+    for (path, bytes) in app.prefs.plugin_files.get(&p.name).into_iter().flatten() {
+        out.push((format!("plugin/{path}"), bytes.clone()));
+    }
+    out
+}
+
+/// The runner, the request, the project and the results of its last analysis.
+fn project_files(
+    app: &EpanetApp,
+    name: &str,
+    file: &str,
+    item: Option<&str>,
+) -> Vec<(String, Vec<u8>)> {
     let net = &app.net;
     let mut request = serde_json::json!({
-        "name": p.name,
-        "file": p.file,
+        "name": name,
+        "file": file,
         "item": item,
         "period": app.period,
         "flow_units": net.flow_units(),
@@ -203,13 +228,8 @@ fn files(app: &EpanetApp, p: &UserPlugin, item: &str) -> Vec<(String, Vec<u8>)> 
     });
     let mut out = vec![
         ("python_runner.py".to_string(), RUNNER.as_bytes().to_vec()),
-        ("plugin.py".to_string(), p.source.as_bytes().to_vec()),
         ("network.inp".to_string(), net.to_inp().into_bytes()),
     ];
-    // the rest of the plugin's folder (its modules, translations, …)
-    for (path, bytes) in app.prefs.plugin_files.get(&p.name).into_iter().flatten() {
-        out.push((format!("plugin/{path}"), bytes.clone()));
-    }
     if let Some(r) = app.results.as_ref().filter(|_| !app.results_stale()) {
         request["results"] = serde_json::json!({
             "periods": r.n_periods,
@@ -250,8 +270,10 @@ pub fn start(app: &mut EpanetApp, p: &UserPlugin, item: &str) {
     });
 }
 
-/// Shows the progress and the outcome of the running plugin.
+/// Shows the progress and the outcome of the running plugin, and the
+/// console's answers.
 pub fn poll(app: &mut EpanetApp, ctx: &egui::Context) {
+    console::poll(app, ctx);
     let Some(job) = &app.python.job else {
         return;
     };
@@ -264,6 +286,7 @@ pub fn poll(app: &mut EpanetApp, ctx: &egui::Context) {
                 done = Some(o);
                 break;
             }
+            Ok(Msg::Console(_)) => {}
             Err(mpsc::TryRecvError::Empty) => break,
             Err(mpsc::TryRecvError::Disconnected) => {
                 done = Some(Err("the Python plugin stopped unexpectedly".into()));
@@ -294,22 +317,44 @@ fn apply(app: &mut EpanetApp, name: &str, outcome: Outcome) {
     if let Some(e) = &r.error {
         messages.push(format!("The plugin stopped with an error:\n{e}"));
     }
-    if r.error.is_none()
-        && let Some(inp) = network
-    {
+    let network = network.filter(|_| r.error.is_none());
+    let table = r.table.is_some();
+    messages.extend(effects(app, name, r.status, r.select, r.table, network));
+    if table {
+        if !messages.is_empty() {
+            app.status = messages.join(" ").chars().take(200).collect();
+        }
+    } else if !messages.is_empty() {
+        app.plugins.message = messages.join("\n");
+        app.dialog = Dialog::PluginMessage;
+    }
+}
+
+/// Does what Python asked: takes the project it left, puts its line on the
+/// status bar, selects its object and shows its table. Returns the problems.
+fn effects(
+    app: &mut EpanetApp,
+    name: &str,
+    status: Option<String>,
+    select: Option<Select>,
+    table: Option<Table>,
+    network: Option<String>,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    if let Some(inp) = network {
         match eui_core::Network::from_inp(&inp) {
             Ok(net) => {
                 app.checkpoint();
                 app.net = net;
                 app.status = format!("{name} changed the project (Undo reverts it)");
             }
-            Err(e) => messages.push(format!("The project the plugin left cannot be read: {e}")),
+            Err(e) => problems.push(format!("The project Python left cannot be read: {e}")),
         }
     }
-    if let Some(s) = r.status {
+    if let Some(s) = status {
         app.status = s;
     }
-    if let Some(s) = r.select {
+    if let Some(s) = select {
         let e = match (s.node, s.link) {
             (Some(id), _) => app.net.node_index(&id).map(Element::Node),
             (_, Some(id)) => app.net.link_index(&id).map(Element::Link),
@@ -319,16 +364,11 @@ fn apply(app: &mut EpanetApp, name: &str, outcome: Outcome) {
             app.select(e);
         }
     }
-    if let Some(t) = r.table {
+    if let Some(t) = table {
         app.scripts.table = Some((t.title, t.rows));
         app.dialog = Dialog::PluginTable;
-        if !messages.is_empty() {
-            app.status = messages.join(" ").chars().take(200).collect();
-        }
-    } else if !messages.is_empty() {
-        app.plugins.message = messages.join("\n");
-        app.dialog = Dialog::PluginMessage;
     }
+    problems
 }
 
 /// Reads the runner's answer from its folder.
@@ -427,6 +467,99 @@ mod backend {
         Ok(())
     }
 
+    /// The Python Console's Python: a process kept running, which reads a
+    /// JSON line per line typed and answers with an `@@console` line.
+    pub struct Session {
+        child: std::process::Child,
+        stdin: std::process::ChildStdin,
+        dir: PathBuf,
+        pub rx: mpsc::Receiver<Msg>,
+    }
+
+    impl Session {
+        pub fn start() -> Result<Session, String> {
+            let py = python()?;
+            let dir = folder()?;
+            let runner = [(
+                "python_runner.py".to_string(),
+                super::RUNNER.as_bytes().to_vec(),
+            )];
+            write(&dir, &runner)?;
+            let mut child = command(&py)
+                .arg("-u")
+                .arg(dir.join("python_runner.py"))
+                .arg("--console")
+                .arg(&dir)
+                .current_dir(&dir)
+                .env("PYTHONIOENCODING", "utf-8")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| format!("{}: {e}", py.join(" ")))?;
+            let stdin = child.stdin.take().ok_or("no stdin")?;
+            let stdout = child.stdout.take().ok_or("no stdout")?;
+            let stderr = child.stderr.take();
+            let (tx, rx) = mpsc::channel();
+            std::thread::spawn(move || {
+                let log = std::thread::spawn(move || {
+                    let mut s = String::new();
+                    if let Some(mut e) = stderr {
+                        let _ = std::io::Read::read_to_string(&mut e, &mut s);
+                    }
+                    s
+                });
+                for line in std::io::BufReader::new(stdout)
+                    .lines()
+                    .map_while(Result::ok)
+                {
+                    let msg = if let Some(t) = line.strip_prefix("@@console ") {
+                        Msg::Console(Ok(t.to_string()))
+                    } else if let Some(t) = line.strip_prefix("@@progress ") {
+                        Msg::Progress(t.to_string())
+                    } else {
+                        continue;
+                    };
+                    if tx.send(msg).is_err() {
+                        return;
+                    }
+                }
+                let log = log.join().unwrap_or_default();
+                let _ = tx.send(Msg::Console(Err(format!("Python stopped. {}", log.trim()))));
+            });
+            Ok(Session {
+                child,
+                stdin,
+                dir,
+                rx,
+            })
+        }
+
+        /// Sends a line (with the project's files first, when they changed).
+        pub fn push(
+            &mut self,
+            files: Option<Vec<(String, Vec<u8>)>>,
+            line: &str,
+        ) -> Result<(), String> {
+            use std::io::Write as _;
+            if let Some(f) = &files {
+                write(&self.dir, f)?;
+            }
+            let msg = serde_json::json!({ "line": line, "reload": files.is_some() });
+            writeln!(self.stdin, "{msg}")
+                .and_then(|()| self.stdin.flush())
+                .map_err(|e| format!("Python is not running: {e}"))
+        }
+    }
+
+    impl Drop for Session {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
     pub fn run(files: Vec<(String, Vec<u8>)>, _requirements: Vec<String>, tx: mpsc::Sender<Msg>) {
         std::thread::spawn(move || {
             let outcome = (|| {
@@ -487,6 +620,61 @@ mod backend {
             requirements: &Array,
             on_progress: &Closure<dyn FnMut(String)>,
         ) -> Result<js_sys::Promise, JsValue>;
+        #[wasm_bindgen(catch, js_namespace = euiPython, js_name = console)]
+        fn js_console(
+            files: &JsValue,
+            line: &str,
+            reload: bool,
+            on_progress: &Closure<dyn FnMut(String)>,
+        ) -> Result<js_sys::Promise, JsValue>;
+    }
+
+    /// The Python Console's Python: Pyodide's worker keeps its session.
+    pub struct Session {
+        tx: mpsc::Sender<Msg>,
+        pub rx: mpsc::Receiver<Msg>,
+    }
+
+    impl Session {
+        pub fn start() -> Result<Session, String> {
+            let (tx, rx) = mpsc::channel();
+            Ok(Session { tx, rx })
+        }
+
+        /// Sends a line (with the project's files first, when they changed).
+        pub fn push(
+            &mut self,
+            files: Option<Vec<(String, Vec<u8>)>>,
+            line: &str,
+        ) -> Result<(), String> {
+            let reload = files.is_some();
+            let obj: JsValue = match files {
+                Some(files) => {
+                    let obj = Object::new();
+                    for (name, bytes) in &files {
+                        let _ = Reflect::set(&obj, &name.into(), &Uint8Array::from(&bytes[..]));
+                    }
+                    obj.into()
+                }
+                None => JsValue::NULL,
+            };
+            let progress_tx = self.tx.clone();
+            let on_progress = Closure::<dyn FnMut(String)>::new(move |t: String| {
+                let _ = progress_tx.send(Msg::Progress(t));
+            });
+            let promise = js_console(&obj, line, reload, &on_progress)
+                .map_err(|e| format!("Python is not available in this page ({})", text(&e)))?;
+            let tx = self.tx.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let r = JsFuture::from(promise)
+                    .await
+                    .map(|v| text(&v))
+                    .map_err(|e| text(&e));
+                drop(on_progress);
+                let _ = tx.send(Msg::Console(r));
+            });
+            Ok(())
+        }
     }
 
     fn text(v: &JsValue) -> String {
@@ -567,6 +755,7 @@ mod tests {
             match rx.recv().ok()? {
                 Msg::Progress(_) => {}
                 Msg::Done(o) => return Some(o),
+                Msg::Console(_) => {}
             }
         }
     }

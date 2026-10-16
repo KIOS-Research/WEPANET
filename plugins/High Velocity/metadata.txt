@@ -1,0 +1,18 @@
+
+[general]
+name=High Velocity
+version=1.0
+description=Pipes whose velocity rises above a limit during the simulation
+author=WEPANET
+about=After an analysis, lists the pipes whose highest velocity over the simulation exceeds the limit chosen from the drop-down (m/s or ft/s, as the project's units), fastest first.
+tracker=https://github.com/KIOS-Research/WEPANET/issues
+repository=https://github.com/KIOS-Research/WEPANET
+homepage=https://github.com/KIOS-Research/WEPANET/tree/main/plugins
+tags=results, velocity
+icon=icon.png
+wepanetMinimumVersion=0.1
+experimental=False
+deprecated=False
+
+changelog=2026-10-15  High Velocity 1.0:
+    First version.

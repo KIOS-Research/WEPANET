@@ -251,6 +251,8 @@ pub struct Prefs {
     /// plugin name: (path in the plugin's folder, bytes).
     #[serde(with = "crate::scripting::files_b64")]
     pub plugin_files: std::collections::BTreeMap<String, Vec<(String, Vec<u8>)>>,
+    /// The `metadata.txt` of each installed plugin that has one, by plugin name.
+    pub plugin_meta: std::collections::BTreeMap<String, crate::plugin_meta::Metadata>,
     pub animate_fps: f32,
     pub auto_length: bool,
     // Program Preferences
@@ -324,6 +326,7 @@ impl Default for Prefs {
             core_plugins: Default::default(),
             plugin_icons: Default::default(),
             plugin_files: Default::default(),
+            plugin_meta: Default::default(),
             animate_fps: 4.0,
             auto_length: false,
             blink_marker: true,
@@ -368,7 +371,7 @@ pub struct QueryState {
 
 pub struct EpanetApp {
     ctx: egui::Context,
-    document_id: u64,
+    pub(crate) document_id: u64,
     pending_document: Option<(Network, String, Option<PathBuf>)>,
     saving: Option<(u64, u64)>,
     replace_after_save: bool,
@@ -1642,6 +1645,8 @@ impl eframe::App for EpanetApp {
         if self.prefs.show_explorer {
             crate::explorer::show(self, ui);
         }
+        // under the map, between the side panels
+        crate::python::console::show(self, ui);
         // The map sits inset in the window, framed, as in EPANET-UI.
         let form = self.palette().form;
         egui::CentralPanel::default()

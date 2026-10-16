@@ -72,6 +72,8 @@ pub enum Icon {
     FireFlow,
     // misc
     Pencil,
+    /// The Python Console: a window with a prompt.
+    Console,
     Menu,
 }
 
@@ -192,7 +194,7 @@ fn image_of(icon: Icon) -> Option<(&'static Sheet, usize)> {
         Icon::Menu => m(35),
         Icon::Percentiles => m(36),
         Icon::FireFlow => m(40),
-        Icon::Undo | Icon::Redo | Icon::Pencil => None,
+        Icon::Undo | Icon::Redo | Icon::Pencil | Icon::Console => None,
     }
 }
 
@@ -263,6 +265,17 @@ pub fn paint(p: &Painter, icon: Icon, c: Pos2, size: f32, fg: Color32) {
                 fg,
                 Stroke::NONE,
             ));
+        }
+        Icon::Console => {
+            // a terminal window: a frame, a title bar, and >_
+            let frame = Rect::from_min_max(at(-0.85, -0.75), at(0.85, 0.75));
+            p.rect_stroke(frame, 0.12 * r, s, egui::StrokeKind::Middle);
+            p.line_segment([at(-0.85, -0.42), at(0.85, -0.42)], s);
+            p.add(Shape::line(
+                vec![at(-0.55, -0.1), at(-0.25, 0.15), at(-0.55, 0.4)],
+                s,
+            ));
+            p.line_segment([at(-0.05, 0.42), at(0.45, 0.42)], s);
         }
         _ => {
             // Pencil.

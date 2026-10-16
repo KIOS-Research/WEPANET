@@ -5,11 +5,12 @@
   can be added there by the URL of its XML file.
 
   <download> is where to get the plugin, a URL or a path relative to this
-  file: a ZIP of its folder (as QGIS plugins are), or the folder itself when
-  it holds just the script, named like the plugin (.rhai or .py), and its
+  file: a ZIP of its folder, or the folder itself when it holds just the
+  script, named like the plugin (.rhai or .py), its metadata.txt and its
   icon, icon.png (about 64x64).
   Raise <version> when a plugin changes, so installed copies are offered the
-  upgrade. See docs/plugins.md to write a plugin.
+  upgrade, and keep it, <description> and <author> as the plugin's
+  metadata.txt has them. See docs/plugins.md to write a plugin.
 -->
 <plugins>
   <plugin name="Count" version="1.0">

@@ -27,6 +27,7 @@ mod map;
 mod menu;
 mod msx;
 mod plugin_manager;
+mod plugin_meta;
 mod plugins;
 mod python;
 mod reports;

@@ -1,5 +1,6 @@
-// WEPANET's Python for plugins in the browser.
-// Exposes window.euiPython.run(files, requirements, onProgress) -> Promise<{response, network}>,
+// WEPANET's Python for plugins and the Python Console in the browser.
+// Exposes window.euiPython.run(files, requirements, onProgress) -> Promise<{response, network}>
+// and window.euiPython.console(files | null, line, reload, onProgress) -> Promise<json text>,
 // used by the Rust app (crates/eui-ui/src/python.rs). Python (Pyodide) runs in a
 // Web Worker, loaded on the first Python plugin; `files` maps file names to
 // bytes (the runner, the plugin, the project, the request and the results),
@@ -42,6 +43,15 @@
         const id = nextId++;
         pending.set(id, { onProgress, resolve, reject });
         getWorker().postMessage({ id, files, requirements: Array.from(requirements || []) });
+      });
+    },
+    // A line typed in the Python Console, with the project's files when they
+    // changed (null otherwise); resolves to the console's answer (JSON).
+    console(files, line, reload, onProgress) {
+      return new Promise((resolve, reject) => {
+        const id = nextId++;
+        pending.set(id, { onProgress, resolve, reject });
+        getWorker().postMessage({ id, console: { files: files || null, line, reload } });
       });
     },
   };

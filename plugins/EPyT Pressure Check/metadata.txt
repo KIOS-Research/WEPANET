@@ -1,0 +1,18 @@
+
+[general]
+name=EPyT Pressure Check
+version=1.0
+description=Lowest junction pressures from an EPyT analysis: an example of a Python plugin
+author=WEPANET
+about=An example of a Python plugin: it runs its own hydraulic analysis of the project with EPyT, the EPANET Python toolkit (https://github.com/OpenWaterAnalytics/EPyT), and shows the junctions with the lowest pressures, or pressure statistics. In the browser WEPANET installs EPyT itself; on the desktop: python -m pip install epyt
+tracker=https://github.com/KIOS-Research/WEPANET/issues
+repository=https://github.com/KIOS-Research/WEPANET
+homepage=https://github.com/OpenWaterAnalytics/EPyT
+tags=python, epyt, pressure
+icon=icon.png
+wepanetMinimumVersion=0.1
+experimental=False
+deprecated=False
+
+changelog=2026-10-16  EPyT Pressure Check 1.0:
+    First version.

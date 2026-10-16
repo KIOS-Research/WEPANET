@@ -975,7 +975,7 @@ pub fn dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
     let selector = &mut st.selector;
     group(ui, "Internet Map Providers", &mut |ui| {
         ui.add_enabled_ui(!empty, |ui| {
-            // QGIS's CRS widget: the chosen system and the recently used
+            // the CRS widget: the chosen system and the recently used
             // ones in a drop-down, the full selector behind the globe button
             ui.horizontal(|ui| {
                 ui.label("CRS");
@@ -1214,7 +1214,7 @@ fn globe_button(ui: &mut Ui) -> egui::Response {
     resp
 }
 
-/// The state of QGIS's Coordinate Reference System Selector.
+/// The state of the Coordinate Reference System Selector.
 pub struct CrsSelector {
     filter: String,
     /// A proj string instead of a predefined system.
@@ -1408,7 +1408,7 @@ fn crs_table(
     double
 }
 
-/// QGIS's Coordinate Reference System Selector: every EPSG system (with a
+/// The Coordinate Reference System Selector: every EPSG system (with a
 /// filter), the recently used ones and the chosen one's properties, or a
 /// custom proj string. Returns Some once closed: with the chosen system
 /// ("6312" or a proj string) on OK, None on Cancel.
