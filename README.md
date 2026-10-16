@@ -19,8 +19,6 @@
   
 <img width="1917" height="1031" alt="image" src="https://github.com/user-attachments/assets/bcab53e0-16cd-424a-9b9d-5483cb02b00a" />
 
-<img width="1917" height="1030" alt="image" src="https://github.com/user-attachments/assets/b8842eed-7f19-4f44-8407-57091c488f3d" />
-
 ## License
 
 WEPANET is released under the [MIT License](LICENSE).
