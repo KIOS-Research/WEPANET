@@ -91,8 +91,6 @@ pub fn show(app: &mut EpanetApp, ctx: &egui::Context) {
         Dialog::CurveSelector => "Data Curve Selector",
         Dialog::CurveEditor => "Data Curve Editor",
         Dialog::QualityEditor => "Single Species Water Quality Editor",
-        Dialog::ControlsEditor => "Simple Controls Editor",
-        Dialog::RulesEditor => "Rule-Based Controls Editor",
         Dialog::ConfirmDelete => "Confirm Deletion",
         Dialog::ConfirmReplace => "Unsaved Changes",
     };
@@ -214,8 +212,6 @@ pub fn show(app: &mut EpanetApp, ctx: &egui::Context) {
                     Dialog::CurveSelector => crate::forms::curve_selector(app, ui),
                     Dialog::CurveEditor => crate::forms::curve_editor(app, ui),
                     Dialog::QualityEditor => crate::forms::quality_editor(app, ui),
-                    Dialog::ControlsEditor => crate::forms::controls_editor(app, ui),
-                    Dialog::RulesEditor => crate::forms::rules_editor(app, ui),
                     Dialog::None => true,
                 };
                 // A resized window is as tall as the user made it: the

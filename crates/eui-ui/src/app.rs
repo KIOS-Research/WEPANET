@@ -160,8 +160,6 @@ pub enum Dialog {
     CurveEditor,
     /// The Single Species Water Quality Editor.
     QualityEditor,
-    ControlsEditor,
-    RulesEditor,
     ConfirmDelete,
     ConfirmReplace,
 }

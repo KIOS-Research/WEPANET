@@ -1272,8 +1272,8 @@ fn read_controls(app: &EpanetApp) -> Vec<(bool, String)> {
         .collect()
 }
 
-/// Opens the Simple Controls Editor.
-pub fn open_controls(app: &mut EpanetApp) {
+/// Starts editing the network's controls.
+fn start_controls(app: &mut EpanetApp) {
     let rows = read_controls(app);
     app.forms.controls = Some(ControlsEdit {
         original: rows.clone(),
@@ -1282,7 +1282,21 @@ pub fn open_controls(app: &mut EpanetApp) {
         form: None,
         error: None,
     });
-    app.dialog = Dialog::ControlsEditor;
+}
+
+/// The Simple Controls Editor inside the Property Editor panel. An editor
+/// with no pending edits follows the network (undo, a new project).
+pub fn controls_panel(app: &mut EpanetApp, ui: &mut Ui) {
+    let stale = app.forms.controls.as_ref().is_none_or(|e| {
+        e.rows == e.original && e.form.is_none() && e.original != read_controls(app)
+    });
+    if stale {
+        start_controls(app);
+    }
+    let w = ui.available_width() - 16.0;
+    egui::Frame::NONE
+        .inner_margin(egui::Margin::symmetric(8, 6))
+        .show(ui, |ui| controls_body(app, ui, w));
 }
 
 /// The ID of the node or link selected on the map, for the + buttons.
@@ -1294,15 +1308,15 @@ fn selected_id(app: &EpanetApp, node: bool) -> Option<String> {
     }
 }
 
-/// The Simple Controls Editor.
-pub fn controls_editor(app: &mut EpanetApp, ui: &mut Ui) -> bool {
+/// The Simple Controls Editor, `w` wide.
+fn controls_body(app: &mut EpanetApp, ui: &mut Ui, w: f32) -> bool {
     let sel_node = selected_id(app, true);
     let sel_link = selected_id(app, false);
     let mono = egui::FontId::monospace(13.0);
     let Some(e) = &mut app.forms.controls else {
         return true;
     };
-    ui.set_width(420.0);
+    ui.set_width(w);
     egui::Frame::NONE
         .fill(if ui.visuals().dark_mode {
             ui.visuals().extreme_bg_color
@@ -1311,7 +1325,7 @@ pub fn controls_editor(app: &mut EpanetApp, ui: &mut Ui) -> bool {
         })
         .stroke(egui::Stroke::new(1.0, Color32::from_gray(160)))
         .show(ui, |ui| {
-            ui.set_min_size(vec2(420.0, 200.0));
+            ui.set_min_size(vec2(w, 200.0));
             egui::ScrollArea::vertical()
                 .max_height(200.0)
                 .auto_shrink([false, false])
@@ -1327,7 +1341,7 @@ pub fn controls_editor(app: &mut EpanetApp, ui: &mut Ui) -> bool {
                                 ui.checkbox(on, "");
                                 if cell(
                                     ui,
-                                    370.0,
+                                    w - 50.0,
                                     e.selected == Some(k),
                                     RichText::new(s.as_str()).font(mono.clone()),
                                 )
@@ -1342,9 +1356,10 @@ pub fn controls_editor(app: &mut EpanetApp, ui: &mut Ui) -> bool {
         });
     let editing = e.form.is_some();
     let has = e.selected.is_some_and(|k| k < e.rows.len());
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         let b = |ui: &mut Ui, on: bool, t: &str| {
-            ui.add_enabled(on, egui::Button::new(t).min_size(vec2(76.0, 26.0)))
+            let min = if t.chars().count() == 1 { 32.0 } else { 76.0 };
+            ui.add_enabled(on, egui::Button::new(t).min_size(vec2(min, 26.0)))
                 .clicked()
         };
         if b(ui, !editing, "+ Insert") {
@@ -1379,11 +1394,14 @@ pub fn controls_editor(app: &mut EpanetApp, ui: &mut Ui) -> bool {
         }
     });
     // the lower panel: the control being inserted or edited
+    // a narrow panel stacks the form: LINK / action / IF-AT / NODE / level
+    let narrow = w < 400.0;
+    let (fw, cw) = if narrow { (64.0, 80.0) } else { (80.0, 90.0) };
     let mut done: Option<bool> = None;
     egui::Frame::group(ui.style()).show(ui, |ui| {
-        ui.set_min_size(vec2(410.0, 110.0));
+        ui.set_min_size(vec2(w - 10.0, 110.0));
         let Some((_, f)) = &mut e.form else {
-            let (rect, _) = ui.allocate_exact_size(vec2(410.0, 110.0), egui::Sense::hover());
+            let (rect, _) = ui.allocate_exact_size(vec2(w - 10.0, 110.0), egui::Sense::hover());
             ui.painter().text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
@@ -1399,7 +1417,7 @@ pub fn controls_editor(app: &mut EpanetApp, ui: &mut Ui) -> bool {
             .show(ui, |ui| {
                 ui.label("LINK");
                 ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut f.link).desired_width(80.0));
+                    ui.add(egui::TextEdit::singleline(&mut f.link).desired_width(fw));
                     if ui
                         .add_enabled(sel_link.is_some(), egui::Button::new("+"))
                         .on_hover_text("The link selected on the map")
@@ -1409,6 +1427,10 @@ pub fn controls_editor(app: &mut EpanetApp, ui: &mut Ui) -> bool {
                         f.link = id.clone();
                     }
                 });
+                if narrow {
+                    ui.end_row();
+                    ui.label("");
+                }
                 let shown = f.action.to_ascii_uppercase();
                 ui.horizontal(|ui| {
                     egui::ComboBox::from_id_salt("ctl_action")
@@ -1417,7 +1439,7 @@ pub fn controls_editor(app: &mut EpanetApp, ui: &mut Ui) -> bool {
                         } else {
                             "SETTING".into()
                         })
-                        .width(90.0)
+                        .width(cw)
                         .show_ui(ui, |ui| {
                             for a in ["OPEN", "CLOSED"] {
                                 if ui.selectable_label(shown == a, a).clicked() {
@@ -1433,9 +1455,13 @@ pub fn controls_editor(app: &mut EpanetApp, ui: &mut Ui) -> bool {
                             }
                         });
                     if shown != "OPEN" && shown != "CLOSED" {
-                        ui.add(egui::TextEdit::singleline(&mut f.action).desired_width(60.0));
+                        ui.add(egui::TextEdit::singleline(&mut f.action).desired_width(fw * 0.75));
                     }
                 });
+                if narrow {
+                    ui.end_row();
+                    ui.label("");
+                }
                 ui.horizontal(|ui| {
                     ui.radio_value(&mut f.on_node, true, "IF");
                     ui.radio_value(&mut f.on_node, false, "AT");
@@ -1444,7 +1470,7 @@ pub fn controls_editor(app: &mut EpanetApp, ui: &mut Ui) -> bool {
                 if f.on_node {
                     ui.label("NODE");
                     ui.horizontal(|ui| {
-                        ui.add(egui::TextEdit::singleline(&mut f.node).desired_width(80.0));
+                        ui.add(egui::TextEdit::singleline(&mut f.node).desired_width(fw));
                         if ui
                             .add_enabled(sel_node.is_some(), egui::Button::new("+"))
                             .on_hover_text("The node selected on the map")
@@ -1454,23 +1480,27 @@ pub fn controls_editor(app: &mut EpanetApp, ui: &mut Ui) -> bool {
                             f.node = id.clone();
                         }
                     });
+                    if narrow {
+                        ui.end_row();
+                        ui.label("");
+                    }
                     egui::ComboBox::from_id_salt("ctl_above")
                         .selected_text(if f.above { "ABOVE" } else { "BELOW" })
-                        .width(90.0)
+                        .width(cw)
                         .show_ui(ui, |ui| {
                             ui.selectable_value(&mut f.above, true, "ABOVE");
                             ui.selectable_value(&mut f.above, false, "BELOW");
                         });
-                    ui.add(egui::TextEdit::singleline(&mut f.level).desired_width(80.0));
+                    ui.add(egui::TextEdit::singleline(&mut f.level).desired_width(fw));
                 } else {
                     egui::ComboBox::from_id_salt("ctl_time")
                         .selected_text(if f.clock { "CLOCKTIME" } else { "TIME" })
-                        .width(90.0)
+                        .width(cw)
                         .show_ui(ui, |ui| {
                             ui.selectable_value(&mut f.clock, false, "TIME");
                             ui.selectable_value(&mut f.clock, true, "CLOCKTIME");
                         });
-                    ui.add(egui::TextEdit::singleline(&mut f.time).desired_width(80.0))
+                    ui.add(egui::TextEdit::singleline(&mut f.time).desired_width(fw))
                         .on_hover_text(if f.clock {
                             "Time of day, e.g. 6:00 or 6:00 PM"
                         } else {
@@ -1481,7 +1511,7 @@ pub fn controls_editor(app: &mut EpanetApp, ui: &mut Ui) -> bool {
             });
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            ui.add_space(110.0);
+            ui.add_space(((w - 180.0) / 2.0).clamp(0.0, 110.0));
             if ui
                 .add_sized([80.0, 24.0], egui::Button::new("Accept"))
                 .clicked()
@@ -1609,8 +1639,8 @@ fn read_rules(app: &EpanetApp) -> Vec<(bool, String, String)> {
     out
 }
 
-/// Opens the Rule-Based Controls Editor.
-pub fn open_rules(app: &mut EpanetApp) {
+/// Starts editing the network's rules.
+fn start_rules(app: &mut EpanetApp) {
     let rows = read_rules(app);
     app.forms.rules = Some(RulesEdit {
         original: rows.clone(),
@@ -1619,7 +1649,22 @@ pub fn open_rules(app: &mut EpanetApp) {
         edit: None,
         error: None,
     });
-    app.dialog = Dialog::RulesEditor;
+}
+
+/// The Rule-Based Controls Editor inside the Property Editor panel. An
+/// editor with no pending edits follows the network (undo, a new project).
+pub fn rules_panel(app: &mut EpanetApp, ui: &mut Ui) {
+    let stale =
+        app.forms.rules.as_ref().is_none_or(|e| {
+            e.rows == e.original && e.edit.is_none() && e.original != read_rules(app)
+        });
+    if stale {
+        start_rules(app);
+    }
+    let w = ui.available_width() - 16.0;
+    egui::Frame::NONE
+        .inner_margin(egui::Margin::symmetric(8, 6))
+        .show(ui, |ui| rules_body(app, ui, w));
 }
 
 /// Checks a rule's text: a RULE line, then IF and THEN clauses.
@@ -1649,13 +1694,13 @@ fn check_rule(text: &str) -> Result<String, String> {
     Ok(first[1].to_string())
 }
 
-/// The Rule-Based Controls Editor.
-pub fn rules_editor(app: &mut EpanetApp, ui: &mut Ui) -> bool {
+/// The Rule-Based Controls Editor, `w` wide.
+fn rules_body(app: &mut EpanetApp, ui: &mut Ui, w: f32) -> bool {
     let mono = egui::FontId::monospace(13.0);
     let Some(e) = &mut app.forms.rules else {
         return true;
     };
-    ui.set_width(420.0);
+    ui.set_width(w);
     egui::Frame::NONE
         .fill(if ui.visuals().dark_mode {
             ui.visuals().extreme_bg_color
@@ -1664,7 +1709,7 @@ pub fn rules_editor(app: &mut EpanetApp, ui: &mut Ui) -> bool {
         })
         .stroke(egui::Stroke::new(1.0, Color32::from_gray(160)))
         .show(ui, |ui| {
-            ui.set_min_size(vec2(420.0, 220.0));
+            ui.set_min_size(vec2(w, 220.0));
             egui::ScrollArea::vertical()
                 .max_height(220.0)
                 .auto_shrink([false, false])
@@ -1680,7 +1725,7 @@ pub fn rules_editor(app: &mut EpanetApp, ui: &mut Ui) -> bool {
                                 ui.checkbox(on, "");
                                 if cell(
                                     ui,
-                                    370.0,
+                                    w - 50.0,
                                     e.selected == Some(k),
                                     RichText::new(id.as_str()).font(mono.clone()),
                                 )
@@ -1696,9 +1741,10 @@ pub fn rules_editor(app: &mut EpanetApp, ui: &mut Ui) -> bool {
         });
     let editing = e.edit.is_some();
     let has = e.selected.is_some_and(|k| k < e.rows.len());
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         let b = |ui: &mut Ui, on: bool, t: &str| {
-            ui.add_enabled(on, egui::Button::new(t).min_size(vec2(76.0, 26.0)))
+            let min = if t.chars().count() == 1 { 32.0 } else { 76.0 };
+            ui.add_enabled(on, egui::Button::new(t).min_size(vec2(min, 26.0)))
                 .clicked()
         };
         if b(ui, !editing, "+ Insert") {
@@ -1768,8 +1814,8 @@ pub fn rules_editor(app: &mut EpanetApp, ui: &mut Ui) -> bool {
         });
     let mut accept = false;
     let mut cancel = false;
-    ui.horizontal(|ui| {
-        ui.add_space(40.0);
+    ui.horizontal_wrapped(|ui| {
+        ui.add_space(((w - 340.0) / 2.0).clamp(0.0, 40.0));
         if ui
             .add_sized([100.0, 26.0], egui::Button::new("? Rule Format"))
             .clicked()
@@ -1875,7 +1921,7 @@ mod tests {
     #[test]
     fn disabled_controls_and_rules_are_kept() {
         let mut app = app();
-        open_controls(&mut app);
+        start_controls(&mut app);
         let e = app.forms.controls.as_mut().unwrap();
         assert_eq!(e.rows.len(), 2);
         assert!(e.rows[0].1.starts_with("LINK 9 OPEN IF NODE 2 BELOW"));
@@ -2007,13 +2053,85 @@ mod size_tests {
         sizes.push(("curve", crate::msx::tests::dialog_size(&mut app, &ctx)));
         open_quality(&mut app);
         sizes.push(("quality", crate::msx::tests::dialog_size(&mut app, &ctx)));
-        open_controls(&mut app);
-        sizes.push(("controls", crate::msx::tests::dialog_size(&mut app, &ctx)));
-        open_rules(&mut app);
-        sizes.push(("rules", crate::msx::tests::dialog_size(&mut app, &ctx)));
         for (name, s) in &sizes {
             assert!(s.x < 700.0 && s.y < 640.0, "{name} {s:?} — {sizes:?}");
         }
         println!("{sizes:?}");
+    }
+
+    /// The controls editors fit the Property Editor panel, at its narrowest
+    /// too, with no editor button left.
+    #[test]
+    fn the_controls_editors_fit_the_panel() {
+        let ctx = egui::Context::default();
+        let mut app = EpanetApp::new(&eframe::CreationContext::_new_kittest(ctx.clone()));
+        app.load_example("Net1", eui_core::examples::NET1);
+        app.net.replace_section(
+            "RULES",
+            [
+                "RULE R1",
+                "IF TANK 2 LEVEL ABOVE 140",
+                "THEN PUMP 9 STATUS IS CLOSED",
+            ]
+            .map(str::to_string)
+            .to_vec(),
+        );
+        for width in [260.0, 500.0] {
+            for (rules, editing) in [(false, false), (false, true), (true, false), (true, true)] {
+                let input = || egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        vec2(width, 1200.0),
+                    )),
+                    ..Default::default()
+                };
+                let mut right = 0.0f32;
+                let mut texts = Vec::new();
+                for _ in 0..3 {
+                    let mut out = ctx.run_ui(input(), |ui| {
+                        egui::CentralPanel::default()
+                            .frame(egui::Frame::NONE)
+                            .show(ui, |ui| {
+                                if rules {
+                                    rules_panel(&mut app, ui)
+                                } else {
+                                    controls_panel(&mut app, ui)
+                                }
+                            });
+                    });
+                    out.textures_delta.clear();
+                    right = 0.0;
+                    texts.clear();
+                    for c in &out.shapes {
+                        let r = c.shape.visual_bounding_rect();
+                        if r.is_finite() {
+                            right = right.max(r.right());
+                        }
+                        if let egui::Shape::Text(t) = &c.shape {
+                            texts.push(t.galley.text().to_string());
+                        }
+                    }
+                    if editing {
+                        if rules {
+                            let e = app.forms.rules.as_mut().unwrap();
+                            e.edit.get_or_insert((Some(0), e.rows[0].2.clone()));
+                        } else {
+                            let e = app.forms.controls.as_mut().unwrap();
+                            let f = ControlForm::parse(&e.rows[0].1).unwrap();
+                            e.form.get_or_insert((Some(0), f));
+                        }
+                    }
+                }
+                let what = format!("width {width} rules {rules} editing {editing}");
+                assert!(right <= width + 0.5, "{what}: {right}");
+                assert!(texts.iter().any(|t| t == "+ Insert"), "{what}: {texts:?}");
+                assert!(!texts.iter().any(|t| t.contains("Editor…")), "{what}");
+                if editing && !rules {
+                    assert!(texts.iter().any(|t| t == "NODE"), "{what}: {texts:?}");
+                }
+                app.forms.controls = None;
+                app.forms.rules = None;
+            }
+        }
     }
 }

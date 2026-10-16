@@ -88,8 +88,6 @@ fn tree(app: &mut EpanetApp, ui: &mut Ui) {
                     crate::forms::open_patterns(app, crate::forms::Pick::Browse)
                 }
                 ExplorerItem::Curves => crate::forms::open_curves(app, crate::forms::Pick::Browse),
-                ExplorerItem::SimpleControls => crate::forms::open_controls(app),
-                ExplorerItem::RuleControls => crate::forms::open_rules(app),
                 _ => {}
             }
             if it == ExplorerItem::Nodes && !matches!(app.selection, Some(Element::Node(_))) {
@@ -265,26 +263,11 @@ fn editor(app: &mut EpanetApp, ui: &mut Ui) {
         }
         ExplorerItem::SimpleControls => {
             item_header(ui, menu, "Simple Controls", false);
-            let rows: Vec<(String, String)> = app
-                .net
-                .raw_lines("CONTROLS")
-                .map(|t| (t.join(" "), String::new()))
-                .collect();
-            if form_summary(ui, &rows, "Simple Controls Editor…") {
-                crate::forms::open_controls(app);
-            }
+            crate::forms::controls_panel(app, ui);
         }
         ExplorerItem::RuleControls => {
             item_header(ui, menu, "Rule-Based Controls", false);
-            let rows: Vec<(String, String)> = app
-                .net
-                .raw_lines("RULES")
-                .filter(|t| t[0].eq_ignore_ascii_case("RULE"))
-                .map(|t| (t.get(1).cloned().unwrap_or_default(), String::new()))
-                .collect();
-            if form_summary(ui, &rows, "Rule-Based Controls Editor…") {
-                crate::forms::open_rules(app);
-            }
+            crate::forms::rules_panel(app, ui);
         }
         ExplorerItem::Labels => {
             item_header(ui, menu, "Map Labels", false);
