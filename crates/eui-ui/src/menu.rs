@@ -133,7 +133,7 @@ fn speed_bar(app: &mut EpanetApp, ui: &mut Ui) {
                 resp.on_hover_text(tr(tip)).clicked()
             };
             // Right-to-left layout: listed in reverse visual order.
-            // Last, apart and in orange: report an issue on GitHub.
+            // Last, apart and in red: report an issue on GitHub.
             let (rect, resp) = ui.allocate_exact_size(vec2(23.0, 23.0), Sense::click());
             if resp.hovered() {
                 ui.painter()
@@ -143,8 +143,8 @@ fn speed_bar(app: &mut EpanetApp, ui: &mut Ui) {
                 ui.painter(),
                 rect.center() + vec2(0.0, 1.0),
                 0.72,
-                ISSUE_ORANGE,
-                Some(ISSUE_ORANGE),
+                ISSUE_RED,
+                Some(ISSUE_RED),
             );
             if resp
                 .on_hover_text(tr(
@@ -217,8 +217,8 @@ fn paint_issue(p: &egui::Painter, c: egui::Pos2, fg: Color32) {
     issue_icon(p, c, 1.0, fg, None);
 }
 
-/// The orange Report Issue button of the speed bar.
-const ISSUE_ORANGE: Color32 = Color32::from_rgb(0xe0, 0x6a, 0x10);
+/// The red Report Issue button of the speed bar.
+const ISSUE_RED: Color32 = Color32::from_rgb(0xd3, 0x2f, 0x2f);
 
 /// A speech bubble with an exclamation mark, `s` times the toolbar size;
 /// with `fill`, a filled bubble and a white mark.
@@ -749,7 +749,7 @@ fn plugins_toolbar(app: &mut EpanetApp, ui: &mut Ui) {
     }
     if tool_button(
         ui,
-        Icon::Console,
+        Icon::Python,
         "Python Console",
         true,
         app.python.console.open,

@@ -11,6 +11,11 @@ if (-not (Test-Path (Join-Path $Root "index.html"))) {
     exit 1
 }
 
+$docs = @{}
+foreach ($name in "Manual.html", "Tutorial.html") {
+    $docs[$name] = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\docs\$name"))
+}
+
 $types = @{
     ".html" = "text/html; charset=utf-8"; ".js" = "text/javascript"; ".wasm" = "application/wasm"
     ".css" = "text/css"; ".svg" = "image/svg+xml"; ".png" = "image/png"; ".json" = "application/json"
@@ -44,7 +49,9 @@ while ($listener.IsListening) {
         $rel = [Uri]::UnescapeDataString($ctx.Request.Url.AbsolutePath.TrimStart('/'))
         if ($rel -eq "") { $rel = "index.html" }
         $file = [IO.Path]::GetFullPath((Join-Path $Root $rel))
-        if ($file.StartsWith($Root) -and (Test-Path $file -PathType Leaf)) {
+        # Help's Manual and Tutorial are kept once, in docs/
+        if (-not (Test-Path $file -PathType Leaf) -and $docs.ContainsKey($rel)) { $file = $docs[$rel] }
+        if (($file.StartsWith($Root) -or $docs.ContainsValue($file)) -and (Test-Path $file -PathType Leaf)) {
             $bytes = [IO.File]::ReadAllBytes($file)
             $ext = [IO.Path]::GetExtension($file).ToLower()
             $ctx.Response.ContentType = if ($types.ContainsKey($ext)) { $types[$ext] } else { "application/octet-stream" }

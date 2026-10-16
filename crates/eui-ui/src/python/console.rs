@@ -199,19 +199,31 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
 }
 
 fn body(app: &mut EpanetApp, ui: &mut Ui) {
-    let mut close = false;
-    ui.horizontal(|ui| {
-        ui.label(RichText::new("Python Console").strong());
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            close = ui.button("✕").on_hover_text("Close the console").clicked();
+    // EPANET-UI's window chrome: the title and the red close button, with
+    // Clear (and the spinner while Python runs) left of it
+    let (bar, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), crate::dialogs::TITLE_H),
+        egui::Sense::hover(),
+    );
+    let fill = ui.visuals().panel_fill;
+    let close = crate::dialogs::title_bar(ui, bar, "Python Console", fill, None, true).close;
+    let tools = egui::Rect::from_min_max(
+        egui::pos2(bar.center().x, bar.top()),
+        egui::pos2(bar.right() - 52.0, bar.bottom()),
+    );
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(tools)
+            .layout(egui::Layout::right_to_left(egui::Align::Center)),
+        |ui| {
             if ui.button("Clear").clicked() {
                 app.python.console.log.clear();
             }
             if app.python.console.busy {
                 ui.spinner();
             }
-        });
-    });
+        },
+    );
     if close {
         toggle(app);
         return;

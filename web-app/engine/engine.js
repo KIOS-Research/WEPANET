@@ -1,9 +1,11 @@
 // WEPANET web engine bridge.
-// Exposes window.euiEngine.run(inpText, onProgress) -> Promise<{code, report, out, energy}>
+// Exposes window.euiEngine.run(inpText, msxText, onProgress) -> Promise<{code, report, out, energy, extra}>
 // and window.euiEngine.cancel(), used by the Rust app (crates/eui-engine/src/web.rs).
 // Simulations run in a Web Worker so the UI never freezes, using OWA EPANET
 // compiled with Emscripten (web-engine/build.sh). onProgress(stage, hour) is
-// called as the run goes (stage 1 = hydraulics, 2 = water quality).
+// called as the run goes (stage 1 = hydraulics, 2 = water quality, 3 = EPANET-MSX).
+// msxText (or null) adds an EPANET-MSX analysis; its results come back as
+// {msx, msxCode, msxReport, msxMessage}.
 (function () {
   const base = (document.currentScript && document.currentScript.src)
     ? document.currentScript.src.replace(/[^/]*$/, '')
@@ -36,10 +38,10 @@
   }
 
   window.euiEngine = {
-    run(inp, onProgress) {
+    run(inp, msx, onProgress) {
       return new Promise((resolve, reject) => {
         const id = nextId++;
-        const msg = { id, inp };
+        const msg = { id, inp, msx };
         pending.set(id, { msg, onProgress, resolve, reject });
         getWorker().postMessage(msg);
       });

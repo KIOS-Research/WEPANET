@@ -72,8 +72,8 @@ pub enum Icon {
     FireFlow,
     // misc
     Pencil,
-    /// The Python Console: a window with a prompt.
-    Console,
+    /// The Python Console: the Python logo, in its own colors.
+    Python,
     Menu,
 }
 
@@ -194,7 +194,7 @@ fn image_of(icon: Icon) -> Option<(&'static Sheet, usize)> {
         Icon::Menu => m(35),
         Icon::Percentiles => m(36),
         Icon::FireFlow => m(40),
-        Icon::Undo | Icon::Redo | Icon::Pencil | Icon::Console => None,
+        Icon::Undo | Icon::Redo | Icon::Pencil | Icon::Python => None,
     }
 }
 
@@ -266,16 +266,23 @@ pub fn paint(p: &Painter, icon: Icon, c: Pos2, size: f32, fg: Color32) {
                 Stroke::NONE,
             ));
         }
-        Icon::Console => {
-            // a terminal window: a frame, a title bar, and >_
-            let frame = Rect::from_min_max(at(-0.85, -0.75), at(0.85, 0.75));
-            p.rect_stroke(frame, 0.12 * r, s, egui::StrokeKind::Middle);
-            p.line_segment([at(-0.85, -0.42), at(0.85, -0.42)], s);
-            p.add(Shape::line(
-                vec![at(-0.55, -0.1), at(-0.25, 0.15), at(-0.55, 0.4)],
-                s,
-            ));
-            p.line_segment([at(-0.05, 0.42), at(0.45, 0.42)], s);
+        Icon::Python => {
+            // two snakes, blue at the top left and yellow (the blue turned
+            // half a circle) at the bottom right, each a head with an eye,
+            // a bar across and a tail down the side
+            let blue = Color32::from_rgb(0x37, 0x76, 0xab);
+            let yellow = Color32::from_rgb(0xff, 0xd4, 0x3b);
+            for (flip, color) in [(1.0, blue), (-1.0, yellow)] {
+                let block = |x0: f32, y0: f32, x1: f32, y1: f32, round: f32| {
+                    let rect =
+                        Rect::from_two_pos(at(flip * x0, flip * y0), at(flip * x1, flip * y1));
+                    p.rect_filled(rect, round * r, color);
+                };
+                block(-0.5, -0.98, 0.5, -0.3, 0.22); // head
+                block(-0.98, -0.47, 0.45, -0.05, 0.14); // bar
+                block(-0.98, -0.47, -0.56, 0.45, 0.2); // tail
+                p.circle_filled(at(flip * -0.24, flip * -0.72), 0.1 * r, Color32::WHITE);
+            }
         }
         _ => {
             // Pencil.

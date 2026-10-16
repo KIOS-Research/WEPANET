@@ -7,8 +7,8 @@
   <meta name="description" content="Open-source water distribution network modeling in your browser. Runs locally, no account needed.">
   
 <script type="module">
-import init, * as bindings from '/epanet-ui-web-60ed22c05374c0bc.js';
-const wasm = await init({ module_or_path: '/epanet-ui-web-60ed22c05374c0bc_bg.wasm' });
+import init, * as bindings from '/epanet-ui-web-65c6d4d68d066a43.js';
+const wasm = await init({ module_or_path: '/epanet-ui-web-65c6d4d68d066a43_bg.wasm' });
 
 
 window.wasmBindings = bindings;
@@ -20,9 +20,12 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
   
   
   
+  
+  
   <link rel="icon" href="favicon.ico" sizes="any">
   <link rel="apple-touch-icon" href="logo.png">
   <script src="engine/engine.js"></script>
+  <script src="engine/python.js"></script>
   <style>
     html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #f6f7f9; }
     @media (prefers-color-scheme: dark) { html, body { background: #1b1e23; } }
@@ -31,7 +34,13 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
       justify-content: center; font: 15px system-ui, sans-serif; color: #55606e; gap: 14px; }
     #loading img { width: 64px; height: 64px; }
   </style>
-<link rel="modulepreload" href="/epanet-ui-web-60ed22c05374c0bc.js" crossorigin="anonymous" integrity="sha384-Wcozpgr/oWF82nt99goZ2IoRCph+8AhSyXihp/6M/i6UZ3k/uzRmE3zGJUvX5U9Z"><link rel="preload" href="/epanet-ui-web-60ed22c05374c0bc_bg.wasm" crossorigin="anonymous" integrity="sha384-V1L2crjzplclrfE751oE1PAP9OkqQDUe2ZwJKYdBq4a0wCme4W8QHqKRSJgJF9tw" as="fetch" type="application/wasm"></head>
+  <!-- GoatCounter Analytics: page views only, no cookies (localhost visits are not counted) -->
+  <script
+    data-goatcounter="https://wepanet.goatcounter.com/count"
+    async
+    src="https://gc.zgo.at/count.js">
+  </script>
+<link rel="modulepreload" href="/epanet-ui-web-65c6d4d68d066a43.js" crossorigin="anonymous" integrity="sha384-/XGidnEoKfKWndG4nZW8/NIBiVOQqTB7HvNOENIy9zukCqepCqrmJzEoIwzASKyW"><link rel="preload" href="/epanet-ui-web-65c6d4d68d066a43_bg.wasm" crossorigin="anonymous" integrity="sha384-dJO4zwZqsoxBDrK0qXrucNmk9Lmxtj4lNzptsUpurDUqHTrA+m+2i7lIK2COZOYd" as="fetch" type="application/wasm"></head>
 <body>
   <canvas id="epanet_ui_canvas"></canvas>
   <div id="loading"><img src="logo.png" alt=""><span>Loading WEPANET…</span></div>
