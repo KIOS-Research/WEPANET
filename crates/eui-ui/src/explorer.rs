@@ -82,14 +82,6 @@ fn tree(app: &mut EpanetApp, ui: &mut Ui) {
         };
         if ui.selectable_label(app.explorer == it, text).clicked() {
             app.explorer = it;
-            // EPANET-UI opens these categories' forms
-            match it {
-                ExplorerItem::Patterns => {
-                    crate::forms::open_patterns(app, crate::forms::Pick::Browse)
-                }
-                ExplorerItem::Curves => crate::forms::open_curves(app, crate::forms::Pick::Browse),
-                _ => {}
-            }
             if it == ExplorerItem::Nodes && !matches!(app.selection, Some(Element::Node(_))) {
                 app.selection = (!app.net.nodes.is_empty()).then_some(Element::Node(0));
             }
@@ -239,27 +231,11 @@ fn editor(app: &mut EpanetApp, ui: &mut Ui) {
         ExplorerItem::Nodes | ExplorerItem::Links => element_editor(app, ui),
         ExplorerItem::Patterns => {
             item_header(ui, menu, "Time Patterns", false);
-            let rows: Vec<(String, String)> = app
-                .net
-                .time_patterns()
-                .into_iter()
-                .map(|p| (p.id, p.description))
-                .collect();
-            if form_summary(ui, &rows, "Time Pattern Selector…") {
-                crate::forms::open_patterns(app, crate::forms::Pick::Browse);
-            }
+            crate::forms::patterns_panel(app, ui);
         }
         ExplorerItem::Curves => {
             item_header(ui, menu, "Data Curves", false);
-            let rows: Vec<(String, String)> = app
-                .net
-                .data_curves()
-                .into_iter()
-                .map(|c| (c.id, c.description))
-                .collect();
-            if form_summary(ui, &rows, "Data Curve Selector…") {
-                crate::forms::open_curves(app, crate::forms::Pick::Browse);
-            }
+            crate::forms::curves_panel(app, ui);
         }
         ExplorerItem::SimpleControls => {
             item_header(ui, menu, "Simple Controls", false);
@@ -1090,34 +1066,7 @@ fn title_editor(app: &mut EpanetApp, ui: &mut Ui) {
         });
 }
 
-// ----- patterns, curves, text sections ---------------------------------------------
-
-/// The Property Editor's view of a category with its own form (patterns,
-/// curves, controls): what it holds, and a button that opens the form.
-fn form_summary(ui: &mut Ui, rows: &[(String, String)], open: &str) -> bool {
-    let mut clicked = false;
-    egui::Frame::NONE
-        .inner_margin(egui::Margin::symmetric(8, 6))
-        .show(ui, |ui| {
-            clicked = ui.button(open).clicked();
-            ui.add_space(6.0);
-            if rows.is_empty() {
-                ui.label(RichText::new("(none)").weak());
-            }
-            egui::Grid::new("form_summary")
-                .num_columns(2)
-                .striped(true)
-                .spacing([12.0, 3.0])
-                .show(ui, |ui| {
-                    for (a, b) in rows {
-                        ui.label(a);
-                        ui.label(RichText::new(b).weak());
-                        ui.end_row();
-                    }
-                });
-        });
-    clicked
-}
+// ----- text sections ----------------------------------------------------------------
 
 fn section_editor(app: &mut EpanetApp, ui: &mut Ui, section: &str, example: &str) {
     let item = app.explorer;

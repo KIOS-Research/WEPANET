@@ -37,6 +37,17 @@ pub struct FormsState {
     controls: Option<ControlsEdit>,
     rules: Option<RulesEdit>,
     inbox: crate::io::Inbox,
+    /// The Property Editor panel's own selector row, note and editor, apart
+    /// from those of a selector window.
+    panel: PanelForms,
+}
+
+#[derive(Default)]
+struct PanelForms {
+    selected: usize,
+    note: Option<String>,
+    pattern: Option<PatternEdit>,
+    curve: Option<CurveEdit>,
 }
 
 const RED: Color32 = Color32::from_rgb(0xc0, 0x39, 0x2b);
@@ -46,6 +57,30 @@ const DIURNAL: [f64; 24] = [
     0.7, 0.6, 0.5, 0.5, 0.5, 0.6, 0.8, 1.0, 1.1, 1.25, 1.28, 1.2, 1.18, 1.16, 1.1, 1.0, 1.08, 1.15,
     1.3, 1.6, 1.4, 1.25, 0.9, 0.85,
 ];
+
+/// A form's bottom row of buttons, EPANET-UI style: some on the left, some
+/// on the right; in the panel they wrap. Returns the label clicked.
+fn form_buttons(ui: &mut Ui, panel: bool, left: &[&str], right: &[(&str, bool)]) -> Option<String> {
+    if !panel {
+        return button_row(ui, left, right);
+    }
+    let mut clicked = None;
+    ui.horizontal_wrapped(|ui| {
+        for (l, on) in left
+            .iter()
+            .map(|l| (l, true))
+            .chain(right.iter().map(|(l, on)| (l, *on)))
+        {
+            if ui
+                .add_enabled(on, egui::Button::new(*l).min_size(vec2(64.0, 26.0)))
+                .clicked()
+            {
+                clicked = Some(l.to_string());
+            }
+        }
+    });
+    clicked
+}
 
 /// A form's bottom row of buttons, EPANET-UI style: some on the left, some
 /// on the right. Returns the label clicked.
@@ -190,6 +225,7 @@ fn list(
     columns: &[(&str, f32)],
     rows: &[Vec<String>],
     selected: &mut usize,
+    height: f32,
 ) -> Option<usize> {
     let mut open = None;
     egui::Frame::NONE
@@ -201,10 +237,10 @@ fn list(
         .stroke(egui::Stroke::new(1.0, Color32::from_gray(160)))
         .show(ui, |ui| {
             let w = columns.iter().map(|c| c.1).sum::<f32>();
-            ui.set_min_size(vec2(w, 300.0));
+            ui.set_min_size(vec2(w, height));
             ui.set_max_width(w + 16.0);
             egui::ScrollArea::vertical()
-                .max_height(300.0)
+                .max_height(height)
                 .max_width(w + 16.0)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
@@ -238,8 +274,81 @@ fn list(
     open
 }
 
+/// Runs `f` on the panel's own selector state (browsing, never picking),
+/// leaving a selector window's state and the open dialog as they were.
+fn in_panel(app: &mut EpanetApp, f: impl FnOnce(&mut EpanetApp)) {
+    let swap = |app: &mut EpanetApp| {
+        let f = &mut app.forms;
+        std::mem::swap(&mut f.selected, &mut f.panel.selected);
+        std::mem::swap(&mut f.note, &mut f.panel.note);
+        std::mem::swap(&mut f.pattern, &mut f.panel.pattern);
+        std::mem::swap(&mut f.curve, &mut f.panel.curve);
+    };
+    let dialog = app.dialog;
+    let pick = std::mem::take(&mut app.forms.pick);
+    swap(app);
+    f(app);
+    swap(app);
+    app.forms.pick = pick;
+    app.dialog = dialog;
+}
+
+/// The Time Patterns inside the Property Editor panel: the selector, or the
+/// editor of the pattern added or edited.
+pub fn patterns_panel(app: &mut EpanetApp, ui: &mut Ui) {
+    let w = ui.available_width() - 20.0;
+    egui::Frame::NONE
+        .inner_margin(egui::Margin::symmetric(8, 6))
+        .show(ui, |ui| {
+            in_panel(app, |app| {
+                if app.forms.pattern.is_some() {
+                    pattern_editor_body(app, ui, Some(w));
+                } else {
+                    pattern_selector_body(app, ui, Some(w));
+                }
+            })
+        });
+}
+
+/// The Data Curves inside the Property Editor panel: the selector, or the
+/// editor of the curve added or edited.
+pub fn curves_panel(app: &mut EpanetApp, ui: &mut Ui) {
+    let w = ui.available_width() - 20.0;
+    egui::Frame::NONE
+        .inner_margin(egui::Margin::symmetric(8, 6))
+        .show(ui, |ui| {
+            in_panel(app, |app| {
+                if app.forms.curve.is_some() {
+                    curve_editor_body(app, ui, Some(w));
+                } else {
+                    curve_selector_body(app, ui, Some(w));
+                }
+            })
+        });
+}
+
+/// A selector's Add / Edit / Delete (and Help) under its list, in the panel.
+fn panel_actions(ui: &mut Ui, on: bool, action: &mut Option<&'static str>) {
+    ui.horizontal_wrapped(|ui| {
+        for (label, enabled) in [("Add", true), ("Edit", on), ("Delete", on), ("Help", true)] {
+            if ui
+                .add_enabled(enabled, egui::Button::new(label).min_size(vec2(64.0, 26.0)))
+                .clicked()
+            {
+                *action = Some(label);
+            }
+        }
+    });
+}
+
 /// The Time Pattern Selector.
 pub fn pattern_selector(app: &mut EpanetApp, ui: &mut Ui) -> bool {
+    pattern_selector_body(app, ui, None)
+}
+
+/// The Time Pattern Selector, in a window or (`panel`: its width) in the
+/// Property Editor panel.
+fn pattern_selector_body(app: &mut EpanetApp, ui: &mut Ui, panel: Option<f32>) -> bool {
     let pats = app.net.time_patterns();
     let picking = app.forms.pick != Pick::Browse;
     let blank = usize::from(picking);
@@ -255,41 +364,54 @@ pub fn pattern_selector(app: &mut EpanetApp, ui: &mut Ui) -> bool {
     ui.label("Select a Time Pattern from the list below:");
     ui.add_space(4.0);
     let mut action = None;
-    ui.horizontal_top(|ui| {
+    if let Some(w) = panel {
         let mut sel = app.forms.selected;
-        if list(
-            ui,
-            &[("Name", 140.0), ("Description", 260.0)],
-            &rows,
-            &mut sel,
-        )
-        .is_some()
-        {
+        let c = (w - 16.0).max(100.0);
+        let cols = [("Name", c * 0.35), ("Description", c * 0.65)];
+        if list(ui, &cols, &rows, &mut sel, 180.0).is_some() {
             action = Some("Edit");
         }
         app.forms.selected = sel;
-        ui.add_space(10.0);
-        ui.vertical(|ui| {
-            let on_pattern = app.forms.selected >= blank && !pats.is_empty();
-            for (label, on) in [("Add", true), ("Edit", on_pattern), ("Delete", on_pattern)] {
-                if ui
-                    .add_enabled(on, egui::Button::new(label).min_size(vec2(90.0, 26.0)))
-                    .clicked()
-                {
-                    action = Some(label);
-                }
+        ui.add_space(4.0);
+        panel_actions(ui, sel >= blank && !pats.is_empty(), &mut action);
+    } else {
+        ui.horizontal_top(|ui| {
+            let mut sel = app.forms.selected;
+            if list(
+                ui,
+                &[("Name", 140.0), ("Description", 260.0)],
+                &rows,
+                &mut sel,
+                300.0,
+            )
+            .is_some()
+            {
+                action = Some("Edit");
             }
-            ui.add_space(80.0);
-            for label in ["Help", "OK", "Cancel"] {
-                if ui
-                    .add(egui::Button::new(label).min_size(vec2(90.0, 26.0)))
-                    .clicked()
-                {
-                    action = Some(label);
+            app.forms.selected = sel;
+            ui.add_space(10.0);
+            ui.vertical(|ui| {
+                let on_pattern = app.forms.selected >= blank && !pats.is_empty();
+                for (label, on) in [("Add", true), ("Edit", on_pattern), ("Delete", on_pattern)] {
+                    if ui
+                        .add_enabled(on, egui::Button::new(label).min_size(vec2(90.0, 26.0)))
+                        .clicked()
+                    {
+                        action = Some(label);
+                    }
                 }
-            }
+                ui.add_space(80.0);
+                for label in ["Help", "OK", "Cancel"] {
+                    if ui
+                        .add(egui::Button::new(label).min_size(vec2(90.0, 26.0)))
+                        .clicked()
+                    {
+                        action = Some(label);
+                    }
+                }
+            });
         });
-    });
+    }
     let chosen = app
         .forms
         .selected
@@ -297,16 +419,11 @@ pub fn pattern_selector(app: &mut EpanetApp, ui: &mut Ui) -> bool {
         .and_then(|k| pats.get(k));
     // a preview of the selected pattern
     ui.add_space(8.0);
+    let size = vec2(panel.unwrap_or(500.0), 120.0);
     if let Some(p) = chosen {
-        pattern_chart(
-            ui,
-            "pattern_preview",
-            &p.values,
-            vec2(500.0, 120.0),
-            &step_hours(app),
-        );
+        pattern_chart(ui, "pattern_preview", &p.values, size, &step_hours(app));
     } else {
-        ui.allocate_space(vec2(500.0, 120.0));
+        ui.allocate_space(size);
     }
     if let Some(n) = &app.forms.note {
         ui.label(RichText::new(n).color(RED));
@@ -361,6 +478,12 @@ pub fn pattern_selector(app: &mut EpanetApp, ui: &mut Ui) -> bool {
 
 /// The Data Curve Selector.
 pub fn curve_selector(app: &mut EpanetApp, ui: &mut Ui) -> bool {
+    curve_selector_body(app, ui, None)
+}
+
+/// The Data Curve Selector, in a window or (`panel`: its width) in the
+/// Property Editor panel.
+fn curve_selector_body(app: &mut EpanetApp, ui: &mut Ui, panel: Option<f32>) -> bool {
     let curves = app.net.data_curves();
     let picking = app.forms.pick != Pick::Browse;
     let blank = usize::from(picking);
@@ -379,41 +502,58 @@ pub fn curve_selector(app: &mut EpanetApp, ui: &mut Ui) -> bool {
     ui.label("Select a Data Curve from the list below:");
     ui.add_space(4.0);
     let mut action = None;
-    ui.horizontal_top(|ui| {
+    if let Some(w) = panel {
         let mut sel = app.forms.selected;
-        if list(
-            ui,
-            &[("Name", 120.0), ("Type", 80.0), ("Description", 220.0)],
-            &rows,
-            &mut sel,
-        )
-        .is_some()
-        {
+        let c = (w - 16.0).max(120.0);
+        let cols = [
+            ("Name", c * 0.3),
+            ("Type", c * 0.25),
+            ("Description", c * 0.45),
+        ];
+        if list(ui, &cols, &rows, &mut sel, 220.0).is_some() {
             action = Some("Edit");
         }
         app.forms.selected = sel;
-        ui.add_space(10.0);
-        ui.vertical(|ui| {
-            let on_curve = app.forms.selected >= blank && !curves.is_empty();
-            for (label, on) in [("Add", true), ("Edit", on_curve), ("Delete", on_curve)] {
-                if ui
-                    .add_enabled(on, egui::Button::new(label).min_size(vec2(90.0, 26.0)))
-                    .clicked()
-                {
-                    action = Some(label);
-                }
+        ui.add_space(4.0);
+        panel_actions(ui, sel >= blank && !curves.is_empty(), &mut action);
+    } else {
+        ui.horizontal_top(|ui| {
+            let mut sel = app.forms.selected;
+            if list(
+                ui,
+                &[("Name", 120.0), ("Type", 80.0), ("Description", 220.0)],
+                &rows,
+                &mut sel,
+                300.0,
+            )
+            .is_some()
+            {
+                action = Some("Edit");
             }
-            ui.add_space(110.0);
-            for label in ["Help", "OK", "Cancel"] {
-                if ui
-                    .add(egui::Button::new(label).min_size(vec2(90.0, 26.0)))
-                    .clicked()
-                {
-                    action = Some(label);
+            app.forms.selected = sel;
+            ui.add_space(10.0);
+            ui.vertical(|ui| {
+                let on_curve = app.forms.selected >= blank && !curves.is_empty();
+                for (label, on) in [("Add", true), ("Edit", on_curve), ("Delete", on_curve)] {
+                    if ui
+                        .add_enabled(on, egui::Button::new(label).min_size(vec2(90.0, 26.0)))
+                        .clicked()
+                    {
+                        action = Some(label);
+                    }
                 }
-            }
+                ui.add_space(110.0);
+                for label in ["Help", "OK", "Cancel"] {
+                    if ui
+                        .add(egui::Button::new(label).min_size(vec2(90.0, 26.0)))
+                        .clicked()
+                    {
+                        action = Some(label);
+                    }
+                }
+            });
         });
-    });
+    }
     if let Some(n) = &app.forms.note {
         ui.label(RichText::new(n).color(RED));
     }
@@ -536,30 +676,47 @@ fn pattern_chart(ui: &mut Ui, id: &str, values: &[f64], size: egui::Vec2, step: 
 
 /// The Time Pattern Editor. Accept and Cancel return to the selector.
 pub fn pattern_editor(app: &mut EpanetApp, ui: &mut Ui) -> bool {
+    pattern_editor_body(app, ui, None)
+}
+
+/// The Time Pattern Editor, in a window or (`panel`: its width) in the
+/// Property Editor panel.
+fn pattern_editor_body(app: &mut EpanetApp, ui: &mut Ui, panel: Option<f32>) -> bool {
     let step = step_hours(app);
     take_loaded(app);
     let Some(e) = &mut app.forms.pattern else {
         app.dialog = Dialog::PatternSelector;
         return false;
     };
-    ui.set_width(460.0);
-    ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.label("Pattern ID");
-            ui.add(egui::TextEdit::singleline(&mut e.id).desired_width(120.0));
-        });
-        ui.add_space(20.0);
-        ui.vertical(|ui| {
-            ui.horizontal(|ui| {
-                ui.label("Description");
-                ui.add_space(60.0);
-                if ui.link("Use typical diurnal pattern").clicked() {
-                    e.values = DIURNAL.iter().map(|v| format!("{v:.4}")).collect();
-                }
+    let w = panel.unwrap_or(460.0);
+    ui.set_width(w);
+    if panel.is_some() {
+        ui.label("Pattern ID");
+        ui.add(egui::TextEdit::singleline(&mut e.id).desired_width(120.0));
+        ui.label("Description");
+        ui.add(egui::TextEdit::singleline(&mut e.description).desired_width(w));
+        if ui.link("Use typical diurnal pattern").clicked() {
+            e.values = DIURNAL.iter().map(|v| format!("{v:.4}")).collect();
+        }
+    } else {
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.label("Pattern ID");
+                ui.add(egui::TextEdit::singleline(&mut e.id).desired_width(120.0));
             });
-            ui.add(egui::TextEdit::singleline(&mut e.description).desired_width(300.0));
+            ui.add_space(20.0);
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Description");
+                    ui.add_space(60.0);
+                    if ui.link("Use typical diurnal pattern").clicked() {
+                        e.values = DIURNAL.iter().map(|v| format!("{v:.4}")).collect();
+                    }
+                });
+                ui.add(egui::TextEdit::singleline(&mut e.description).desired_width(300.0));
+            });
         });
-    });
+    }
     ui.add_space(8.0);
     // Period / Multiplier, one column per period, plus an empty one to add
     if e.values.last().is_none_or(|v| !v.trim().is_empty()) {
@@ -567,7 +724,7 @@ pub fn pattern_editor(app: &mut EpanetApp, ui: &mut Ui) -> bool {
     }
     egui::ScrollArea::horizontal()
         .id_salt("pattern_cells")
-        .max_width(440.0)
+        .max_width(panel.unwrap_or(440.0))
         .show(ui, |ui| {
             egui::Grid::new("pattern_cells_grid")
                 .striped(true)
@@ -598,13 +755,15 @@ pub fn pattern_editor(app: &mut EpanetApp, ui: &mut Ui) -> bool {
         .filter_map(|v| v.trim().parse::<f64>().ok())
         .collect();
     ui.add_space(8.0);
-    pattern_chart(ui, "pattern_editor_chart", &vals, vec2(440.0, 200.0), &step);
+    let size = panel.map_or(vec2(440.0, 200.0), |w| vec2(w, 160.0));
+    pattern_chart(ui, "pattern_editor_chart", &vals, size, &step);
     if let Some(err) = &e.error {
         ui.label(RichText::new(err).color(RED));
     }
     ui.add_space(8.0);
-    let clicked = button_row(
+    let clicked = form_buttons(
         ui,
+        panel.is_some(),
         &["Help", "Load", "Save", "Clear"],
         &[("Accept", true), ("Cancel", true)],
     );
@@ -812,11 +971,19 @@ fn curve_line(kind: &str, pts: &[[f64; 2]]) -> Vec<[f64; 2]> {
 
 /// The Data Curve Editor. OK and Cancel return to the selector.
 pub fn curve_editor(app: &mut EpanetApp, ui: &mut Ui) -> bool {
+    curve_editor_body(app, ui, None)
+}
+
+/// The Data Curve Editor, in a window or (`panel`: its width) in the
+/// Property Editor panel, where the chart goes under the points.
+fn curve_editor_body(app: &mut EpanetApp, ui: &mut Ui, panel: Option<f32>) -> bool {
     let Some(e) = &mut app.forms.curve else {
         app.dialog = Dialog::CurveSelector;
         return false;
     };
-    ui.set_width(560.0);
+    let w = panel.unwrap_or(560.0);
+    ui.set_width(w);
+    // in the panel the description goes under the ID and type
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
             ui.label("Curve ID");
@@ -834,12 +1001,18 @@ pub fn curve_editor(app: &mut EpanetApp, ui: &mut Ui) -> bool {
                     }
                 });
         });
-        ui.add_space(16.0);
-        ui.vertical(|ui| {
-            ui.label("Description");
-            ui.add(egui::TextEdit::singleline(&mut e.description).desired_width(280.0));
-        });
+        if panel.is_none() {
+            ui.add_space(16.0);
+            ui.vertical(|ui| {
+                ui.label("Description");
+                ui.add(egui::TextEdit::singleline(&mut e.description).desired_width(280.0));
+            });
+        }
     });
+    if panel.is_some() {
+        ui.label("Description");
+        ui.add(egui::TextEdit::singleline(&mut e.description).desired_width(w));
+    }
     ui.add_space(8.0);
     if e.points
         .last()
@@ -853,11 +1026,28 @@ pub fn curve_editor(app: &mut EpanetApp, ui: &mut Ui) -> bool {
         .iter()
         .filter_map(|[x, y]| Some([x.trim().parse().ok()?, y.trim().parse().ok()?]))
         .collect();
-    ui.horizontal_top(|ui| {
+    let line: PlotPoints = curve_line(&e.kind, &pts).into_iter().collect();
+    let chart = |ui: &mut Ui, size: egui::Vec2| {
+        Plot::new("curve_editor_chart")
+            .width(size.x)
+            .height(size.y)
+            .x_axis_label(xt)
+            .y_axis_label(yt)
+            .allow_scroll(false)
+            .allow_drag(false)
+            .allow_zoom(false)
+            .show(ui, |p| {
+                p.line(
+                    Line::new("curve", line)
+                        .stroke(egui::Stroke::new(3.0, Color32::from_rgb(0x9f, 0xc5, 0xe8))),
+                );
+            });
+    };
+    let mut cells = |ui: &mut Ui, height: f32| {
         egui::ScrollArea::vertical()
             .id_salt("curve_cells")
-            .max_height(220.0)
-            .min_scrolled_height(220.0)
+            .max_height(height)
+            .min_scrolled_height(height)
             .show(ui, |ui| {
                 egui::Grid::new("curve_cells_grid")
                     .striped(true)
@@ -873,23 +1063,18 @@ pub fn curve_editor(app: &mut EpanetApp, ui: &mut Ui) -> bool {
                         }
                     });
             });
-        ui.add_space(10.0);
-        let line: PlotPoints = curve_line(&e.kind, &pts).into_iter().collect();
-        Plot::new("curve_editor_chart")
-            .width(320.0)
-            .height(220.0)
-            .x_axis_label(xt)
-            .y_axis_label(yt)
-            .allow_scroll(false)
-            .allow_drag(false)
-            .allow_zoom(false)
-            .show(ui, |p| {
-                p.line(
-                    Line::new("curve", line)
-                        .stroke(egui::Stroke::new(3.0, Color32::from_rgb(0x9f, 0xc5, 0xe8))),
-                );
-            });
-    });
+    };
+    if let Some(w) = panel {
+        cells(ui, 150.0);
+        ui.add_space(8.0);
+        chart(ui, vec2(w, 200.0));
+    } else {
+        ui.horizontal_top(|ui| {
+            cells(ui, 220.0);
+            ui.add_space(10.0);
+            chart(ui, vec2(320.0, 220.0));
+        });
+    }
     while e.points.len() > 1
         && e.points[e.points.len() - 1]
             .iter()
@@ -904,7 +1089,13 @@ pub fn curve_editor(app: &mut EpanetApp, ui: &mut Ui) -> bool {
         ui.label(RichText::new(err).color(RED));
     }
     ui.add_space(8.0);
-    match button_row(ui, &["Help", "Clear"], &[("OK", true), ("Cancel", true)]).as_deref() {
+    let clicked = form_buttons(
+        ui,
+        panel.is_some(),
+        &["Help", "Clear"],
+        &[("OK", true), ("Cancel", true)],
+    );
+    match clicked.as_deref() {
         Some("Help") => crate::help::open(ui.ctx(), "Data Curves"),
         Some("Clear") => e.points = vec![[String::new(), String::new()]],
         Some("OK") => match accept_curve(app) {
@@ -1293,7 +1484,7 @@ pub fn controls_panel(app: &mut EpanetApp, ui: &mut Ui) {
     if stale {
         start_controls(app);
     }
-    let w = ui.available_width() - 16.0;
+    let w = ui.available_width() - 20.0;
     egui::Frame::NONE
         .inner_margin(egui::Margin::symmetric(8, 6))
         .show(ui, |ui| controls_body(app, ui, w));
@@ -1661,7 +1852,7 @@ pub fn rules_panel(app: &mut EpanetApp, ui: &mut Ui) {
     if stale {
         start_rules(app);
     }
-    let w = ui.available_width() - 16.0;
+    let w = ui.available_width() - 20.0;
     egui::Frame::NONE
         .inner_margin(egui::Margin::symmetric(8, 6))
         .show(ui, |ui| rules_body(app, ui, w));
@@ -2081,32 +2272,35 @@ mod size_tests {
                 let input = || egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
-                        vec2(width, 1200.0),
+                        vec2(width + 600.0, 1200.0),
                     )),
                     ..Default::default()
                 };
                 let mut right = 0.0f32;
                 let mut texts = Vec::new();
                 for _ in 0..3 {
+                    let mut used = 0.0f32;
                     let mut out = ctx.run_ui(input(), |ui| {
                         egui::CentralPanel::default()
                             .frame(egui::Frame::NONE)
                             .show(ui, |ui| {
-                                if rules {
-                                    rules_panel(&mut app, ui)
-                                } else {
-                                    controls_panel(&mut app, ui)
-                                }
+                                used = ui
+                                    .allocate_ui(vec2(width, 1200.0), |ui| {
+                                        if rules {
+                                            rules_panel(&mut app, ui)
+                                        } else {
+                                            controls_panel(&mut app, ui)
+                                        }
+                                    })
+                                    .response
+                                    .rect
+                                    .right();
                             });
                     });
                     out.textures_delta.clear();
-                    right = 0.0;
+                    right = used;
                     texts.clear();
                     for c in &out.shapes {
-                        let r = c.shape.visual_bounding_rect();
-                        if r.is_finite() {
-                            right = right.max(r.right());
-                        }
                         if let egui::Shape::Text(t) = &c.shape {
                             texts.push(t.galley.text().to_string());
                         }
@@ -2131,6 +2325,86 @@ mod size_tests {
                 }
                 app.forms.controls = None;
                 app.forms.rules = None;
+            }
+        }
+    }
+
+    /// The pattern and curve selectors and editors fit the panel, which has
+    /// its own state: a selector window is left as it was.
+    #[test]
+    fn the_pattern_and_curve_forms_fit_the_panel() {
+        let ctx = egui::Context::default();
+        let mut app = EpanetApp::new(&eframe::CreationContext::_new_kittest(ctx.clone()));
+        app.load_example("Net1", eui_core::examples::NET1);
+        app.net.set_data_curves(&[DataCurve {
+            id: "1".into(),
+            kind: "PUMP".into(),
+            points: vec![[1500.0, 250.0]],
+            ..Default::default()
+        }]);
+        for width in [260.0, 500.0] {
+            for (curves, editing) in [(false, false), (false, true), (true, false), (true, true)] {
+                let input = || egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        vec2(width + 600.0, 1200.0),
+                    )),
+                    ..Default::default()
+                };
+                let mut right = 0.0f32;
+                let mut texts = Vec::new();
+                for frame in 0..3 {
+                    if frame == 1 && editing {
+                        // Edit, as the panel's button does
+                        let p = &mut app.forms.panel;
+                        if curves {
+                            p.curve =
+                                Some(CurveEdit::new(Some("1".into()), &app.net.data_curves()[0]));
+                        } else {
+                            let pat = &app.net.time_patterns()[0];
+                            p.pattern = Some(PatternEdit::new(
+                                Some(pat.id.clone()),
+                                pat.id.clone(),
+                                String::new(),
+                                pat.values.clone(),
+                            ));
+                        }
+                    }
+                    let mut used = 0.0f32;
+                    let mut out = ctx.run_ui(input(), |ui| {
+                        egui::CentralPanel::default()
+                            .frame(egui::Frame::NONE)
+                            .show(ui, |ui| {
+                                used = ui
+                                    .allocate_ui(vec2(width, 1200.0), |ui| {
+                                        if curves {
+                                            curves_panel(&mut app, ui)
+                                        } else {
+                                            patterns_panel(&mut app, ui)
+                                        }
+                                    })
+                                    .response
+                                    .rect
+                                    .right();
+                            });
+                    });
+                    out.textures_delta.clear();
+                    right = used;
+                    texts.clear();
+                    for c in &out.shapes {
+                        if let egui::Shape::Text(t) = &c.shape {
+                            texts.push(t.galley.text().to_string());
+                        }
+                    }
+                }
+                let what = format!("width {width} curves {curves} editing {editing}");
+                assert!(right <= width + 0.5, "{what}: {right}");
+                let wanted = if editing { "Cancel" } else { "Add" };
+                assert!(texts.iter().any(|t| t == wanted), "{what}: {texts:?}");
+                assert!(!texts.iter().any(|t| t.contains("Selector…")), "{what}");
+                assert_eq!(app.dialog, Dialog::None, "{what}");
+                assert!(app.forms.pattern.is_none() && app.forms.curve.is_none());
+                app.forms.panel = PanelForms::default();
             }
         }
     }
