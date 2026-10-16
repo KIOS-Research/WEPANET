@@ -1,6 +1,6 @@
 //! The Plugin Manager (Plugins > Manage Plugins), after QGIS's: plugins are
 //! offered by repositories — XML files listing each plugin's name, version,
-//! description and Rhai script — read from their URLs. WEPANET's own
+//! description and where to download it — read from their URLs. WEPANET's own
 //! repository is `plugins/plugins.xml` of this project; any other can be
 //! added by its URL. Plugins can be installed, upgraded when a repository has
 //! a newer version, and uninstalled.
@@ -10,7 +10,9 @@
 //!   <plugin name="Dead Ends" version="1.0">
 //!     <description>Junctions connected to a single link</description>
 //!     <author>WEPANET</author>
-//!     <file>examples/dead_ends.rhai</file>   <!-- a URL, or relative to the XML -->
+//!     <!-- a ZIP of the plugin's folder, or the folder itself (its script,
+//!          named like the plugin, and icon.png): a URL, or relative to the XML -->
+//!     <download>Dead Ends</download>
 //!     <tags>network</tags>
 //!     <homepage>https://…</homepage>
 //!   </plugin>
@@ -41,28 +43,32 @@ const BUILTIN_NAME: &str = "Built into WEPANET";
 /// The scripts `plugins/plugins.xml` lists, by their path there.
 pub(crate) const BUILTIN: &[(&str, &str)] = &[
     (
-        "examples/count.rhai",
-        include_str!("../../../plugins/examples/count.rhai"),
+        "Count/Count.rhai",
+        include_str!("../../../plugins/Count/Count.rhai"),
     ),
     (
-        "examples/network_stats.rhai",
-        include_str!("../../../plugins/examples/network_stats.rhai"),
+        "Network Statistics/Network Statistics.rhai",
+        include_str!("../../../plugins/Network Statistics/Network Statistics.rhai"),
     ),
     (
-        "examples/pipe_summary.rhai",
-        include_str!("../../../plugins/examples/pipe_summary.rhai"),
+        "Pipe Summary/Pipe Summary.rhai",
+        include_str!("../../../plugins/Pipe Summary/Pipe Summary.rhai"),
     ),
     (
-        "examples/dead_ends.rhai",
-        include_str!("../../../plugins/examples/dead_ends.rhai"),
+        "Dead Ends/Dead Ends.rhai",
+        include_str!("../../../plugins/Dead Ends/Dead Ends.rhai"),
     ),
     (
-        "examples/low_pressure.rhai",
-        include_str!("../../../plugins/examples/low_pressure.rhai"),
+        "Low Pressure/Low Pressure.rhai",
+        include_str!("../../../plugins/Low Pressure/Low Pressure.rhai"),
     ),
     (
-        "examples/high_velocity.rhai",
-        include_str!("../../../plugins/examples/high_velocity.rhai"),
+        "High Velocity/High Velocity.rhai",
+        include_str!("../../../plugins/High Velocity/High Velocity.rhai"),
+    ),
+    (
+        "EPyT Pressure Check/EPyT Pressure Check.py",
+        include_str!("../../../plugins/EPyT Pressure Check/EPyT Pressure Check.py"),
     ),
 ];
 
@@ -73,34 +79,38 @@ fn builtin_offers() -> Vec<Offer> {
 /// Their icons.
 const BUILTIN_ICONS: &[(&str, &[u8])] = &[
     (
-        "examples/icons/count.png",
-        include_bytes!("../../../plugins/examples/icons/count.png"),
+        "Count/icon.png",
+        include_bytes!("../../../plugins/Count/icon.png"),
     ),
     (
-        "examples/icons/network_stats.png",
-        include_bytes!("../../../plugins/examples/icons/network_stats.png"),
+        "Network Statistics/icon.png",
+        include_bytes!("../../../plugins/Network Statistics/icon.png"),
     ),
     (
-        "examples/icons/pipe_summary.png",
-        include_bytes!("../../../plugins/examples/icons/pipe_summary.png"),
+        "Pipe Summary/icon.png",
+        include_bytes!("../../../plugins/Pipe Summary/icon.png"),
     ),
     (
-        "examples/icons/dead_ends.png",
-        include_bytes!("../../../plugins/examples/icons/dead_ends.png"),
+        "Dead Ends/icon.png",
+        include_bytes!("../../../plugins/Dead Ends/icon.png"),
     ),
     (
-        "examples/icons/low_pressure.png",
-        include_bytes!("../../../plugins/examples/icons/low_pressure.png"),
+        "Low Pressure/icon.png",
+        include_bytes!("../../../plugins/Low Pressure/icon.png"),
     ),
     (
-        "examples/icons/high_velocity.png",
-        include_bytes!("../../../plugins/examples/icons/high_velocity.png"),
+        "High Velocity/icon.png",
+        include_bytes!("../../../plugins/High Velocity/icon.png"),
+    ),
+    (
+        "EPyT Pressure Check/icon.png",
+        include_bytes!("../../../plugins/EPyT Pressure Check/icon.png"),
     ),
 ];
 
-/// The script of a built-in offer (`builtin:/examples/…`).
+/// The script of a built-in offer (`builtin:/Count/Count.rhai`, …).
 fn builtin_source(url: &str) -> Option<&'static str> {
-    let path = url.strip_prefix("builtin:/")?;
+    let path = url.strip_prefix("builtin:/")?.replace("%20", " ");
     BUILTIN.iter().find(|(f, _)| *f == path).map(|(_, s)| *s)
 }
 
@@ -155,7 +165,7 @@ fn core_offers() -> Vec<Offer> {
 }
 
 fn builtin_icon(url: &str) -> Option<&'static [u8]> {
-    let path = url.strip_prefix("builtin:/")?;
+    let path = url.strip_prefix("builtin:/")?.replace("%20", " ");
     BUILTIN_ICONS
         .iter()
         .find(|(f, _)| *f == path)
@@ -186,9 +196,11 @@ struct Offer {
     author: String,
     tags: String,
     homepage: String,
-    /// The script's URL.
+    /// Where to download it: a ZIP of the plugin's folder, the folder itself
+    /// (holding `<name>.rhai` or `<name>.py`, and `icon.png`), or (in older
+    /// lists, `<file>`) its script.
     url: String,
-    /// The icon's URL (PNG), if the plugin has one.
+    /// The icon's URL (PNG, or the ZIP holding it), if the plugin has one.
     icon: String,
     repository: String,
 }
@@ -199,8 +211,9 @@ enum Reply {
         result: Result<Vec<Offer>, String>,
     },
     Plugin {
-        offer: Offer,
-        result: Result<String, String>,
+        offer: Box<Offer>,
+        /// The file downloaded and its bytes.
+        result: Result<(String, Vec<u8>), String>,
     },
     Icon {
         url: String,
@@ -255,6 +268,35 @@ fn resolve(base: &str, file: &str) -> String {
     )
 }
 
+fn is_zip(url: &str) -> bool {
+    url.to_ascii_lowercase().ends_with(".zip")
+}
+
+fn is_script(url: &str) -> bool {
+    let l = url.to_ascii_lowercase();
+    l.ends_with(".rhai") || l.ends_with(".py")
+}
+
+/// The scripts an offer may download: itself, or in its folder
+/// `<name>.rhai`, then `<name>.py`.
+fn script_urls(o: &Offer) -> Vec<String> {
+    if is_script(&o.url) {
+        return vec![o.url.clone()];
+    }
+    let n = o.name.replace(' ', "%20");
+    ["rhai", "py"]
+        .iter()
+        .map(|e| format!("{}/{n}.{e}", o.url))
+        .collect()
+}
+
+fn file_name(url: &str) -> String {
+    url.rsplit('/')
+        .next()
+        .unwrap_or("plugin")
+        .replace("%20", " ")
+}
+
 fn parse_repository(xml: &str, url: &str, repository: &str) -> Result<Vec<Offer>, String> {
     let doc = roxmltree::Document::parse(xml).map_err(|e| format!("not a plugin list: {e}"))?;
     let root = doc.root_element();
@@ -271,10 +313,20 @@ fn parse_repository(xml: &str, url: &str, repository: &str) -> Result<Vec<Offer>
                 .unwrap_or_default()
         };
         let name = p.attribute("name").map(str::trim).unwrap_or_default();
-        let file = child("file");
-        if name.is_empty() || file.is_empty() {
+        let download = match child("download") {
+            d if d.is_empty() => child("file"),
+            d => d,
+        };
+        if name.is_empty() || download.is_empty() {
             continue;
         }
+        let download = resolve(url, download.trim_end_matches('/'));
+        let icon = match child("icon") {
+            i if !i.is_empty() => resolve(url, &i),
+            _ if is_zip(&download) => download.clone(),
+            _ if is_script(&download) => String::new(),
+            _ => format!("{download}/icon.png"),
+        };
         out.push(Offer {
             name: name.to_string(),
             version: p.attribute("version").unwrap_or("").trim().to_string(),
@@ -282,11 +334,8 @@ fn parse_repository(xml: &str, url: &str, repository: &str) -> Result<Vec<Offer>
             author: child("author"),
             tags: child("tags"),
             homepage: child("homepage"),
-            url: resolve(url, &file),
-            icon: match child("icon") {
-                i if i.is_empty() => String::new(),
-                i => resolve(url, &i),
-            },
+            url: download,
+            icon,
             repository: repository.to_string(),
         });
     }
@@ -377,19 +426,67 @@ fn install(app: &mut EpanetApp, ctx: &egui::Context, offer: &Offer) {
         return;
     }
     app.plugin_manager.installing.push(offer.name.clone());
-    let o = offer.clone();
-    if let Some(src) = builtin_source(&offer.url) {
-        if let Ok(mut q) = app.plugin_manager.inbox.lock() {
-            q.push(Reply::Plugin {
-                offer: o,
-                result: Ok(src.to_string()),
-            });
-        }
+    let scripts = script_urls(offer);
+    if let Some((u, src)) = scripts
+        .iter()
+        .find_map(|u| builtin_source(u).map(|s| (u, s)))
+    {
+        reply(
+            &app.plugin_manager.inbox,
+            Reply::Plugin {
+                offer: Box::new(offer.clone()),
+                result: Ok((file_name(u), src.as_bytes().to_vec())),
+            },
+        );
         return;
     }
-    fetch(app, ctx, offer.url.clone(), move |text| Reply::Plugin {
-        offer: o,
-        result: text,
+    let urls = if is_zip(&offer.url) {
+        vec![offer.url.clone()]
+    } else {
+        scripts
+    };
+    download(
+        app.plugin_manager.inbox.clone(),
+        ctx.clone(),
+        offer.clone(),
+        urls,
+    );
+}
+
+type Inbox = Arc<Mutex<Vec<Reply>>>;
+
+fn reply(inbox: &Inbox, r: Reply) {
+    if let Ok(mut q) = inbox.lock() {
+        q.push(r);
+    }
+}
+
+/// Downloads the first of `urls` that can be read: the offer's ZIP or
+/// script, or the script its folder holds.
+fn download(inbox: Inbox, ctx: egui::Context, offer: Offer, mut urls: Vec<String>) {
+    let url = urls.remove(0);
+    ehttp::fetch(ehttp::Request::get(&url), move |res| {
+        match res {
+            Ok(r) if r.ok => reply(
+                &inbox,
+                Reply::Plugin {
+                    offer: Box::new(offer),
+                    result: Ok((file_name(&url), r.bytes)),
+                },
+            ),
+            _ if !urls.is_empty() => return download(inbox, ctx, offer, urls),
+            r => reply(
+                &inbox,
+                Reply::Plugin {
+                    offer: Box::new(offer),
+                    result: Err(match r {
+                        Ok(r) => format!("{} {}", r.status, r.status_text),
+                        Err(e) => e,
+                    }),
+                },
+            ),
+        }
+        ctx.request_repaint();
     });
 }
 
@@ -412,6 +509,12 @@ fn fetch_icons(app: &mut EpanetApp, ctx: &egui::Context) {
         let ctx = ctx.clone();
         ehttp::fetch(ehttp::Request::get(&url), move |res| {
             let bytes = res.ok().filter(|r| r.ok).map(|r| r.bytes);
+            // a ZIP's icon is inside it
+            let bytes = if is_zip(&url) {
+                bytes.and_then(|b| crate::scripting::read_zip(&b).ok()?.icon)
+            } else {
+                bytes
+            };
             if let Ok(mut q) = inbox.lock() {
                 q.push(Reply::Icon { url, bytes });
             }
@@ -423,7 +526,12 @@ fn fetch_icons(app: &mut EpanetApp, ctx: &egui::Context) {
 /// Keeps the icon of an installed plugin with it (so it shows offline too).
 fn keep_icon(app: &mut EpanetApp, name: &str, icon_url: &str) {
     let bytes = app.plugin_manager.icons.get(icon_url).cloned().flatten();
-    match bytes {
+    set_icon(app, name, bytes);
+}
+
+/// Sets (or, with None, forgets) the icon of an installed plugin.
+pub(crate) fn set_icon(app: &mut EpanetApp, name: &str, png: Option<Vec<u8>>) {
+    match png {
         Some(b) => {
             app.prefs.plugin_icons.insert(name.to_string(), b);
         }
@@ -559,19 +667,17 @@ fn poll(app: &mut EpanetApp) {
             }
             Reply::Plugin { offer, result } => {
                 app.plugin_manager.installing.retain(|n| n != &offer.name);
-                let file = offer
-                    .url
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or("plugin.rhai")
-                    .to_string();
-                let outcome = result.and_then(|src| crate::scripting::install(app, &file, &src));
+                let outcome = result
+                    .and_then(|(file, bytes)| crate::scripting::install_file(app, &file, &bytes));
                 app.plugin_manager.message = Some(match outcome {
                     Ok(name) => {
                         app.prefs
                             .plugin_versions
                             .insert(name.clone(), offer.version.clone());
-                        keep_icon(app, &name, &offer.icon);
+                        // a ZIP brought its own icon
+                        if !is_zip(&offer.url) {
+                            keep_icon(app, &name, &offer.icon);
+                        }
                         app.status = format!("Plugin \"{name}\" {} installed", offer.version);
                         (
                             true,
@@ -756,7 +862,7 @@ pub fn dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
                 app.plugin_manager.tab = t;
             }
         }
-        if side_item(&mut side_ui, Icon::Open, "Install from File", false) {
+        if side_item(&mut side_ui, Icon::Open, "Install from ZIP", false) {
             crate::scripting::load(app, &ctx);
         }
         if side_item(
@@ -1108,7 +1214,7 @@ fn details(app: &mut EpanetApp, ui: &mut Ui, r: &Row) {
                         ui.hyperlink_to("homepage", &o.homepage);
                     }
                     if !(o.url.starts_with("builtin:") || o.url.starts_with("core:")) {
-                        ui.hyperlink_to("script", &o.url);
+                        ui.hyperlink_to("download", &o.url);
                     }
                 });
                 ui.end_row();
@@ -1261,17 +1367,23 @@ mod tests {
         assert_eq!(d.version, "1.0");
         assert_eq!(
             d.url,
-            "https://raw.githubusercontent.com/KIOS-Research/WEPANET/main/plugins/examples/dead_ends.rhai"
+            "https://raw.githubusercontent.com/KIOS-Research/WEPANET/main/plugins/Dead%20Ends"
         );
+        assert_eq!(d.icon, format!("{}/icon.png", d.url));
         // every plugin listed is in the project, and calls itself by the listed name
         for o in &offers {
-            let file = o.url.split("/plugins/").nth(1).unwrap();
             let (_, src) = BUILTIN
                 .iter()
-                .find(|(f, _)| *f == file)
-                .unwrap_or_else(|| panic!("{file} is not in plugins/"));
+                .find(|(f, _)| {
+                    let f = f.replace(' ', "%20");
+                    script_urls(o)
+                        .iter()
+                        .any(|u| u.ends_with(&format!("/plugins/{f}")))
+                })
+                .unwrap_or_else(|| panic!("{} is not in plugins/", o.url));
             assert!(
-                src.contains(&format!("fn name() {{ \"{}\" }}", o.name)),
+                src.contains(&format!("fn name() {{ \"{}\" }}", o.name))
+                    || src.contains(&format!("NAME = \"{}\"", o.name)),
                 "{}",
                 o.name
             );
@@ -1293,6 +1405,31 @@ mod tests {
     }
 
     #[test]
+    fn downloads_a_zip_a_folder_or_a_script() {
+        let xml = r#"<plugins>
+            <plugin name="A b" version="1"><download>A b/</download></plugin>
+            <plugin name="Z" version="1"><download>https://x.org/z.zip</download></plugin>
+            <plugin name="Old" version="1"><file>old.rhai</file><icon>old.png</icon></plugin>
+            <plugin name="None" version="1"></plugin>
+        </plugins>"#;
+        let o = parse_repository(xml, "https://r.org/p/plugins.xml", "r").unwrap();
+        assert_eq!(o.len(), 3);
+        assert_eq!(o[0].url, "https://r.org/p/A%20b");
+        assert_eq!(o[0].icon, "https://r.org/p/A%20b/icon.png");
+        assert_eq!(
+            script_urls(&o[0]),
+            [
+                "https://r.org/p/A%20b/A%20b.rhai",
+                "https://r.org/p/A%20b/A%20b.py"
+            ]
+        );
+        assert_eq!(file_name(&script_urls(&o[0])[1]), "A b.py");
+        assert_eq!(o[1].icon, "https://x.org/z.zip");
+        assert_eq!(script_urls(&o[2]), ["https://r.org/p/old.rhai"]);
+        assert_eq!(o[2].icon, "https://r.org/p/old.png");
+    }
+
+    #[test]
     fn compares_versions() {
         assert!(version_cmp("1.10", "1.9").is_gt());
         assert!(version_cmp("1.0", "1").is_eq());
@@ -1307,7 +1444,11 @@ mod tests {
             let png = builtin_icon(&o.icon).unwrap_or_else(|| panic!("{} not built in", o.icon));
             let img = image::load_from_memory(png).unwrap();
             assert_eq!((img.width(), img.height()), (64, 64), "{}", o.icon);
-            assert!(builtin_source(&o.url).is_some(), "{}", o.url);
+            assert!(
+                script_urls(&o).iter().any(|u| builtin_source(u).is_some()),
+                "{}",
+                o.url
+            );
         }
     }
 
@@ -1383,10 +1524,10 @@ mod tests {
         };
         // the sidebar: one entry below the other
         let side = [
-            "All (8)",
+            "All (9)",
             "Installed (0)",
-            "Not installed (8)",
-            "Install from File",
+            "Not installed (9)",
+            "Install from ZIP",
             "Settings",
         ]
         .map(at);

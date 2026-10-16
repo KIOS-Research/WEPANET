@@ -1,7 +1,7 @@
 //! The core plugins (Plugins > Manage Plugins): Elad Salomons' EPANET plugins
 //! (<https://github.com/eladsal/EPANET-Plugins>), written for the Python UI
 //! of EPANET MTP4, brought over to run on the desktop and in the browser.
-//! (Count is a script plugin now: `plugins/examples/count.rhai`.)
+//! (Count is a script plugin now: `plugins/Count/Count.rhai`.)
 //!
 //! - **Elevations** – junction elevations from a digital elevation model. The
 //!   original used Google's Elevation API (which needs a key); this uses the

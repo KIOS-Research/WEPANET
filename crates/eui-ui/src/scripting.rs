@@ -2,7 +2,8 @@
 //! can write and load from the Plugins menu, on the desktop and in the
 //! browser alike. The API they see is documented in `docs/plugins.md`.
 //!
-//! A plugin is one `.rhai` file with three functions:
+//! A plugin is one `.rhai` file with three functions (or a `.py` file, see
+//! [`crate::python`]):
 //!
 //! ```text
 //! fn name() { "Count" }                       // shown on the Plugins toolbar
@@ -426,8 +427,12 @@ fn engine(ctx: Rc<RefCell<Ctx>>) -> Engine {
     e
 }
 
-/// Reads a plugin's name, description and menu.
+/// Reads a plugin's name, description and menu: a Rhai plugin, or a
+/// Python one (a `.py` file, see [`crate::python`]).
 fn describe(file: &str, source: &str) -> Result<UserPlugin, String> {
+    if crate::python::is_python(file) {
+        return crate::python::describe(file, source);
+    }
     let mut e = Engine::new();
     e.set_max_expr_depths(256, 128);
     let ast = e.compile(source).map_err(|x| x.to_string())?;
@@ -468,7 +473,7 @@ pub fn poll(app: &mut EpanetApp) {
         }
     }
     for item in app.scripts.inbox.drain() {
-        match item.and_then(|(file, bytes)| install(app, &file, &crate::io::decode_text(&bytes))) {
+        match item.and_then(|(file, bytes)| install_file(app, &file, &bytes)) {
             Ok(name) => {
                 app.status = format!("Plugin \"{name}\" loaded");
                 app.prefs.menu_tab = crate::app::MenuTab::Plugins;
@@ -478,6 +483,201 @@ pub fn poll(app: &mut EpanetApp) {
                 app.dialog = Dialog::PluginMessage;
             }
         }
+    }
+}
+
+/// The most a plugin's files may take (they are kept with the preferences).
+const MAX_PLUGIN_BYTES: usize = 1 << 20;
+
+/// A plugin read from a ZIP.
+pub(crate) struct ZipPlugin {
+    /// The script's file name and text.
+    pub script: String,
+    pub source: String,
+    pub icon: Option<Vec<u8>>,
+    /// The other files of its folder (sub-folders too, e.g. translations or
+    /// Python modules), by their path in it.
+    pub files: Vec<(String, Vec<u8>)>,
+}
+
+/// A plugin packed in a ZIP of its folder: the script (`.rhai` or `.py`,
+/// named like the plugin; the shallowest one), its icon (`icon.png`, or
+/// another PNG beside the script) and whatever else the folder holds.
+pub(crate) fn read_zip(bytes: &[u8]) -> Result<ZipPlugin, String> {
+    let mut z = zip::ZipArchive::new(std::io::Cursor::new(bytes))
+        .map_err(|e| format!("not a ZIP file: {e}"))?;
+    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+    for k in 0..z.len() {
+        let mut f = z.by_index(k).map_err(|e| e.to_string())?;
+        let name = f.name().map_err(|e| e.to_string())?.to_string();
+        if name.ends_with('/') || name.starts_with("__MACOSX/") {
+            continue;
+        }
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut f, &mut buf).map_err(|e| e.to_string())?;
+        files.push((name, buf));
+    }
+    let base = |n: &str| n.rsplit('/').next().unwrap_or(n).to_string();
+    let dir = |n: &str| n.rsplit_once('/').map_or("", |(d, _)| d).to_string();
+    let depth = |n: &str| n.matches('/').count();
+    let mut scripts: Vec<&(String, Vec<u8>)> = files
+        .iter()
+        .filter(|(n, _)| {
+            let l = n.to_ascii_lowercase();
+            l.ends_with(".rhai") || l.ends_with(".py")
+        })
+        .collect();
+    // the plugin's own script is in its folder, not in a sub-folder of it
+    if let Some(top) = scripts.iter().map(|(n, _)| depth(n)).min() {
+        scripts.retain(|(n, _)| depth(n) == top);
+    }
+    // the script named like its folder, else the only one
+    let (script, source) = match scripts.as_slice() {
+        [] => return Err("the ZIP holds no plugin script (.rhai or .py)".into()),
+        [one] => *one,
+        many => *many
+            .iter()
+            .find(|(n, _)| {
+                let b = base(n);
+                let stem = b.rsplit_once('.').map_or(b.as_str(), |(s, _)| s);
+                let d = dir(n);
+                stem == d.rsplit('/').next().unwrap_or(&d)
+            })
+            .ok_or("the ZIP holds several scripts; name the plugin's like its folder")?,
+    };
+    let folder = dir(script);
+    let pngs: Vec<&(String, Vec<u8>)> = files
+        .iter()
+        .filter(|(n, _)| dir(n) == folder && n.to_ascii_lowercase().ends_with(".png"))
+        .collect();
+    let icon = pngs
+        .iter()
+        .find(|(n, _)| base(n).eq_ignore_ascii_case("icon.png"))
+        .or(pngs.first())
+        .map(|(_, b)| b.clone());
+    // the rest of the folder, by safe relative paths
+    let prefix = if folder.is_empty() {
+        String::new()
+    } else {
+        format!("{folder}/")
+    };
+    let rest: Vec<(String, Vec<u8>)> = files
+        .iter()
+        .filter(|(n, _)| n != script)
+        .filter_map(|(n, b)| {
+            let rel = n.strip_prefix(&prefix)?;
+            let safe = !rel.starts_with('/')
+                && !rel.contains('\\')
+                && rel
+                    .split('/')
+                    .all(|c| !c.is_empty() && c != "." && c != "..");
+            safe.then(|| (rel.to_string(), b.clone()))
+        })
+        .collect();
+    if rest.iter().map(|(_, b)| b.len()).sum::<usize>() + source.len() > MAX_PLUGIN_BYTES {
+        return Err(format!(
+            "the plugin is too large (over {} MB)",
+            MAX_PLUGIN_BYTES >> 20
+        ));
+    }
+    Ok(ZipPlugin {
+        script: base(script),
+        source: crate::io::decode_text(source),
+        icon,
+        files: rest,
+    })
+}
+
+/// Installs a plugin from a file: a ZIP of its folder (all of it is kept
+/// with the plugin), or its script alone.
+pub(crate) fn install_file(
+    app: &mut EpanetApp,
+    file: &str,
+    bytes: &[u8],
+) -> Result<String, String> {
+    if !bytes.starts_with(b"PK") {
+        let name = install(app, file, &crate::io::decode_text(bytes))?;
+        app.prefs.plugin_files.remove(&name);
+        return Ok(name);
+    }
+    let z = read_zip(bytes)?;
+    let name = install(app, &z.script, &z.source)?;
+    crate::plugin_manager::set_icon(app, &name, z.icon);
+    if z.files.is_empty() {
+        app.prefs.plugin_files.remove(&name);
+    } else {
+        app.prefs.plugin_files.insert(name.clone(), z.files);
+    }
+    Ok(name)
+}
+
+/// Plugins' files in the preferences, in base64: a browser keeps them in its
+/// local storage, of a few MB, where a byte array would take four times as much.
+pub(crate) mod files_b64 {
+    use std::collections::BTreeMap;
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    type Files = BTreeMap<String, Vec<(String, Vec<u8>)>>;
+
+    const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    pub fn encode(b: &[u8]) -> String {
+        let mut s = String::with_capacity(b.len().div_ceil(3) * 4);
+        for c in b.chunks(3) {
+            let n = (c[0] as u32) << 16
+                | (*c.get(1).unwrap_or(&0) as u32) << 8
+                | *c.get(2).unwrap_or(&0) as u32;
+            for k in 0..4 {
+                s.push(if k <= c.len() {
+                    ABC[(n >> (18 - 6 * k) & 63) as usize] as char
+                } else {
+                    '='
+                });
+            }
+        }
+        s
+    }
+
+    pub fn decode(s: &str) -> Option<Vec<u8>> {
+        let mut out = Vec::with_capacity(s.len() / 4 * 3);
+        let digits: Vec<u32> = s
+            .bytes()
+            .filter(|c| *c != b'=')
+            .map(|c| ABC.iter().position(|a| *a == c).map(|p| p as u32))
+            .collect::<Option<_>>()?;
+        for c in digits.chunks(4) {
+            let n = c
+                .iter()
+                .enumerate()
+                .fold(0, |n, (k, d)| n | d << (18 - 6 * k));
+            for k in 0..c.len().saturating_sub(1) {
+                out.push((n >> (16 - 8 * k)) as u8);
+            }
+        }
+        Some(out)
+    }
+
+    pub fn serialize<S: Serializer>(files: &Files, s: S) -> Result<S::Ok, S::Error> {
+        let text: BTreeMap<&String, Vec<(&String, String)>> = files
+            .iter()
+            .map(|(k, v)| (k, v.iter().map(|(p, b)| (p, encode(b))).collect()))
+            .collect();
+        text.serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Files, D::Error> {
+        let text = BTreeMap::<String, Vec<(String, String)>>::deserialize(d)?;
+        Ok(text
+            .into_iter()
+            .map(|(k, v)| {
+                let files = v
+                    .into_iter()
+                    .filter_map(|(p, b)| Some((p, decode(&b)?)))
+                    .collect();
+                (k, files)
+            })
+            .collect())
     }
 }
 
@@ -502,9 +702,14 @@ pub fn installed(app: &EpanetApp) -> Vec<String> {
     app.scripts.plugins.iter().map(|p| p.name.clone()).collect()
 }
 
-/// Asks for a plugin file to load.
+/// Asks for a plugin to install: a ZIP of its folder (or its script).
 pub fn load(app: &mut EpanetApp, ctx: &egui::Context) {
-    crate::io::open_file(&app.scripts.inbox, ctx, "WEPANET plugin (Rhai)", &["rhai"]);
+    crate::io::open_file(
+        &app.scripts.inbox,
+        ctx,
+        "WEPANET plugin (ZIP)",
+        &["zip", "rhai", "py"],
+    );
 }
 
 /// Removes a loaded plugin.
@@ -513,6 +718,7 @@ pub fn remove(app: &mut EpanetApp, name: &str) {
     app.prefs
         .user_plugins
         .retain(|(f, s)| describe(f, s).map_or(true, |p| p.name != name));
+    app.prefs.plugin_files.remove(name);
     app.status = format!("Plugin \"{name}\" removed");
 }
 
@@ -527,6 +733,10 @@ pub fn run(app: &mut EpanetApp, plugin: &str, item: &str) {
     else {
         return;
     };
+    if crate::python::is_python(&p.file) {
+        crate::python::start(app, &p, item);
+        return;
+    }
     let _ = run_source(app, &p.name, &p.source, Some(item));
 }
 
@@ -680,7 +890,7 @@ pub fn table_dialog(app: &mut EpanetApp, ui: &mut egui::Ui) -> bool {
 mod tests {
     use super::*;
 
-    const COUNT: &str = include_str!("../../../plugins/examples/count.rhai");
+    const COUNT: &str = include_str!("../../../plugins/Count/Count.rhai");
 
     fn ctx() -> Rc<RefCell<Ctx>> {
         Rc::new(RefCell::new(Ctx {
@@ -726,7 +936,7 @@ mod tests {
         let c = ctx();
         let _ = run(
             &c,
-            include_str!("../../../plugins/examples/pipe_summary.rhai"),
+            include_str!("../../../plugins/Pipe Summary/Pipe Summary.rhai"),
             "Length by Diameter",
         )
         .unwrap();
@@ -745,7 +955,7 @@ mod tests {
         c.borrow_mut().results = Some(res);
         let _ = run(
             &c,
-            include_str!("../../../plugins/examples/low_pressure.rhai"),
+            include_str!("../../../plugins/Low Pressure/Low Pressure.rhai"),
             "Below 120",
         )
         .unwrap();
@@ -766,6 +976,9 @@ mod tests {
                 .collect()
         };
         for (file, src) in crate::plugin_manager::BUILTIN {
+            if crate::python::is_python(file) {
+                continue; // see python::tests
+            }
             let p = describe(file, src).unwrap_or_else(|e| panic!("{file}: {e}"));
             for item in &p.menu {
                 for with_results in [false, true] {
@@ -816,5 +1029,85 @@ mod tests {
                 .contains("no node")
         );
         assert!(eval(&c, "loop {}").unwrap_err().contains("operations"));
+    }
+
+    fn zip_of(files: &[(&str, &[u8])]) -> Vec<u8> {
+        use std::io::Write as _;
+        let mut buf = std::io::Cursor::new(Vec::new());
+        let mut z = zip::ZipWriter::new(&mut buf);
+        for (name, bytes) in files {
+            z.start_file(*name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            z.write_all(bytes).unwrap();
+        }
+        z.finish().unwrap();
+        buf.into_inner()
+    }
+
+    /// A plugin installs from a ZIP of its folder, with its icon.
+    #[test]
+    fn installs_from_a_zip() {
+        let mut app = EpanetApp::new(&eframe::CreationContext::_new_kittest(
+            egui::Context::default(),
+        ));
+        let icon = include_bytes!("../../../plugins/Low Pressure/icon.png");
+        let src = include_str!("../../../plugins/Low Pressure/Low Pressure.rhai");
+        let z = zip_of(&[
+            ("Low Pressure/Low Pressure.rhai", src.as_bytes()),
+            ("Low Pressure/icon.png", icon),
+            ("Low Pressure/README.md", b"notes"),
+        ]);
+        let name = install_file(&mut app, "Low Pressure.zip", &z).unwrap();
+        assert_eq!(name, "Low Pressure");
+        assert!(installed(&app).contains(&name));
+        assert_eq!(app.prefs.plugin_icons.get(&name).unwrap(), icon);
+        assert!(
+            app.prefs
+                .user_plugins
+                .iter()
+                .any(|(f, _)| f == "Low Pressure.rhai")
+        );
+        // a Python one: of several scripts, the one named like its folder
+        let py = include_str!("../../../plugins/EPyT Pressure Check/EPyT Pressure Check.py");
+        // and the rest of its folder is kept: modules, sub-folders
+        let z = zip_of(&[
+            ("EPyT Pressure Check/helpers.py", b"X = 1\n"),
+            ("EPyT Pressure Check/EPyT Pressure Check.py", py.as_bytes()),
+            ("EPyT Pressure Check/i18n/el.json", b"{}"),
+            ("EPyT Pressure Check/ui/dialog.py", b"pass\n"),
+            ("EPyT Pressure Check/../evil.py", b"x"),
+            ("elsewhere.txt", b"x"),
+        ]);
+        let p = read_zip(&z).unwrap();
+        assert_eq!(p.script, "EPyT Pressure Check.py");
+        assert!(p.icon.is_none());
+        let mut paths: Vec<&str> = p.files.iter().map(|(f, _)| f.as_str()).collect();
+        paths.sort();
+        assert_eq!(paths, ["helpers.py", "i18n/el.json", "ui/dialog.py"]);
+        assert_eq!(
+            install_file(&mut app, "x.zip", &z).unwrap(),
+            "EPyT Pressure Check"
+        );
+        assert_eq!(app.prefs.plugin_files["EPyT Pressure Check"].len(), 3);
+        // kept in base64 with the preferences
+        for b in [&b""[..], b"a", b"ab", b"abc", b"abcd", icon_bytes()] {
+            let s = files_b64::encode(b);
+            assert_eq!(files_b64::decode(&s).unwrap(), b, "{s}");
+        }
+        assert_eq!(files_b64::encode(b"Man"), "TWFu");
+        assert_eq!(files_b64::encode(b"Ma"), "TWE=");
+        let text = serde_json::to_string(&app.prefs).unwrap();
+        let back: crate::app::Prefs = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.plugin_files, app.prefs.plugin_files);
+        remove(&mut app, "EPyT Pressure Check");
+        assert!(!app.prefs.plugin_files.contains_key("EPyT Pressure Check"));
+        // the script alone still works; a ZIP without one does not
+        assert!(install_file(&mut app, "Count.rhai", COUNT.as_bytes()).is_ok());
+        let e = install_file(&mut app, "x.zip", &zip_of(&[("a/icon.png", icon_bytes())]));
+        assert!(e.unwrap_err().contains("no plugin script"));
+    }
+
+    fn icon_bytes() -> &'static [u8] {
+        include_bytes!("../../../plugins/Count/icon.png")
     }
 }

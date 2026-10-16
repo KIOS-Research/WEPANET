@@ -28,6 +28,7 @@ mod menu;
 mod msx;
 mod plugin_manager;
 mod plugins;
+mod python;
 mod reports;
 mod scripting;
 mod setup;

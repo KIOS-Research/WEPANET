@@ -247,6 +247,10 @@ pub struct Prefs {
     pub core_plugins: std::collections::BTreeSet<String>,
     /// Icons (PNG) of plugins installed from a repository, by plugin name.
     pub plugin_icons: std::collections::BTreeMap<String, Vec<u8>>,
+    /// The other files of plugins installed from a ZIP (sub-folders too), by
+    /// plugin name: (path in the plugin's folder, bytes).
+    #[serde(with = "crate::scripting::files_b64")]
+    pub plugin_files: std::collections::BTreeMap<String, Vec<(String, Vec<u8>)>>,
     pub animate_fps: f32,
     pub auto_length: bool,
     // Program Preferences
@@ -319,6 +323,7 @@ impl Default for Prefs {
             disabled_plugins: Default::default(),
             core_plugins: Default::default(),
             plugin_icons: Default::default(),
+            plugin_files: Default::default(),
             animate_fps: 4.0,
             auto_length: false,
             blink_marker: true,
@@ -437,6 +442,7 @@ pub struct EpanetApp {
     pub(crate) setup: crate::setup::SetupDefaults,
     pub(crate) setup_edit: Option<crate::setup::SetupEdit>,
     pub(crate) scripts: crate::scripting::ScriptState,
+    pub(crate) python: crate::python::PythonState,
     pub(crate) export: crate::export::ExportState,
     pub(crate) shp_import: Option<crate::import_shp::ShpImport>,
     pub(crate) setup_job: Option<crate::setup::SetupJob>,
@@ -538,6 +544,7 @@ impl EpanetApp {
             plugins: Default::default(),
             setup: Default::default(),
             scripts: Default::default(),
+            python: Default::default(),
             export: Default::default(),
             shp_import: None,
             setup_edit: None,
@@ -1605,6 +1612,7 @@ impl eframe::App for EpanetApp {
         crate::plugins::poll(self, ctx);
         crate::setup::poll(self);
         crate::scripting::poll(self);
+        crate::python::poll(self, ctx);
         crate::msx::poll(self);
         crate::export::poll(self, ctx);
         self.refresh_maps();

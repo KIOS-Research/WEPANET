@@ -1,26 +1,40 @@
 # Writing WEPANET plugins
 
 A WEPANET plugin is a single text file written in [Rhai](https://rhai.rs), a
-small scripting language with a syntax close to JavaScript and Rust. The same
-file works in the browser and in the desktop application; nothing has to be
-installed or compiled.
+small scripting language with a syntax close to JavaScript and Rust, or in
+[Python](#python-plugins). The same file works in the browser and in the
+desktop application; nothing has to be compiled.
 
-Install plugins with **Plugins > Manage Plugins**, or load a file with
-**Plugins > Load Plugin**. A plugin then appears on the Plugins toolbar with a
+A plugin lives in a folder named like the plugin, holding its script, named
+the same way, and its icon, `icon.png` (a PNG of about 64x64; optional):
+
+```text
+Low Pressure/
+    Low Pressure.rhai
+    icon.png
+```
+
+Install plugins with **Plugins > Manage Plugins**: from a repository, or with
+**Install from ZIP**, which takes a ZIP of the plugin's folder (or the script
+alone). The folder may hold more than the script and the icon (sub-folders,
+translations, data, Python modules): the whole of it is installed, and a Python
+plugin finds it in `wepanet.plugin_dir`, from where it can also `import` its
+modules. A plugin then appears on the Plugins toolbar with a
 drop-down of its commands, and WEPANET remembers it for the next session
 (**Remove Plugin** in its drop-down forgets it).
 
-Ready-made examples are in [`plugins/examples`](../plugins/examples), and all
+Ready-made examples are in [`plugins`](../plugins), one folder each, and all
 of them can be installed from the Plugin Manager:
 
-| File | What it does |
+| Plugin | What it does |
 |---|---|
-| `count.rhai` | Counts junctions or pipes (the Count plugin of [EPANET-Plugins](https://github.com/eladsal/EPANET-Plugins) by Elad Salomons) |
-| `network_stats.rhai` | Element counts, total pipe length and junction elevation range |
-| `pipe_summary.rhai` | A table of pipe length and count for each diameter |
-| `dead_ends.rhai` | Junctions connected to a single link |
-| `low_pressure.rhai` | Junctions whose pressure drops below a limit during the simulation |
-| `high_velocity.rhai` | Pipes whose velocity rises above a limit during the simulation |
+| `Count` | Counts junctions or pipes (the Count plugin of [EPANET-Plugins](https://github.com/eladsal/EPANET-Plugins) by Elad Salomons) |
+| `Network Statistics` | Element counts, total pipe length and junction elevation range |
+| `Pipe Summary` | A table of pipe length and count for each diameter |
+| `Dead Ends` | Junctions connected to a single link |
+| `Low Pressure` | Junctions whose pressure drops below a limit during the simulation |
+| `High Velocity` | Pipes whose velocity rises above a limit during the simulation |
+| `EPyT Pressure Check` | A Python plugin (`.py`): the lowest junction pressures, from its own [EPyT](https://github.com/OpenWaterAnalytics/EPyT) analysis |
 
 ## The Plugin Manager and plugin repositories
 
@@ -35,9 +49,11 @@ The Plugin Manager also offers WEPANET's **core plugins**, **Elevations** and
 application, so installing one only puts it on the Plugins toolbar. Unticking a
 plugin in the list hides it from the toolbar without uninstalling it.
 
-To publish plugins, put their `.rhai` files and a `plugins.xml` anywhere they
-can be downloaded from (a GitHub repository works; browsers need the server to
-allow cross-origin requests, which `raw.githubusercontent.com` does):
+To publish plugins, put them and a `plugins.xml` anywhere they can be
+downloaded from (a GitHub repository works; browsers need the server to allow
+cross-origin requests, which `raw.githubusercontent.com` does). Each plugin's
+`<download>` is a ZIP of its folder, as QGIS plugins are, or, for a plugin
+that is just a script and its icon, the folder itself:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -45,8 +61,8 @@ allow cross-origin requests, which `raw.githubusercontent.com` does):
   <plugin name="Dead Ends" version="1.0">
     <description>Junctions connected to a single link</description>
     <author>Your name</author>
-    <file>examples/dead_ends.rhai</file>  <!-- a URL, or a path relative to this file -->
-    <icon>examples/icons/dead_ends.png</icon>  <!-- PNG, about 64x64; optional -->
+    <!-- a ZIP (e.g. Dead%20Ends.zip) or the folder: a URL, or relative to this file -->
+    <download>Dead Ends</download>
     <tags>network, water quality</tags>
     <homepage>https://…</homepage>
   </plugin>
@@ -161,3 +177,77 @@ for v in a { print(v); }        // loops; also while, loop, break, continue
 ```
 
 The full language is described in the [Rhai Book](https://rhai.rs/book/).
+
+## Python plugins
+
+A plugin can also be a `.py` file, loaded and installed like a Rhai one. It
+declares its name and commands as constants and defines `run(item)`; the
+`wepanet` module gives it the project and shows what it found. Anything else
+is ordinary Python, with any package: NumPy, pandas, SciPy, or
+[EPyT](https://github.com/OpenWaterAnalytics/EPyT), the EPANET Python toolkit,
+to run analyses of its own.
+
+```python
+NAME = "Pressure Check"                 # shown on the Plugins toolbar
+DESCRIPTION = "Lowest junction pressures"   # optional: the tooltip
+MENU = ["Lowest 10", "Lowest 20"]       # optional: the commands (default ["Run"])
+REQUIREMENTS = ["epyt"]                 # optional: packages from PyPI
+
+import numpy as np
+import wepanet
+from epyt import epanet
+
+def run(item):
+    d = epanet(wepanet.inp_file, display_msg=False)
+    h = d.getComputedHydraulicTimeSeries()
+    lowest = np.asarray(h.Pressure).min(axis=0)
+    ids = d.getNodeNameID()
+    n = int(item.split()[1])
+    rows = sorted(zip(ids, lowest.round(2)), key=lambda r: r[1])[:n]
+    wepanet.table("Lowest pressures", ["Node", "Pressure"], rows)
+    d.unload()
+```
+
+`NAME`, `DESCRIPTION`, `MENU` and `REQUIREMENTS` are read without running the
+file, so they must be plain strings and lists of strings.
+
+**Where it runs.** In the browser WEPANET runs Python itself with
+[Pyodide](https://pyodide.org), loaded the first time a Python plugin runs
+(it takes a few seconds, then it is ready). The packages of the Pyodide
+distribution that the plugin imports (NumPy, pandas, SciPy, Matplotlib, …)
+are loaded by themselves, and those in `REQUIREMENTS` are installed from
+PyPI. On the desktop WEPANET runs the Python installed on the computer: the
+one the `WEPANET_PYTHON` environment variable names, else `python`,
+`python3` or `py` on the PATH. The packages are then installed as usual, e.g.
+`python -m pip install epyt`; a plugin missing one says which.
+
+**How it runs.** The plugin runs in a folder of its own holding the project
+as an EPANET input file, `wepanet.inp_file`, and the results of the last
+analysis; it may write files there. Everything it prints is shown when it
+ends, and an error is shown with the plugin's own lines. Unlike a Rhai
+plugin it is not sandboxed: on the desktop it can do whatever Python can, so
+install only plugins you trust. A plugin changes the project by handing back
+an input file, e.g. one saved by EPyT, with `wepanet.set_network(path)`; it
+replaces the project as one step that **Undo** takes back.
+
+### The `wepanet` module
+
+| Name | What it gives or does |
+|---|---|
+| `inp_file` | the path of the project's input file |
+| `item` | the command chosen (also passed to `run`) |
+| `plugin_dir` | the plugin's own folder, with the other files of its ZIP (on `sys.path`) |
+| `in_browser` | `True` when running in Pyodide |
+| `node_ids()`, `link_ids()` | the IDs of the nodes and links |
+| `node_type(id)`, `link_type(id)` | `"Junction"`, `"Reservoir"`, `"Tank"`; `"Pipe"`, `"Pump"`, `"Valve"` |
+| `flow_units()` | e.g. `"GPM"`, `"LPS"` |
+| `has_results()` | `True` after an analysis of the project as it is |
+| `periods()`, `current_period()`, `period_hours(p)` | as in Rhai |
+| `node_result(id, var, p)`, `node_series(id, var)` | WEPANET's results: `"Demand"`, `"Head"`, `"Pressure"`, `"Quality"` |
+| `link_result(id, var, p)`, `link_series(id, var)` | `"Flow"`, `"Velocity"`, `"Headloss"`, `"Quality"`, `"Status"`, `"Setting"`, `"Reaction"`, `"Friction"` |
+| `message(...)` | a line of the message shown when the plugin ends (as `print`) |
+| `table(title, header, rows)` | a table window |
+| `select_node(id)`, `select_link(id)` | selects the object on the map |
+| `status(text)` | text for the status bar |
+| `progress(text)` | shown on the status bar while the plugin runs |
+| `set_network(path_or_text)` | replaces the project with an input file |
