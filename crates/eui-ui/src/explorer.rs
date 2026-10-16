@@ -18,25 +18,33 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
         .frame(egui::Frame::NONE.fill(ui.visuals().panel_fill))
         .show(ui, |ui| {
             panel_header(ui, "Project Explorer", pal.menu);
-            egui::ScrollArea::vertical()
-                .id_salt("tree")
-                .max_height(420.0)
-                .auto_shrink([false, true])
+            // The tree and the Property Editor share the height through a
+            // draggable splitter, as in EPANET-UI.
+            let tree_bg = if ui.visuals().dark_mode {
+                ui.visuals().extreme_bg_color
+            } else {
+                Color32::WHITE
+            };
+            let max_tree = (ui.available_height() - 120.0).max(80.0);
+            egui::Panel::top("explorer_tree")
+                .default_size(400.0)
+                .size_range(60.0..=max_tree)
+                .resizable(true)
+                .frame(egui::Frame::NONE.fill(tree_bg))
                 .show(ui, |ui| {
-                    // The tree sits on white, as in EPANET-UI.
-                    egui::Frame::NONE
-                        .fill(if ui.visuals().dark_mode {
-                            ui.visuals().extreme_bg_color
-                        } else {
-                            Color32::WHITE
-                        })
-                        .inner_margin(egui::Margin::symmetric(8, 4))
+                    egui::ScrollArea::vertical()
+                        .id_salt("tree")
+                        .auto_shrink(false)
                         .show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            tree(app, ui)
+                            // The tree sits on white, as in EPANET-UI.
+                            egui::Frame::NONE
+                                .inner_margin(egui::Margin::symmetric(8, 4))
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    tree(app, ui)
+                                });
                         });
                 });
-            ui.separator();
             // Reset edit buffers whenever the edited object or the project changes.
             let owner = (app.selection, app.explorer, app.generation);
             if app.buffer_owner != Some(owner) {
