@@ -46,6 +46,43 @@ pub fn anchor(topic: &str) -> String {
     out.trim_end_matches('_').to_string()
 }
 
+/// WEPANET's issue tracker on GitHub.
+pub const ISSUES: &str = "https://github.com/KIOS-Research/WEPANET/issues";
+
+/// The page for a new GitHub issue, its text started with the version and
+/// platform of the app.
+pub fn new_issue_url() -> String {
+    let platform = if cfg!(target_arch = "wasm32") {
+        "web app".to_string()
+    } else {
+        format!("desktop app, {}", std::env::consts::OS)
+    };
+    let body = format!(
+        "WEPANET v{} ({platform})\n\n**What happened, or what would you like?**\n\n\n\
+         **Steps to reproduce (and the .inp file, if you can share it):**\n\n",
+        env!("CARGO_PKG_VERSION")
+    );
+    format!("{ISSUES}/new?body={}", percent_encode(&body))
+}
+
+/// Encodes text for a URL query value.
+fn percent_encode(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// Opens a new GitHub issue for WEPANET in the browser.
+pub fn report_issue(ctx: &egui::Context) {
+    ctx.open_url(egui::OpenUrl::new_tab(new_issue_url()));
+}
+
 /// Opens the User Manual at a topic (a heading of the manual).
 pub fn open(ctx: &egui::Context, topic: &str) {
     open_doc(ctx, Doc::Manual, Some(&anchor(topic)));

@@ -249,7 +249,7 @@ fn contents(app: &mut EpanetApp, ui: &mut Ui) {
             crate::widgets::Checkbox::new(&mut app.prefs.show_basemap, "Basemap"),
         )
         .on_disabled_hover_text(crate::i18n::tr(
-            "Add a basemap from the Map toolbar (Basemap ▾)",
+            "Add a basemap from the Map toolbar (Basemap > Load)",
         ));
         crate::widgets::checkbox(ui, &mut app.prefs.show_overview, "Overview Map");
     });

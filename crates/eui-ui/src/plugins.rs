@@ -81,7 +81,7 @@ fn locate_junctions(app: &mut EpanetApp) -> Result<Vec<(usize, [f64; 2])>, Strin
         return Err("The network has no junctions with coordinates.".into());
     }
     let geo = crate::basemap::geo(app)
-        .map_err(|e| format!("{e}. Set it in Map > Basemap ▾ > Settings, then try again."))?;
+        .map_err(|e| format!("{e}. Set it in Map > Basemap > Load, then try again."))?;
     junctions
         .into_iter()
         .map(|(i, p)| {

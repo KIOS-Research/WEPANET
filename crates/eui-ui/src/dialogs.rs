@@ -11,6 +11,21 @@ use crate::style::{Legend, LinkTheme, NodeTheme};
 
 pub fn show(app: &mut EpanetApp, ctx: &egui::Context) {
     let dialog = app.dialog;
+    // Dialogs can be moved (dragged by any free part of them). Each opens in
+    // the middle of the screen and stays there while the screen changes size
+    // (in the browser the first frames do not know it yet), until moved.
+    let shown = egui::Id::new("dialog_shown");
+    // (the dialog, the screen center it was put at, whether it was moved)
+    let state: Option<(Dialog, egui::Pos2, bool)> = ctx.data(|d| d.get_temp(shown));
+    let opened = state.map(|s| s.0) != Some(dialog);
+    let center = ctx.content_rect().center();
+    let recenter = match state {
+        Some((d, c, moved)) if d == dialog => !moved && c != center,
+        _ => true,
+    };
+    if recenter {
+        ctx.data_mut(|d| d.insert_temp(shown, (dialog, center, false)));
+    }
     // A dialog with Cancel was left some other way (another dialog took its place).
     if !matches!(dialog, Dialog::MapSettings | Dialog::Preferences) {
         app.prefs_backup = None;
@@ -106,44 +121,65 @@ pub fn show(app: &mut EpanetApp, ctx: &egui::Context) {
         Color32::from_rgb(0xf3, 0xf3, 0xf3)
     };
     let mut close = false;
-    egui::Window::new(title)
+    // On small screens no window is wider than the screen.
+    let screen = ctx.content_rect();
+    let fit = (screen.width() - 16.0).max(200.0);
+    // Maximized (with the button beside the close button, or a double click
+    // on the title bar) until the dialog closes.
+    let max_id = egui::Id::new(("dialog_maximized", title));
+    if opened {
+        ctx.data_mut(|d| d.remove::<bool>(max_id));
+    }
+    let maximized = ctx.data(|d| d.get_temp::<bool>(max_id)).unwrap_or(false);
+    let resizable = !message;
+    let width = match dialog {
+        Dialog::Welcome => 735.0_f32,
+        Dialog::RunStatus | Dialog::ConfirmDelete => 320.0,
+        Dialog::About => 470.0,
+        Dialog::Preferences => 330.0,
+        Dialog::Benchmarks => 880.0,
+        Dialog::PluginManager => 800.0,
+        _ => 320.0,
+    }
+    .min(fit);
+    let mut window = egui::Window::new(title)
         // the version makes egui forget sizes remembered by earlier builds
-        // (the Basemap source window had grown wide)
-        .id(egui::Id::new(("dialog", title, 2)))
+        // (the Basemap source window had grown wide); maximized, it is
+        // another window, so the normal one keeps its place and size
+        .id(egui::Id::new(("dialog", title, 2, maximized)))
         .title_bar(false)
         .collapsible(false)
-        .resizable(dialog == Dialog::ErrorCodes)
-        .min_width(match dialog {
-            Dialog::Welcome => 735.0,
-            Dialog::RunStatus | Dialog::ConfirmDelete => 320.0,
-            Dialog::About => 470.0,
-            Dialog::Preferences => 330.0,
-            Dialog::Benchmarks => 880.0,
-            Dialog::PluginManager => 800.0,
-            _ => 320.0,
-        })
-        .max_width(if dialog == Dialog::Welcome {
-            735.0
-        } else {
-            f32::INFINITY
-        })
+        // resizable by the edges and corners, down to the size of its content
+        // (at which it opens)
+        .resizable(resizable)
+        .min_width(width)
+        .default_size([width, 40.0])
         .frame(egui::Frame::window(&style).fill(fill).inner_margin(0))
-        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        .show(ctx, |ui| {
-            // EPANET-UI's window chrome: the title on the left, a red close
-            // button on the right (drawn once the width is known).
-            let top = ui.cursor().top();
-            ui.add_space(TITLE_H);
-            let margin = if dialog == Dialog::Welcome {
-                egui::Margin::ZERO
-            } else {
-                egui::Margin {
-                    left: 16,
-                    right: 16,
-                    top: 6,
-                    bottom: 16,
-                }
-            };
+        .pivot(egui::Align2::CENTER_CENTER)
+        .default_pos(screen.center());
+    if maximized {
+        window = window
+            .pivot(egui::Align2::LEFT_TOP)
+            .fixed_rect(screen.shrink(4.0));
+    } else if recenter {
+        window = window.current_pos(screen.center());
+    }
+    let shown_window = window.show(ctx, |ui| {
+        // EPANET-UI's window chrome: the title on the left, a red close
+        // button on the right (drawn once the width is known).
+        let top = ui.cursor().top();
+        ui.add_space(TITLE_H);
+        let margin = if dialog == Dialog::Welcome {
+            egui::Margin::ZERO
+        } else {
+            egui::Margin {
+                left: 16,
+                right: 16,
+                top: 6,
+                bottom: 16,
+            }
+        };
+        let mut body = |ui: &mut Ui| {
             egui::Frame::NONE.inner_margin(margin).show(ui, |ui| {
                 let mut content = |ui: &mut Ui| match dialog {
                     Dialog::Welcome => welcome(app, ui),
@@ -182,59 +218,152 @@ pub fn show(app: &mut EpanetApp, ctx: &egui::Context) {
                     Dialog::RulesEditor => crate::forms::rules_editor(app, ui),
                     Dialog::None => true,
                 };
+                // A resized window is as tall as the user made it: the
+                // content (its white panel, if any) fills the height left.
+                let fill = |ui: &mut Ui| {
+                    if resizable {
+                        ui.allocate_space(vec2(0.0, ui.available_height().max(0.0)));
+                    }
+                };
                 close = if own_panel || message {
-                    content(ui)
+                    let c = content(ui);
+                    fill(ui);
+                    c
                 } else {
-                    panel(ui, content)
+                    panel(ui, |ui| {
+                        let c = content(ui);
+                        fill(ui);
+                        c
+                    })
                 };
             });
-            let w = ui.min_rect();
-            let bar = Rect::from_min_max(pos2(w.left(), top), pos2(w.right(), top + TITLE_H));
-            ui.painter().text(
-                bar.left_center() + vec2(10.0, 0.0),
-                Align2::LEFT_CENTER,
-                crate::i18n::tr(title),
-                FontId::proportional(14.5),
-                ui.visuals().text_color(),
-            );
-            if closable {
-                let x = Rect::from_min_size(
-                    pos2(bar.right() - 46.0, bar.top() + 4.0),
-                    vec2(40.0, TITLE_H - 8.0),
-                );
-                let resp = ui.interact(x, ui.id().with("dialog_close"), Sense::click());
-                let red = if resp.hovered() {
-                    Color32::from_rgb(0xe8, 0x11, 0x23)
-                } else {
-                    Color32::from_rgb(0xc4, 0x4b, 0x4b)
-                };
-                ui.painter().rect_filled(x, 2.0, red);
-                let c = x.center();
-                let s = Stroke::new(1.6, Color32::WHITE);
-                ui.painter()
-                    .line_segment([c + vec2(-5.0, -5.0), c + vec2(5.0, 5.0)], s);
-                ui.painter()
-                    .line_segment([c + vec2(5.0, -5.0), c + vec2(-5.0, 5.0)], s);
-                if resp.on_hover_text("Close").clicked()
-                    || ui.input(|i| i.key_pressed(egui::Key::Escape))
-                {
-                    if dialog == Dialog::MapSettings {
-                        cancel_map_settings(app);
-                    }
-                    close = true;
-                }
+        };
+        body(ui);
+        let w = if resizable {
+            ui.max_rect()
+        } else {
+            ui.min_rect()
+        };
+        let bar = Rect::from_min_max(pos2(w.left(), top), pos2(w.right(), top + TITLE_H));
+        let clicked = title_bar(
+            ui,
+            bar,
+            title,
+            fill,
+            resizable.then_some(maximized),
+            closable,
+        );
+        if clicked.maximize {
+            ctx.data_mut(|d| d.insert_temp(max_id, !maximized));
+        }
+        // (Escape is for the CRS selector while it is open over its dialog)
+        let escape = ui.input(|i| i.key_pressed(egui::Key::Escape)) && !app.basemap.selector_open();
+        if closable && (clicked.close || escape) {
+            if dialog == Dialog::MapSettings {
+                cancel_map_settings(app);
             }
-        });
+            close = true;
+        }
+    });
+    if shown_window.is_some_and(|w| w.response.dragged()) {
+        ctx.data_mut(|d| d.insert_temp(shown, (dialog, center, true)));
+    }
     if close && app.dialog == dialog {
         app.dialog = Dialog::None;
     }
 }
 
 /// Height of the dialog title bar.
-const TITLE_H: f32 = 34.0;
+pub(crate) const TITLE_H: f32 = 34.0;
+
+/// What was clicked on a window's title bar.
+#[derive(Default)]
+pub(crate) struct TitleClicks {
+    /// The maximize (or restore) button, or a double click on the title.
+    pub maximize: bool,
+    pub close: bool,
+}
+
+/// EPANET-UI's window chrome over `bar`: the title on the left and on the
+/// right a maximize button (when `maximized` is given: whether the window
+/// is maximized now) and a red close button.
+pub(crate) fn title_bar(
+    ui: &mut Ui,
+    bar: Rect,
+    title: &str,
+    fill: Color32,
+    maximized: Option<bool>,
+    closable: bool,
+) -> TitleClicks {
+    let mut clicks = TitleClicks::default();
+    ui.painter().text(
+        bar.left_center() + vec2(10.0, 0.0),
+        Align2::LEFT_CENTER,
+        crate::i18n::tr(title),
+        FontId::proportional(14.5),
+        ui.visuals().text_color(),
+    );
+    let button = |k: f32| {
+        Rect::from_min_size(
+            pos2(bar.right() - 46.0 - 40.0 * k, bar.top() + 4.0),
+            vec2(40.0, TITLE_H - 8.0),
+        )
+    };
+    if let Some(maximized) = maximized {
+        // left of the close button
+        let m = button(if closable { 1.0 } else { 0.0 });
+        let resp = ui.interact(m, ui.id().with("title_maximize"), Sense::click());
+        if resp.hovered() {
+            ui.painter()
+                .rect_filled(m, 2.0, ui.visuals().widgets.hovered.weak_bg_fill);
+        }
+        let s = Stroke::new(1.2, ui.visuals().text_color());
+        let c = m.center();
+        if maximized {
+            // two overlapping squares: restore
+            let back = Rect::from_center_size(c + vec2(2.0, -2.0), vec2(9.0, 9.0));
+            let front = Rect::from_center_size(c + vec2(-1.0, 1.0), vec2(9.0, 9.0));
+            ui.painter()
+                .rect_stroke(back, 0.0, s, egui::StrokeKind::Middle);
+            ui.painter().rect_filled(front, 0.0, fill);
+            ui.painter()
+                .rect_stroke(front, 0.0, s, egui::StrokeKind::Middle);
+        } else {
+            let sq = Rect::from_center_size(c, vec2(10.0, 10.0));
+            ui.painter()
+                .rect_stroke(sq, 0.0, s, egui::StrokeKind::Middle);
+        }
+        // a double click on the title does the same
+        let title_area = Rect::from_min_max(bar.min, pos2(m.left(), bar.bottom()));
+        let title_click = ui.interact(title_area, ui.id().with("title_bar"), Sense::click());
+        clicks.maximize = resp
+            .on_hover_text(if maximized { "Restore" } else { "Maximize" })
+            .clicked()
+            || title_click.double_clicked();
+    }
+    if closable {
+        let x = button(0.0);
+        let resp = ui.interact(x, ui.id().with("title_close"), Sense::click());
+        let red = if resp.hovered() {
+            Color32::from_rgb(0xe8, 0x11, 0x23)
+        } else {
+            Color32::from_rgb(0xc4, 0x4b, 0x4b)
+        };
+        ui.painter().rect_filled(x, 2.0, red);
+        let c = x.center();
+        let s = Stroke::new(1.6, Color32::WHITE);
+        ui.painter()
+            .line_segment([c + vec2(-5.0, -5.0), c + vec2(5.0, 5.0)], s);
+        ui.painter()
+            .line_segment([c + vec2(5.0, -5.0), c + vec2(-5.0, 5.0)], s);
+        clicks.close = resp.on_hover_text("Close").clicked();
+    }
+    clicks
+}
 
 /// A Welcome Page link: a small bullet then the text, as in EPANET-UI.
 fn welcome_link(ui: &mut Ui, text: &str, icon: crate::icons::Icon) -> bool {
+    let text = crate::i18n::tr(text);
     let font = egui::FontId::proportional(14.0);
     let w = ui.fonts_mut(|f| {
         f.layout_no_wrap(text.to_string(), font.clone(), egui::Color32::WHITE)
@@ -269,20 +398,87 @@ fn welcome(app: &mut EpanetApp, ui: &mut Ui) -> bool {
     let ctx = ui.ctx().clone();
     let mut close = false;
     welcome_banner(ui);
-    let heading = |ui: &mut Ui, t: &str| {
-        ui.label(
-            RichText::new(t)
-                .size(24.0)
-                .color(if ui.visuals().dark_mode {
+    // On a low screen the part under the banner scrolls; on a narrow one the
+    // two columns go one under the other.
+    let max_h = (ui.ctx().content_rect().height() - ui.min_rect().bottom() - 20.0).max(120.0);
+    let narrow = ui.available_width() < 560.0;
+    let heading =
+        |ui: &mut Ui, t: &str| {
+            ui.label(RichText::new(crate::i18n::tr(t)).size(24.0).color(
+                if ui.visuals().dark_mode {
                     HEADING_LIGHT
                 } else {
                     HEADING
-                }),
-        );
-        ui.add_space(4.0);
+                },
+            ));
+            ui.add_space(4.0);
+        };
+    // the Develop / Learn column (0) and the projects column (1)
+    let column = |app: &mut EpanetApp, close: &mut bool, ui: &mut Ui, k: usize| {
+        if k == 0 {
+            heading(ui, "Develop");
+            if welcome_link(ui, "Create a new project", Icon::Junction) {
+                app.new_project();
+                *close = true;
+            }
+            ui.add_space(10.0);
+            if welcome_link(ui, "Open an existing project", Icon::Junction) {
+                app.open(&ctx);
+                *close = true;
+            }
+            ui.add_space(34.0);
+            heading(ui, "Learn");
+            if welcome_link(ui, "Basic Tutorial", Icon::Junction) {
+                crate::help::open_doc(&ctx, crate::help::Doc::Tutorial, None);
+            }
+            ui.add_space(10.0);
+            if welcome_link(ui, "User Guide", Icon::Junction) {
+                crate::help::open_doc(&ctx, crate::help::Doc::Manual, None);
+            }
+            ui.add_space(10.0);
+            if welcome_link(ui, "Report an issue or suggest a feature", Icon::Junction) {
+                crate::help::report_issue(&ctx);
+            }
+        } else {
+            heading(ui, "Open a Recent Project");
+            #[cfg(not(target_arch = "wasm32"))]
+            for r in app.prefs.recent.clone() {
+                let name = std::path::Path::new(&r)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or(r.clone());
+                if welcome_link(ui, &name, Icon::Open) {
+                    app.open_recent(&r);
+                    *close = true;
+                }
+            }
+            if app.prefs.recent.is_empty() || cfg!(target_arch = "wasm32") {
+                ui.label(RichText::new(crate::i18n::tr("There are no recent projects")).weak());
+            }
+            ui.add_space(16.0);
+            ui.label(
+                RichText::new(crate::i18n::tr("Sample projects"))
+                    .size(14.0)
+                    .strong(),
+            );
+            for (name, text) in eui_core::examples::ALL {
+                if welcome_link(ui, &format!("{name}.inp"), Icon::Open) {
+                    app.load_example(name, text);
+                    *close = true;
+                }
+            }
+        }
     };
+    let (outer, inner) = if narrow { (12, 20) } else { (24, 46) };
+    egui::ScrollArea::vertical()
+        .max_height(max_h)
+        // as tall as the screen allows when it scrolls (the window would
+        // otherwise keep the height it had on a smaller screen)
+        .min_scrolled_height(max_h)
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
     egui::Frame::NONE
-        .inner_margin(egui::Margin { left: 24, right: 20, top: 24, bottom: 22 })
+        .inner_margin(egui::Margin { left: outer, right: outer.min(20), top: 24, bottom: 22 })
         .show(ui, |ui| {
             egui::Frame::NONE
                 .fill(if ui.visuals().dark_mode {
@@ -291,63 +487,28 @@ fn welcome(app: &mut EpanetApp, ui: &mut Ui) -> bool {
                     egui::Color32::WHITE
                 })
                 .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(200)))
-                .inner_margin(egui::Margin { left: 46, right: 20, top: 22, bottom: 18 })
+                .inner_margin(egui::Margin { left: inner, right: 20, top: 22, bottom: 18 })
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.columns(2, |cols| {
-                        heading(&mut cols[0], "Develop");
-                        if welcome_link(&mut cols[0], "Create a new project", Icon::Junction) {
-                            app.new_project();
-                            close = true;
-                        }
-                        cols[0].add_space(10.0);
-                        if welcome_link(&mut cols[0], "Open an existing project", Icon::Junction) {
-                            app.open(&ctx);
-                            close = true;
-                        }
-                        cols[0].add_space(34.0);
-                        heading(&mut cols[0], "Learn");
-                        if welcome_link(&mut cols[0], "Basic Tutorial", Icon::Junction) {
-                            crate::help::open_doc(&ctx, crate::help::Doc::Tutorial, None);
-                        }
-                        cols[0].add_space(10.0);
-                        if welcome_link(&mut cols[0], "User Guide", Icon::Junction) {
-                            crate::help::open_doc(&ctx, crate::help::Doc::Manual, None);
-                        }
-
-                        heading(&mut cols[1], "Open a Recent Project");
-                        #[cfg(not(target_arch = "wasm32"))]
-                        for r in app.prefs.recent.clone() {
-                            let name = std::path::Path::new(&r)
-                                .file_name()
-                                .map(|n| n.to_string_lossy().into_owned())
-                                .unwrap_or(r.clone());
-                            if welcome_link(&mut cols[1], &name, Icon::Open) {
-                                app.open_recent(&r);
-                                close = true;
-                            }
-                        }
-                        if app.prefs.recent.is_empty() || cfg!(target_arch = "wasm32") {
-                            cols[1].label(RichText::new("There are no recent projects").weak());
-                        }
-                        cols[1].add_space(16.0);
-                        cols[1].label(RichText::new("Sample projects").size(14.0).strong());
-                        for (name, text) in eui_core::examples::ALL {
-                            if welcome_link(&mut cols[1], &format!("{name}.inp"), Icon::Open) {
-                                app.load_example(name, text);
-                                close = true;
-                            }
-                        }
-                    });
+                    if narrow {
+                        column(app, &mut close, ui, 0);
+                        ui.add_space(24.0);
+                        column(app, &mut close, ui, 1);
+                    } else {
+                        ui.columns(2, |cols| {
+                            column(app, &mut close, &mut cols[0], 0);
+                            column(app, &mut close, &mut cols[1], 1);
+                        });
+                    }
                     ui.add_space(18.0);
                     ui.separator();
                     ui.add_space(6.0);
                     heading(ui, "WaterBenchmarkHub");
                     ui.horizontal_wrapped(|ui| {
                         ui.label(
-                            RichText::new(
+                            RichText::new(crate::i18n::tr(
                                 "Benchmark water distribution networks collected by the WaterFutures project.",
-                            )
+                            ))
                             .size(13.5),
                         );
                     });
@@ -359,9 +520,10 @@ fn welcome(app: &mut EpanetApp, ui: &mut Ui) -> bool {
                     crate::widgets::checkbox(
                         ui,
                         &mut app.prefs.show_welcome,
-                        RichText::new("Always show at startup").size(14.0),
+                        RichText::new(crate::i18n::tr("Always show at startup")).size(14.0),
                     );
                 });
+        });
         });
     close
 }
@@ -1750,8 +1912,14 @@ fn welcome_banner(ui: &mut Ui) {
         egui::Sense::hover(),
     );
     crate::images::paint(ui, img, rect);
-    let font = crate::fonts::bold(36.0);
-    let title = "WELCOME TO WEPANET";
+    // smaller when the title (in some languages longer) would not fit
+    let title = crate::i18n::tr("WELCOME TO WEPANET");
+    let full = ui.fonts_mut(|f| {
+        f.layout_no_wrap(title.to_string(), crate::fonts::bold(36.0), Color32::WHITE)
+            .size()
+            .x
+    });
+    let font = crate::fonts::bold(36.0 * ((width - 60.0) / full.max(1.0)).min(1.0));
     ui.painter().text(
         rect.center() + vec2(2.0, 2.0),
         Align2::CENTER_CENTER,
@@ -1779,4 +1947,251 @@ fn welcome_banner(ui: &mut Ui) {
     );
     ui.painter()
         .text(at, Align2::RIGHT_BOTTOM, version, small, Color32::WHITE);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Runs a frame of the dialogs on a screen of `size`, with `events`;
+    /// returns where each piece of text can be seen.
+    fn frame(
+        app: &mut EpanetApp,
+        ctx: &egui::Context,
+        size: egui::Vec2,
+        events: Vec<egui::Event>,
+    ) -> Vec<(String, Rect)> {
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, size)),
+            events,
+            // a 60 Hz clock, for double clicks
+            time: Some(ctx.input(|i| i.time) + 1.0 / 60.0),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| show(app, ui.ctx()));
+        out.textures_delta.clear();
+        out.shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                // the visible part of the text
+                egui::Shape::Text(t) => Some((
+                    t.galley.text().to_string(),
+                    t.visual_bounding_rect().intersect(c.clip_rect),
+                ))
+                .filter(|(_, r)| r.is_positive()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn find<'a>(texts: &'a [(String, Rect)], text: &str) -> &'a Rect {
+        &texts
+            .iter()
+            .find(|(t, _)| t == text)
+            .unwrap_or_else(|| panic!("{text} not drawn"))
+            .1
+    }
+
+    /// The Welcome Page is in the interface language.
+    #[test]
+    fn welcome_is_translated() {
+        let (ctx, mut app) = crate::msx::tests::new_app();
+        app.dialog = Dialog::Welcome;
+        let el = crate::i18n::all().iter().find(|l| l.code == "el").unwrap();
+        for english in [
+            "Develop",
+            "Create a new project",
+            "Learn",
+            "Open a Recent Project",
+            "Sample projects",
+            "Always show at startup",
+            "WELCOME TO WEPANET",
+        ] {
+            assert_ne!(el.text(english), english, "{english} has no Greek");
+        }
+        // the page's texts all go through the language table (only checked
+        // in English here: switching the language would change the other
+        // tests' text)
+        let mut texts = Vec::new();
+        for _ in 0..4 {
+            texts = frame(&mut app, &ctx, vec2(1400.0, 900.0), Vec::new());
+        }
+        find(&texts, "Develop");
+        find(&texts, "WELCOME TO WEPANET");
+    }
+    #[test]
+    fn welcome_fits_a_small_screen() {
+        let (ctx, mut app) = crate::msx::tests::new_app();
+        app.dialog = Dialog::Welcome;
+        let size = vec2(480.0, 520.0);
+        let mut texts = Vec::new();
+        for _ in 0..4 {
+            texts = frame(&mut app, &ctx, size, Vec::new());
+        }
+        // all on the screen (what is lower scrolls)
+        let screen = Rect::from_min_size(egui::Pos2::ZERO, size);
+        find(&texts, "Develop");
+        for (t, r) in &texts {
+            assert!(screen.expand(1.0).contains_rect(*r), "{t} at {r:?}");
+        }
+        // narrow but tall: one column, the projects under Develop
+        let size = vec2(480.0, 1200.0);
+        for _ in 0..4 {
+            texts = frame(&mut app, &ctx, size, Vec::new());
+        }
+        assert!(find(&texts, "Open a Recent Project").top() > find(&texts, "Develop").bottom());
+    }
+
+    /// The rectangle of a dialog's window.
+    fn window_rect(ctx: &egui::Context, title: &str, maximized: bool) -> Rect {
+        let id = egui::Id::new(("dialog", title, 2, maximized));
+        ctx.memory(|m| m.area_rect(id)).expect("no window")
+    }
+
+    /// A press, moves and a release of the mouse from `from` to `to`.
+    fn drag(
+        app: &mut EpanetApp,
+        ctx: &egui::Context,
+        size: egui::Vec2,
+        from: egui::Pos2,
+        to: egui::Pos2,
+    ) {
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame(app, ctx, size, vec![egui::Event::PointerMoved(from)]);
+        frame(app, ctx, size, vec![button(from, true)]);
+        for k in 1..=10 {
+            let p = from + (to - from) * (k as f32 / 10.0);
+            frame(app, ctx, size, vec![egui::Event::PointerMoved(p)]);
+        }
+        frame(app, ctx, size, vec![button(to, false)]);
+        frame(app, ctx, size, Vec::new());
+    }
+
+    /// In the browser the first frames come before the screen size is
+    /// known; the Welcome Page still opens in the middle.
+    #[test]
+    fn welcome_opens_centered_after_unknown_screen() {
+        let (ctx, mut app) = crate::msx::tests::new_app();
+        app.dialog = Dialog::Welcome;
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| show(&mut app, ui.ctx()));
+            out.textures_delta.clear();
+        }
+        let size = vec2(1600.0, 865.0);
+        for _ in 0..10 {
+            frame(&mut app, &ctx, size, Vec::new());
+        }
+        let r = window_rect(&ctx, "Welcome Page", false);
+        let c = Rect::from_min_size(egui::Pos2::ZERO, size).center();
+        assert!((r.center() - c).length() < 3.0, "{r:?}");
+    }
+    #[test]
+    fn dialogs_resize_and_maximize() {
+        let (ctx, mut app) = crate::msx::tests::new_app();
+        app.dialog = Dialog::Units;
+        let size = vec2(1400.0, 900.0);
+        let title = "Units of Measurement";
+        for _ in 0..10 {
+            frame(&mut app, &ctx, size, Vec::new());
+        }
+        let before = window_rect(&ctx, title, false);
+        // drag the bottom right corner 150 px right and 80 px down
+        let corner = before.right_bottom() - vec2(2.0, 2.0);
+        drag(&mut app, &ctx, size, corner, corner + vec2(150.0, 80.0));
+        let after = window_rect(&ctx, title, false);
+        assert!(
+            (after.width() - before.width() - 150.0).abs() < 3.0,
+            "{before:?} {after:?}"
+        );
+        assert!(
+            (after.height() - before.height() - 80.0).abs() < 3.0,
+            "{before:?} {after:?}"
+        );
+
+        // a double click on the title bar maximizes the window...
+        let texts = frame(&mut app, &ctx, size, Vec::new());
+        let at = find(&texts, title).center();
+        let click = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame(&mut app, &ctx, size, vec![egui::Event::PointerMoved(at)]);
+        for pressed in [true, false, true, false] {
+            frame(&mut app, &ctx, size, vec![click(pressed)]);
+        }
+        for _ in 0..3 {
+            frame(&mut app, &ctx, size, Vec::new());
+        }
+        let max = window_rect(&ctx, title, true);
+        assert!(max.width() > 1380.0 && max.height() > 880.0, "{max:?}");
+        // ...and another one gives back the size and place it had
+        let texts = frame(&mut app, &ctx, size, Vec::new());
+        let at = find(&texts, title).center();
+        let click = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame(&mut app, &ctx, size, vec![egui::Event::PointerMoved(at)]);
+        for pressed in [true, false, true, false] {
+            frame(&mut app, &ctx, size, vec![click(pressed)]);
+        }
+        for _ in 0..3 {
+            frame(&mut app, &ctx, size, Vec::new());
+        }
+        let back = window_rect(&ctx, title, false);
+        assert!(
+            (back.size() - after.size()).length() < 3.0,
+            "{after:?} {back:?}"
+        );
+    }
+    #[test]
+    fn dialogs_can_be_moved_and_open_centered() {
+        let (ctx, mut app) = crate::msx::tests::new_app();
+        app.dialog = Dialog::Units;
+        let size = vec2(1400.0, 900.0);
+        let title = "Units of Measurement";
+        let mut texts = Vec::new();
+        for _ in 0..10 {
+            texts = frame(&mut app, &ctx, size, Vec::new());
+        }
+        let before = *find(&texts, title);
+        // drag the title bar 200 px right and 100 px down
+        let at = before.center();
+        let to = at + vec2(200.0, 100.0);
+        let press = |pressed| egui::Event::PointerButton {
+            pos: if pressed { at } else { to },
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame(&mut app, &ctx, size, vec![egui::Event::PointerMoved(at)]);
+        frame(&mut app, &ctx, size, vec![press(true)]);
+        for k in 1..=10 {
+            let p = at + (to - at) * (k as f32 / 10.0);
+            frame(&mut app, &ctx, size, vec![egui::Event::PointerMoved(p)]);
+        }
+        frame(&mut app, &ctx, size, vec![press(false)]);
+        let texts = frame(&mut app, &ctx, size, Vec::new());
+        let after = *find(&texts, title);
+        let moved = after.center() - before.center();
+        assert!((moved - vec2(200.0, 100.0)).length() < 2.0, "{moved:?}");
+        // closed and opened again: back in the middle
+        app.dialog = Dialog::None;
+        frame(&mut app, &ctx, size, Vec::new());
+        app.dialog = Dialog::Units;
+        let mut texts = Vec::new();
+        for _ in 0..10 {
+            texts = frame(&mut app, &ctx, size, Vec::new());
+        }
+        assert!((find(&texts, title).center() - before.center()).length() < 2.0);
+    }
 }

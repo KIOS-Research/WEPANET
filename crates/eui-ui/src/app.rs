@@ -468,6 +468,8 @@ impl EpanetApp {
             prefs.node_border = d.node_border;
             prefs.map_style = MAP_STYLE;
         }
+        // The app always starts on the Project tab (not the last one used).
+        prefs.menu_tab = MenuTab::Project;
         let dialog = if prefs.show_welcome {
             Dialog::Welcome
         } else {

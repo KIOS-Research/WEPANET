@@ -20,6 +20,12 @@ static SELAWIK_BOLD: &[u8] = include_bytes!("../assets/fonts/Selawik-Bold.ttf");
 /// Courier Prime (OFL), a Courier New look-alike with plain zeros, for the
 /// tables and text reports where EPANET-UI uses Courier New.
 static COURIER_PRIME: &[u8] = include_bytes!("../assets/fonts/CourierPrime-Regular.ttf");
+/// Noto Sans SC (OFL), cut down to the characters of the Chinese translation
+/// (`lang/zh.json`), as the fallback for Chinese text. After changing the
+/// translation, make it again from the full font:
+/// `pyftsubset NotoSansSC-Regular.otf --text-file=<zh.json values>
+/// --layout-features='*' --output-file=NotoSansSC-subset.otf`.
+static NOTO_SANS_SC: &[u8] = include_bytes!("../assets/fonts/NotoSansSC-subset.otf");
 
 /// Reads Courier New from the Windows fonts folder.
 fn system_mono() -> Option<Vec<u8>> {
@@ -63,6 +69,12 @@ pub fn install(ctx: &egui::Context) {
         .insert("ui-bold".into(), Arc::new(bold_data));
     let proportional = fonts.families.entry(FontFamily::Proportional).or_default();
     proportional.insert(0, "ui".into());
+    // Chinese characters, which the UI fonts do not have
+    fonts
+        .font_data
+        .insert("cjk".into(), Arc::new(FontData::from_static(NOTO_SANS_SC)));
+    let proportional = fonts.families.entry(FontFamily::Proportional).or_default();
+    proportional.push("cjk".into());
     // Bold falls back to the regular chain (keeps symbol coverage).
     let mut bold_chain = vec!["ui-bold".to_string()];
     bold_chain.extend(proportional.iter().cloned());

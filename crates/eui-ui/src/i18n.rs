@@ -15,7 +15,11 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// The translation files: (language code, JSON contents).
-const FILES: &[(&str, &str)] = &[("el", include_str!("../lang/el.json"))];
+const FILES: &[(&str, &str)] = &[
+    ("el", include_str!("../lang/el.json")),
+    ("es", include_str!("../lang/es.json")),
+    ("zh", include_str!("../lang/zh.json")),
+];
 
 pub struct Language {
     pub code: &'static str,
@@ -63,9 +67,16 @@ pub fn current() -> &'static Language {
     &all()[CURRENT.load(Ordering::Relaxed)]
 }
 
+impl Language {
+    /// This language's text for `english`, or `english` itself.
+    pub fn text<'a>(&'a self, english: &'a str) -> &'a str {
+        self.table.get(english).map_or(english, String::as_str)
+    }
+}
+
 /// The current language's text for `english`, or `english` itself.
 pub fn tr(english: &str) -> &str {
-    current().table.get(english).map_or(english, String::as_str)
+    current().text(english)
 }
 
 /// `tr` for widget text: translates plain text, leaves styled text alone.
@@ -93,12 +104,70 @@ mod tests {
         assert_eq!(all().len(), FILES.len() + 1);
     }
 
+    /// Every character a translation brings (one its English text does not
+    /// have) can be drawn with the app's fonts; the Chinese font is a subset
+    /// of Noto Sans SC (see `fonts.rs`).
     #[test]
-    fn falls_back_to_english() {
-        set("el");
-        assert_eq!(tr("Project Explorer"), "Εξερεύνηση Έργου");
-        assert_eq!(tr("no such text"), "no such text");
-        set("en");
-        assert_eq!(tr("Project Explorer"), "Project Explorer");
+    fn fonts_cover_the_translations() {
+        let ctx = egui::Context::default();
+        crate::fonts::install(&ctx);
+        ctx.run_ui(egui::RawInput::default(), |_| {})
+            .textures_delta
+            .clear();
+        for lang in all() {
+            for (english, text) in &lang.table {
+                for family in [egui::FontId::proportional(12.5), crate::fonts::bold(12.5)] {
+                    let missing: String = text
+                        .chars()
+                        .filter(|&c| !english.contains(c))
+                        .filter(|&c| !ctx.fonts_mut(|f| f.has_glyph(&family, c)))
+                        .collect();
+                    assert!(
+                        missing.is_empty(),
+                        "{}: {text:?} lacks {missing:?}",
+                        lang.code
+                    );
+                }
+            }
+        }
+    }
+
+    /// Each language translates and falls back to English. The tables are
+    /// read directly: switching the current language would change the text
+    /// of the other tests running at the same time.
+    #[test]
+    fn every_language_translates_and_falls_back_to_english() {
+        let expected = [
+            ("en", "Project Explorer"),
+            ("el", "Εξερεύνηση Έργου"),
+            ("es", "Explorador del Proyecto"),
+            ("zh", "项目浏览器"),
+        ];
+        assert_eq!(all().len(), expected.len(), "a language without a test");
+        for (code, text) in expected {
+            let lang = all().iter().find(|l| l.code == code).unwrap();
+            assert_eq!(lang.text("Project Explorer"), text, "{code}");
+            assert_eq!(lang.text("no such text"), "no such text", "{code}");
+        }
+    }
+
+    /// Every language file translates the same texts.
+    #[test]
+    fn language_files_have_the_same_keys() {
+        let keys = |json: &str| -> std::collections::BTreeSet<String> {
+            let t: HashMap<String, String> = serde_json::from_str(json).unwrap();
+            t.into_keys().filter(|k| !k.starts_with('_')).collect()
+        };
+        let (first, json) = FILES[0];
+        let reference = keys(json);
+        for (code, json) in &FILES[1..] {
+            let these = keys(json);
+            let missing: Vec<_> = reference.difference(&these).collect();
+            let extra: Vec<_> = these.difference(&reference).collect();
+            assert!(
+                missing.is_empty() && extra.is_empty(),
+                "lang/{code}.json vs lang/{first}.json: missing {missing:?}, extra {extra:?}"
+            );
+        }
     }
 }

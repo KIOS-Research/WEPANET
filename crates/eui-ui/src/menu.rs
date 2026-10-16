@@ -133,6 +133,33 @@ fn speed_bar(app: &mut EpanetApp, ui: &mut Ui) {
                 resp.on_hover_text(tr(tip)).clicked()
             };
             // Right-to-left layout: listed in reverse visual order.
+            // Last, apart and in orange: report an issue on GitHub.
+            let (rect, resp) = ui.allocate_exact_size(vec2(23.0, 23.0), Sense::click());
+            if resp.hovered() {
+                ui.painter()
+                    .rect_filled(rect, CornerRadius::same(3), Color32::WHITE);
+            }
+            issue_icon(
+                ui.painter(),
+                rect.center() + vec2(0.0, 1.0),
+                0.72,
+                ISSUE_ORANGE,
+                Some(ISSUE_ORANGE),
+            );
+            if resp
+                .on_hover_text(tr(
+                    "Report a problem or suggest a feature on WEPANET's GitHub",
+                ))
+                .clicked()
+            {
+                crate::help::report_issue(&ctx);
+            }
+            let (sep, _) = ui.allocate_exact_size(vec2(5.0, 23.0), Sense::hover());
+            ui.painter().vline(
+                sep.center().x,
+                sep.y_range().shrink(3.0),
+                Stroke::new(1.0, Color32::from_rgb(0xa9, 0xb8, 0xc8)),
+            );
             if small(ui, Icon::Help, "Help") {
                 app.dialog = Dialog::About;
             }
@@ -183,6 +210,53 @@ fn tool_button(
         active,
         tip,
     )
+}
+
+/// The Report Issue icon: a speech bubble with an exclamation mark.
+fn paint_issue(p: &egui::Painter, c: egui::Pos2, fg: Color32) {
+    issue_icon(p, c, 1.0, fg, None);
+}
+
+/// The orange Report Issue button of the speed bar.
+const ISSUE_ORANGE: Color32 = Color32::from_rgb(0xe0, 0x6a, 0x10);
+
+/// A speech bubble with an exclamation mark, `s` times the toolbar size;
+/// with `fill`, a filled bubble and a white mark.
+fn issue_icon(p: &egui::Painter, c: egui::Pos2, s: f32, fg: Color32, fill: Option<Color32>) {
+    let stroke = Stroke::new(1.6 * s.max(0.8), fg);
+    let r = Rect::from_center_size(c - vec2(0.0, 2.0 * s), vec2(22.0, 16.0) * s);
+    // the tail, under the bubble's left part
+    let a = r.left_bottom() + vec2(5.0, 0.0) * s;
+    let tail = [a, a + vec2(-1.0, 6.0) * s, a + vec2(6.0, 0.0) * s];
+    let mark = match fill {
+        Some(f) => {
+            p.rect_filled(r, 3.0 * s, f);
+            p.add(egui::Shape::convex_polygon(
+                vec![tail[0] - vec2(0.0, 1.0), tail[1], tail[2] - vec2(0.0, 1.0)],
+                f,
+                Stroke::NONE,
+            ));
+            Color32::WHITE
+        }
+        None => {
+            p.rect_stroke(r, 3.0 * s, stroke, egui::StrokeKind::Middle);
+            p.line_segment([tail[0], tail[1]], stroke);
+            p.line_segment([tail[1], tail[2]], stroke);
+            fg
+        }
+    };
+    p.line_segment(
+        [
+            r.center_top() + vec2(0.0, 3.5 * s),
+            r.center() + vec2(0.0, 2.0 * s),
+        ],
+        Stroke::new(2.0 * s.max(0.8), mark),
+    );
+    p.circle_filled(
+        r.center_bottom() - vec2(0.0, 3.5 * s),
+        1.2 * s.max(0.8),
+        mark,
+    );
 }
 
 /// A toolbar button whose icon `paint` draws (centred at the given point).
@@ -779,6 +853,18 @@ fn help_toolbar(app: &mut EpanetApp, ui: &mut Ui) {
     .clicked()
     {
         crate::help::open_doc(ui.ctx(), crate::help::Doc::Tutorial, None);
+    }
+    if tool_button_with(
+        ui,
+        paint_issue,
+        "Report Issue",
+        true,
+        false,
+        "Report a problem or suggest a feature on WEPANET's GitHub",
+    )
+    .clicked()
+    {
+        crate::help::report_issue(ui.ctx());
     }
     if tool_button(ui, Icon::About, "About", true, false, "About WEPANET").clicked() {
         app.dialog = Dialog::About;

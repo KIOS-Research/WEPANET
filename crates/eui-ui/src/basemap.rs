@@ -417,6 +417,13 @@ pub struct BasemapState {
     world_inbox: WorldFileInbox,
 }
 
+impl BasemapState {
+    /// Whether the Coordinate Reference System Selector is open.
+    pub fn selector_open(&self) -> bool {
+        self.selector.is_some()
+    }
+}
+
 /// The coordinate system definition in effect: the one chosen for this file,
 /// else longitude/latitude when the coordinates can only be that.
 fn crs_def(app: &EpanetApp) -> Option<String> {
@@ -589,13 +596,34 @@ pub fn draw(app: &mut EpanetApp, ui: &Ui, painter: &egui::Painter, rect: Rect, m
             );
         }
     } else if let Err(e) = draw_tiles(app, &ctx, painter, rect, kind) {
-        painter.text(
+        let red = Color32::from_rgb(0xc0, 0x39, 0x2b);
+        let text = painter.text(
             rect.left_bottom() + vec2(8.0, -8.0),
             Align2::LEFT_BOTTOM,
-            format!("Basemap: {e} (Basemap ▾ > Settings)"),
+            format!("Basemap: {e} (Map > Basemap > Load)"),
             FontId::proportional(12.0),
-            Color32::from_rgb(0xc0, 0x39, 0x2b),
+            red,
         );
+        // an ✕ beside the message unloads the basemap
+        let x =
+            Rect::from_center_size(pos2(text.right() + 14.0, text.center().y), vec2(18.0, 18.0));
+        let resp = ui
+            .interact(
+                x,
+                egui::Id::new("basemap_error_close"),
+                egui::Sense::click(),
+            )
+            .on_hover_text("Unload the basemap");
+        if resp.hovered() {
+            painter.rect_filled(x, 3.0, red.gamma_multiply(0.15));
+        }
+        let s = egui::Stroke::new(1.5, red);
+        let d = 4.5;
+        painter.line_segment([x.center() - vec2(d, d), x.center() + vec2(d, d)], s);
+        painter.line_segment([x.center() + vec2(-d, d), x.center() + vec2(d, -d)], s);
+        if resp.clicked() {
+            unload(app);
+        }
         return;
     }
     let fade = app.prefs.basemap_fade.clamp(0.0, 0.95);
@@ -1195,6 +1223,9 @@ pub struct CrsSelector {
     selected: Option<u32>,
     /// Whether the list still has to scroll to the selected system.
     scroll: bool,
+    /// Whether the window has been placed in the middle of the screen.
+    placed: bool,
+    maximized: bool,
 }
 
 impl CrsSelector {
@@ -1207,6 +1238,8 @@ impl CrsSelector {
             proj: if custom { c.to_string() } else { String::new() },
             selected: c.trim_start_matches("EPSG:").parse().ok(),
             scroll: true,
+            placed: false,
+            maximized: false,
         }
     }
 }
@@ -1384,147 +1417,246 @@ fn crs_selector(
     sel: &mut CrsSelector,
     recent: &[String],
 ) -> Option<Option<String>> {
+    use crate::dialogs::TITLE_H;
     let mut result = None;
-    let modal = egui::Modal::new(egui::Id::new("crs_selector")).show(ctx, |ui| {
-        ui.set_width(560.0);
-        ui.label(
-            RichText::new(crate::i18n::tr("Coordinate Reference System Selector"))
-                .size(17.0)
-                .color(crate::widgets::ACCENT),
-        );
-        ui.label("Select the coordinate system the network's coordinates are in.");
-        ui.add_space(6.0);
-        egui::ComboBox::from_id_salt("crs_kind")
-            .selected_text(if sel.custom {
-                "Custom CRS"
-            } else {
-                "Predefined CRS"
-            })
-            .width(544.0)
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut sel.custom, false, "Predefined CRS");
-                ui.selectable_value(&mut sel.custom, true, "Custom CRS");
-            });
-        ui.add_space(6.0);
-        let mut ok = false;
-        let mut proj = None;
-        if sel.custom {
-            ui.label("Proj string (e.g. +proj=tmerc +lat_0=0 +lon_0=24 +k=0.9996 …)");
-            ui.add(
-                egui::TextEdit::multiline(&mut sel.proj)
-                    .desired_rows(4)
-                    .desired_width(f32::INFINITY)
-                    .font(egui::TextStyle::Monospace),
-            );
-            let p = sel.proj.trim();
-            match Geo::parse(p) {
-                Ok(_) => proj = Some(p.to_string()),
-                Err(e) if !p.is_empty() => {
-                    ui.label(RichText::new(e).color(Color32::from_rgb(0xc0, 0x39, 0x2b)));
-                }
-                Err(_) => {}
-            }
-        } else {
-            ui.horizontal(|ui| {
-                ui.label("Filter");
-                ui.add(
-                    egui::TextEdit::singleline(&mut sel.filter)
-                        .hint_text("code or name, e.g. Kentucky, 2100, UTM zone 36N")
-                        .desired_width(f32::INFINITY),
-                );
-            });
-            let words: Vec<String> = sel
-                .filter
-                .split_whitespace()
-                .map(str::to_lowercase)
-                .collect();
-            let matches = |c: &CrsEntry| words.iter().all(|w| c.2.contains(w.as_str()));
-            let all = crs_list();
-            ui.add_space(6.0);
-            ui.label(RichText::new("Recently Used Coordinate Reference Systems").strong());
-            let used: Vec<&CrsEntry> = recent
-                .iter()
-                .filter_map(|c| c.parse::<u32>().ok())
-                .filter_map(|code| all.iter().find(|e| e.0 == code))
-                .filter(|e| matches(e))
-                .collect();
-            ok |= crs_table(ui, "crs_recent", 90.0, &used, &mut sel.selected, &mut false);
-            ui.add_space(6.0);
-            let rows: Vec<&CrsEntry> = all.iter().filter(|e| matches(e)).collect();
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Predefined Coordinate Reference Systems").strong());
-                ui.label(RichText::new(format!("({})", rows.len())).weak());
-            });
-            ok |= crs_table(
-                ui,
-                "crs_all",
-                230.0,
-                &rows,
-                &mut sel.selected,
-                &mut sel.scroll,
-            );
-            proj = sel.selected.and_then(epsg_proj);
+    // A modal window with the dialogs' title bar: it can be dragged, resized
+    // by its bottom right corner and maximized, and opens in the middle of
+    // the screen. Maximized, it is another window, so the normal one keeps
+    // its place and size.
+    let id = egui::Id::new(("crs_selector", sel.maximized));
+    let screen = ctx.content_rect();
+    let center = screen.center();
+    let mut area = egui::Area::new(id)
+        .kind(egui::UiKind::Modal)
+        .order(egui::Order::Foreground)
+        .interactable(true);
+    if sel.maximized {
+        area = area
+            .movable(false)
+            .pivot(Align2::LEFT_TOP)
+            .fixed_pos(screen.min + vec2(4.0, 4.0));
+    } else {
+        // placed by its top left corner, so that its bottom right one follows
+        // the mouse when resized
+        let top_left = center - vec2(590.0, 660.0 + TITLE_H) / 2.0;
+        area = area
+            .movable(true)
+            .pivot(Align2::LEFT_TOP)
+            .default_pos(top_left);
+        if !std::mem::replace(&mut sel.placed, true) {
+            area = area.current_pos(top_left);
         }
-        // the chosen system's properties
-        ui.add_space(6.0);
-        crs_box(ui, |ui| {
-            egui::Frame::NONE
-                .inner_margin(egui::Margin::same(8))
-                .show(ui, |ui| {
-                    ui.set_min_height(86.0);
-                    ui.set_width(ui.available_width());
-                    let name = if sel.custom {
-                        Some("Custom CRS".to_string())
-                    } else {
-                        sel.selected.and_then(epsg_name)
-                    };
-                    match (&name, &proj) {
-                        (Some(name), Some(proj)) => {
-                            let (units, method) = proj_properties(proj);
-                            ui.label(RichText::new(name).strong());
-                            ui.label(format!("•  Units: {units}"));
-                            ui.label(format!("•  Method: {method}"));
-                            ui.add(
-                                egui::Label::new(
-                                    RichText::new(proj.as_str()).monospace().weak().size(11.0),
-                                )
-                                .wrap(),
+    }
+    let style = ctx.style_of(ctx.theme());
+    let fill = if style.visuals.dark_mode {
+        style.visuals.panel_fill
+    } else {
+        Color32::from_rgb(0xf3, 0xf3, 0xf3)
+    };
+    let mut clicks = crate::dialogs::TitleClicks::default();
+    let modal = egui::Modal::new(id)
+        .area(area)
+        .frame(egui::Frame::window(&style).fill(fill).inner_margin(0))
+        .show(ctx, |ui| {
+            let top = ui.cursor().top();
+            ui.add_space(TITLE_H);
+            let mut resize = egui::Resize::default()
+                .id_salt("crs_resize")
+                .default_size([590.0, 660.0])
+                .min_size([470.0, 480.0])
+                .max_size(screen.size() - vec2(8.0, 8.0 + TITLE_H));
+            if sel.maximized {
+                resize = resize.fixed_size(screen.size() - vec2(8.0, 8.0 + TITLE_H));
+            }
+            resize.show(ui, |ui| {
+                egui::Frame::NONE
+                    .inner_margin(egui::Margin::symmetric(14, 8))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label("Select the coordinate system the network's coordinates are in.");
+                        ui.add_space(6.0);
+                        egui::ComboBox::from_id_salt("crs_kind")
+                            .selected_text(if sel.custom {
+                                "Custom CRS"
+                            } else {
+                                "Predefined CRS"
+                            })
+                            .width(ui.available_width() - 8.0)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut sel.custom, false, "Predefined CRS");
+                                ui.selectable_value(&mut sel.custom, true, "Custom CRS");
+                            });
+                        ui.add_space(6.0);
+                        let mut ok = false;
+                        let mut proj = None;
+                        if sel.custom {
+                            ui.label(
+                                "Proj string (e.g. +proj=tmerc +lat_0=0 +lon_0=24 +k=0.9996 …)",
                             );
+                            ui.add(
+                                egui::TextEdit::multiline(&mut sel.proj)
+                                    .desired_rows(4)
+                                    .desired_width(f32::INFINITY)
+                                    .font(egui::TextStyle::Monospace),
+                            );
+                            let p = sel.proj.trim();
+                            match Geo::parse(p) {
+                                Ok(_) => proj = Some(p.to_string()),
+                                Err(e) if !p.is_empty() => {
+                                    ui.label(
+                                        RichText::new(e).color(Color32::from_rgb(0xc0, 0x39, 0x2b)),
+                                    );
+                                }
+                                Err(_) => {}
+                            }
+                        } else {
+                            ui.horizontal(|ui| {
+                                ui.label("Filter");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut sel.filter)
+                                        .hint_text(
+                                            "code or name, e.g. Kentucky, 2100, UTM zone 36N",
+                                        )
+                                        .desired_width(f32::INFINITY),
+                                );
+                            });
+                            let words: Vec<String> = sel
+                                .filter
+                                .split_whitespace()
+                                .map(str::to_lowercase)
+                                .collect();
+                            let matches =
+                                |c: &CrsEntry| words.iter().all(|w| c.2.contains(w.as_str()));
+                            let all = crs_list();
+                            ui.add_space(6.0);
+                            ui.label(
+                                RichText::new("Recently Used Coordinate Reference Systems")
+                                    .strong(),
+                            );
+                            let used: Vec<&CrsEntry> = recent
+                                .iter()
+                                .filter_map(|c| c.parse::<u32>().ok())
+                                .filter_map(|code| all.iter().find(|e| e.0 == code))
+                                .filter(|e| matches(e))
+                                .collect();
+                            ok |= crs_table(
+                                ui,
+                                "crs_recent",
+                                90.0,
+                                &used,
+                                &mut sel.selected,
+                                &mut false,
+                            );
+                            ui.add_space(6.0);
+                            let rows: Vec<&CrsEntry> = all.iter().filter(|e| matches(e)).collect();
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new("Predefined Coordinate Reference Systems")
+                                        .strong(),
+                                );
+                                ui.label(RichText::new(format!("({})", rows.len())).weak());
+                            });
+                            // the list takes the height the window has left
+                            let h_all = (ui.available_height() - 190.0).max(120.0);
+                            ok |= crs_table(
+                                ui,
+                                "crs_all",
+                                h_all,
+                                &rows,
+                                &mut sel.selected,
+                                &mut sel.scroll,
+                            );
+                            proj = sel.selected.and_then(epsg_proj);
                         }
-                        _ => {
-                            ui.label(RichText::new("No coordinate system selected").weak());
+                        // the chosen system's properties
+                        ui.add_space(6.0);
+                        crs_box(ui, |ui| {
+                            egui::Frame::NONE
+                                .inner_margin(egui::Margin::same(8))
+                                .show(ui, |ui| {
+                                    ui.set_min_height(86.0);
+                                    ui.set_width(ui.available_width());
+                                    let name = if sel.custom {
+                                        Some("Custom CRS".to_string())
+                                    } else {
+                                        sel.selected.and_then(epsg_name)
+                                    };
+                                    match (&name, &proj) {
+                                        (Some(name), Some(proj)) => {
+                                            let (units, method) = proj_properties(proj);
+                                            ui.label(RichText::new(name).strong());
+                                            ui.label(format!("•  Units: {units}"));
+                                            ui.label(format!("•  Method: {method}"));
+                                            ui.add(
+                                                egui::Label::new(
+                                                    RichText::new(proj.as_str())
+                                                        .monospace()
+                                                        .weak()
+                                                        .size(11.0),
+                                                )
+                                                .wrap(),
+                                            );
+                                        }
+                                        _ => {
+                                            ui.label(
+                                                RichText::new("No coordinate system selected")
+                                                    .weak(),
+                                            );
+                                        }
+                                    }
+                                });
+                        });
+                        ui.add_space(10.0);
+                        let chosen = if sel.custom {
+                            proj.clone()
+                        } else {
+                            sel.selected.map(|c| c.to_string())
+                        };
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Help").clicked() {
+                                crate::help::open(ui.ctx(), "Using a Basemap");
+                            }
+                            if ui.button("Cancel").clicked() {
+                                result = Some(None);
+                            }
+                            if ui
+                                .add_enabled(chosen.is_some(), egui::Button::new("OK"))
+                                .clicked()
+                            {
+                                ok = true;
+                            }
+                        });
+                        if ok && chosen.is_some() {
+                            result = Some(chosen);
                         }
-                    }
-                });
+                    });
+            });
+            let w = ui.min_rect();
+            let bar = Rect::from_min_max(pos2(w.left(), top), pos2(w.right(), top + TITLE_H));
+            clicks = crate::dialogs::title_bar(
+                ui,
+                bar,
+                "Coordinate Reference System Selector",
+                fill,
+                Some(sel.maximized),
+                true,
+            );
         });
-        ui.add_space(10.0);
-        let chosen = if sel.custom {
-            proj.clone()
-        } else {
-            sel.selected.map(|c| c.to_string())
-        };
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button("Help").clicked() {
-                crate::help::open(ui.ctx(), "Using a Basemap");
-            }
-            if ui.button("Cancel").clicked() {
-                result = Some(None);
-            }
-            if ui
-                .add_enabled(chosen.is_some(), egui::Button::new("OK"))
-                .clicked()
-            {
-                ok = true;
-            }
-        });
-        if ok && chosen.is_some() {
-            result = Some(chosen);
-        }
-    });
-    if modal.should_close() && result.is_none() {
+    if clicks.maximize {
+        sel.maximized = !sel.maximized;
+    }
+    if (modal.should_close() || clicks.close) && result.is_none() {
         result = Some(None);
     }
     result
+}
+
+/// Removes the basemap (Basemap > Unload).
+fn unload(app: &mut EpanetApp) {
+    app.prefs.basemap = BasemapKind::None;
+    app.basemap.image = None;
+    app.basemap.georef = None;
+    app.basemap.align = None;
 }
 
 /// The Basemap ▾ drop-down of the Map toolbar, as EPANET-UI's.
@@ -1538,10 +1670,7 @@ pub fn menu(app: &mut EpanetApp, ui: &mut Ui) {
         ui.close();
     }
     if menu_item(ui, Icon::Delete, "Unload", loaded).clicked() {
-        app.prefs.basemap = BasemapKind::None;
-        app.basemap.image = None;
-        app.basemap.georef = None;
-        app.basemap.align = None;
+        unload(app);
         ui.close();
     }
     ui.separator();
@@ -2163,6 +2292,131 @@ mod tests {
         let last = *widths.last().unwrap();
         assert!(last < 560.0, "{widths:?}");
         assert_eq!(widths[5], last, "{widths:?}");
+    }
+
+    /// The ✕ beside a basemap error unloads the basemap.
+    #[test]
+    fn error_message_closes() {
+        let (ctx, mut app) = crate::msx::tests::new_app();
+        let (name, text) = eui_core::examples::ALL[0];
+        app.load_example(name, text);
+        app.dialog = crate::app::Dialog::None;
+        // a web basemap with a coordinate system that cannot be used
+        app.prefs
+            .basemap_crs
+            .insert(app.file_name.clone(), "EPSG:99999".into());
+        app.prefs.basemap = BasemapKind::OpenStreetMap;
+        app.prefs.show_basemap = true;
+        let run = |app: &mut EpanetApp, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1200.0, 800.0))),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                app.refresh_geometry();
+                egui::CentralPanel::default().show(ui, |ui| crate::map::show(app, ui));
+            });
+            out.textures_delta.clear();
+            out.shapes.iter().find_map(|c| match &c.shape {
+                Shape::Text(t) if t.galley.text().starts_with("Basemap:") => {
+                    Some(t.visual_bounding_rect())
+                }
+                _ => None,
+            })
+        };
+        run(&mut app, Vec::new());
+        let msg = run(&mut app, Vec::new()).expect("no basemap message");
+        let x = pos2(msg.right() + 14.0, msg.center().y);
+        let click = |pressed| egui::Event::PointerButton {
+            pos: x,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        run(&mut app, vec![egui::Event::PointerMoved(x)]);
+        run(&mut app, vec![click(true)]);
+        run(&mut app, vec![click(false)]);
+        assert_eq!(app.prefs.basemap, BasemapKind::None);
+        assert!(run(&mut app, Vec::new()).is_none());
+    }
+
+    /// The selector resizes by its corner, maximizes with a double click on
+    /// its title and closes with its ✕.
+    #[test]
+    fn crs_selector_resizes_maximizes_and_closes() {
+        let ctx = egui::Context::default();
+        let size = vec2(1400.0, 900.0);
+        let mut sel = CrsSelector::new("3089");
+        let run = |sel: &mut CrsSelector, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+                events,
+                time: Some(ctx.input(|i| i.time) + 1.0 / 60.0),
+                ..Default::default()
+            };
+            let mut result = None;
+            let mut out = ctx.run_ui(input, |ui| result = crs_selector(ui.ctx(), sel, &[]));
+            out.textures_delta.clear();
+            result
+        };
+        let rect = |maximized: bool| {
+            ctx.memory(|m| m.area_rect(egui::Id::new(("crs_selector", maximized))))
+                .expect("no selector")
+        };
+        let press = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        for _ in 0..5 {
+            run(&mut sel, Vec::new());
+        }
+        let before = rect(false);
+        assert!(
+            before.width() > 580.0 && before.height() > 600.0,
+            "{before:?}"
+        );
+        // the bottom right corner, 100 px right and 60 px down
+        let from = before.right_bottom() - vec2(4.0, 4.0);
+        run(&mut sel, vec![egui::Event::PointerMoved(from)]);
+        run(&mut sel, vec![press(from, true)]);
+        for k in 1..=10 {
+            let p = from + vec2(100.0, 60.0) * (k as f32 / 10.0);
+            run(&mut sel, vec![egui::Event::PointerMoved(p)]);
+        }
+        run(&mut sel, vec![press(from + vec2(100.0, 60.0), false)]);
+        for _ in 0..3 {
+            run(&mut sel, Vec::new());
+        }
+        let after = rect(false);
+        assert!(
+            (after.width() - before.width() - 100.0).abs() < 4.0,
+            "{before:?} {after:?}"
+        );
+        assert!(
+            (after.height() - before.height() - 60.0).abs() < 4.0,
+            "{before:?} {after:?}"
+        );
+        // a double click on the title maximizes it
+        let title = pos2(after.left() + 60.0, after.top() + 15.0);
+        run(&mut sel, vec![egui::Event::PointerMoved(title)]);
+        for pressed in [true, false, true, false] {
+            run(&mut sel, vec![press(title, pressed)]);
+        }
+        for _ in 0..3 {
+            run(&mut sel, Vec::new());
+        }
+        assert!(sel.maximized);
+        let max = rect(true);
+        assert!(max.width() > 1380.0 && max.height() > 880.0, "{max:?}");
+        // the ✕ closes it
+        let x = pos2(max.right() - 27.0, max.top() + 17.0);
+        run(&mut sel, vec![egui::Event::PointerMoved(x)]);
+        run(&mut sel, vec![press(x, true)]);
+        let closed = run(&mut sel, vec![press(x, false)]);
+        assert_eq!(closed, Some(None));
     }
     #[test]
     fn utm_codes() {
