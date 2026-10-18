@@ -219,9 +219,11 @@ fn cell(ui: &mut Ui, width: f32, selected: bool, text: RichText) -> egui::Respon
 }
 
 /// A selector's list: a header and one selectable row per entry. Returns
-/// the row double-clicked.
+/// the row double-clicked. Each list has its own `id`, so one does not take
+/// the column widths of another shown in the same place before it.
 fn list(
     ui: &mut Ui,
+    id: &str,
     columns: &[(&str, f32)],
     rows: &[Vec<String>],
     selected: &mut usize,
@@ -240,11 +242,12 @@ fn list(
             ui.set_min_size(vec2(w, height));
             ui.set_max_width(w + 16.0);
             egui::ScrollArea::vertical()
+                .id_salt(id)
                 .max_height(height)
                 .max_width(w + 16.0)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    egui::Grid::new("form_list")
+                    egui::Grid::new(id)
                         .num_columns(columns.len())
                         .spacing([0.0, 2.0])
                         .show(ui, |ui| {
@@ -368,7 +371,7 @@ fn pattern_selector_body(app: &mut EpanetApp, ui: &mut Ui, panel: Option<f32>) -
         let mut sel = app.forms.selected;
         let c = (w - 16.0).max(100.0);
         let cols = [("Name", c * 0.35), ("Description", c * 0.65)];
-        if list(ui, &cols, &rows, &mut sel, 180.0).is_some() {
+        if list(ui, "pattern_list", &cols, &rows, &mut sel, 180.0).is_some() {
             action = Some("Edit");
         }
         app.forms.selected = sel;
@@ -379,6 +382,7 @@ fn pattern_selector_body(app: &mut EpanetApp, ui: &mut Ui, panel: Option<f32>) -
             let mut sel = app.forms.selected;
             if list(
                 ui,
+                "pattern_list",
                 &[("Name", 140.0), ("Description", 260.0)],
                 &rows,
                 &mut sel,
@@ -510,7 +514,7 @@ fn curve_selector_body(app: &mut EpanetApp, ui: &mut Ui, panel: Option<f32>) -> 
             ("Type", c * 0.25),
             ("Description", c * 0.45),
         ];
-        if list(ui, &cols, &rows, &mut sel, 220.0).is_some() {
+        if list(ui, "curve_list", &cols, &rows, &mut sel, 220.0).is_some() {
             action = Some("Edit");
         }
         app.forms.selected = sel;
@@ -521,6 +525,7 @@ fn curve_selector_body(app: &mut EpanetApp, ui: &mut Ui, panel: Option<f32>) -> 
             let mut sel = app.forms.selected;
             if list(
                 ui,
+                "curve_list",
                 &[("Name", 120.0), ("Type", 80.0), ("Description", 220.0)],
                 &rows,
                 &mut sel,

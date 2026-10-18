@@ -1,5 +1,6 @@
-//! The Project Explorer panel (right), as in EPANET-UI's `projectframe.lfm`:
-//! a tree of project data categories above the Property Editor.
+//! The Project Explorer panel (right unless the user moves it), as in
+//! EPANET-UI's `projectframe.lfm`: a tree of project data categories above
+//! the Property Editor.
 
 use egui::{Color32, RichText, Ui};
 use eui_core::props::{self, Element, OptionCategory, PropKind};
@@ -8,62 +9,57 @@ use eui_core::{LinkKind, LinkVar, NodeKind, NodeVar};
 use crate::app::{EpanetApp, ExplorerItem};
 use crate::i18n::tr;
 use crate::style;
-use crate::viewer::panel_header;
 
+/// The Project Explorer and the Property Editor, as they first are: the
+/// tree above, with a splitter between them.
+#[cfg(test)]
 pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
-    let pal = app.palette();
+    use crate::dock::Pane;
     egui::Panel::right("project_explorer")
         .default_size(300.0)
-        .size_range(240.0..=520.0)
-        .resizable(true)
-        .frame(egui::Frame::NONE.fill(ui.visuals().panel_fill))
         .show(ui, |ui| {
-            panel_header(ui, "Project Explorer", pal.menu);
-            // The tree and the Property Editor share the height through a
-            // draggable splitter, as in EPANET-UI.
-            let tree_bg = if ui.visuals().dark_mode {
-                ui.visuals().extreme_bg_color
-            } else {
-                Color32::WHITE
-            };
-            // Not below the default: the first frame (in the browser) can be
-            // laid out before the window has its real height.
-            let max_tree = (ui.available_height() - 120.0).max(400.0);
-            egui::Panel::top("project_tree")
-                .default_size(400.0)
-                .size_range(60.0..=max_tree)
-                .resizable(true)
-                .frame(egui::Frame::NONE.fill(tree_bg))
-                .show(ui, |ui| {
-                    egui::ScrollArea::vertical()
-                        .id_salt("tree")
-                        .auto_shrink(false)
-                        .show(ui, |ui| {
-                            // The tree sits on white, as in EPANET-UI.
-                            egui::Frame::NONE
-                                .inner_margin(egui::Margin::symmetric(8, 4))
-                                .show(ui, |ui| {
-                                    ui.set_width(ui.available_width());
-                                    tree(app, ui)
-                                });
-                        });
-                });
-            // Reset edit buffers whenever the edited object or the project changes.
-            let owner = (app.selection, app.explorer, app.generation);
-            if app.buffer_owner != Some(owner) {
-                app.buffers.clear();
-                app.buffer_owner = Some(owner);
-                app.prop_hint.clear();
-            }
-            hint_box(app, ui);
-            if ui.input(|i| i.key_pressed(egui::Key::F1)) {
-                crate::help::open(ui.ctx(), help_topic(app));
-            }
-            egui::ScrollArea::vertical()
-                .id_salt("props")
-                .auto_shrink(false)
-                .show(ui, |ui| editor(app, ui));
+            crate::dock::stack(app, ui, &[Pane::ProjectExplorer, Pane::PropertyEditor]);
         });
+}
+
+/// The Project Explorer panel (see [`crate::dock`]): the tree, on white as
+/// in EPANET-UI. Returns its title bar.
+pub(crate) fn tree_pane(app: &mut EpanetApp, ui: &mut Ui) -> egui::Response {
+    let bar = crate::dock::title_bar(ui, "Project Explorer", app.palette().menu);
+    egui::ScrollArea::vertical()
+        .id_salt("tree")
+        .auto_shrink(false)
+        .show(ui, |ui| {
+            egui::Frame::NONE
+                .inner_margin(egui::Margin::symmetric(8, 4))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    tree(app, ui)
+                });
+        });
+    bar
+}
+
+/// The Property Editor panel: what the item chosen in the tree holds.
+/// Returns its title bar.
+pub(crate) fn editor_pane(app: &mut EpanetApp, ui: &mut Ui) -> egui::Response {
+    let bar = crate::dock::title_bar(ui, "Property Editor", app.palette().menu);
+    // Reset edit buffers whenever the edited object or the project changes.
+    let owner = (app.selection, app.explorer, app.generation);
+    if app.buffer_owner != Some(owner) {
+        app.buffers.clear();
+        app.buffer_owner = Some(owner);
+        app.prop_hint.clear();
+    }
+    hint_box(app, ui);
+    if ui.input(|i| i.key_pressed(egui::Key::F1)) {
+        crate::help::open(ui.ctx(), help_topic(app));
+    }
+    egui::ScrollArea::vertical()
+        .id_salt("props")
+        .auto_shrink(false)
+        .show(ui, |ui| editor(app, ui));
+    bar
 }
 
 fn tree(app: &mut EpanetApp, ui: &mut Ui) {
@@ -1223,5 +1219,71 @@ mod tree_tests {
                 "{s} not fully visible: {visible:?}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod switch_tests {
+    use super::*;
+    use eframe::App as _;
+
+    /// Data Curves after Time Patterns is laid out right from its first
+    /// frame: the panel does not widen and settle again.
+    #[test]
+    fn curves_after_patterns_do_not_jump() {
+        let ctx = egui::Context::default();
+        let mut app = EpanetApp::new(&eframe::CreationContext::_new_kittest(ctx.clone()));
+        app.load_example("Net1", eui_core::examples::NET1);
+        let mut frame = eframe::Frame::_new_kittest();
+        let mut events = Vec::new();
+        let click = |at: egui::Pos2, events: &mut Vec<egui::Event>, pressed| {
+            events.push(egui::Event::PointerMoved(at));
+            events.push(egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            });
+        };
+        let mut frames = Vec::new();
+        for f in 0..14 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1400.0, 900.0),
+                )),
+                events: std::mem::take(&mut events),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                app.logic(ui.ctx(), &mut frame);
+                app.ui(ui, &mut frame);
+            });
+            out.textures_delta.clear();
+            let texts: Vec<(String, egui::Rect)> = out
+                .shapes
+                .iter()
+                .filter_map(|c| match &c.shape {
+                    egui::Shape::Text(t) => {
+                        Some((t.galley.text().to_string(), t.visual_bounding_rect()))
+                    }
+                    _ => None,
+                })
+                .collect();
+            let at = |s: &str| texts.iter().find(|t| t.0 == s).map(|t| t.1);
+            match f {
+                2 | 3 => click(at("Time Patterns").unwrap().center(), &mut events, f == 2),
+                8 | 9 => click(at("Data Curves").unwrap().center(), &mut events, f == 8),
+                _ => {}
+            }
+            if app.explorer == ExplorerItem::Curves {
+                frames.push((at("Data Curves").unwrap(), at("Description").unwrap()));
+            }
+        }
+        assert!(frames.len() > 2);
+        for w in frames.windows(2) {
+            assert_eq!(w[0], w[1], "the panel moved");
+        }
+        assert!(frames[0].1.max.x <= 1400.0, "{:?}", frames[0]);
     }
 }

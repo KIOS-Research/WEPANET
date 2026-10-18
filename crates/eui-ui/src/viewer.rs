@@ -1,24 +1,10 @@
-//! The Map Viewer panel (left), as in EPANET-UI's `mapviewerframe.lfm`:
-//! View (Map / Report), Themes, Time and Layers.
+//! The Map Viewer panel (left unless the user moves it), as in EPANET-UI's
+//! `mapviewerframe.lfm`: View (Map / Report), Themes, Time and Layers.
 
-use egui::{Align2, Color32, RichText, Sense, Ui, vec2};
+use egui::{Color32, RichText, Sense, Ui, vec2};
 
 use crate::app::{EpanetApp, Tool, ViewMode};
 use crate::style::{LinkTheme, NodeTheme};
-
-/// A panel title bar in the menu color, as EPANET-UI draws them.
-pub(crate) fn panel_header(ui: &mut Ui, title: &str, color: Color32) {
-    let title = crate::i18n::tr(title);
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::hover());
-    ui.painter().rect_filled(rect, 0.0, color);
-    ui.painter().text(
-        rect.center(),
-        Align2::CENTER_CENTER,
-        title,
-        crate::fonts::bold(13.0),
-        Color32::WHITE,
-    );
-}
 
 /// Elapsed time as EPANET-UI shows it, e.g. `06:00 hrs`.
 fn format_hours(secs: u32) -> String {
@@ -38,41 +24,36 @@ pub(crate) fn group_box(ui: &mut Ui, title: &str, add: impl FnOnce(&mut Ui)) {
     ui.add_space(6.0);
 }
 
-pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
+/// The panel's contents (see [`crate::dock`]); returns its title bar.
+pub(crate) fn pane(app: &mut EpanetApp, ui: &mut Ui) -> egui::Response {
     let pal = app.palette();
-    let wide = app.rpt.selector != crate::reports::Selector::None;
-    egui::Panel::left("map_viewer")
-        .default_size(250.0)
-        .size_range(if wide { 300.0..=420.0 } else { 220.0..=340.0 })
-        .resizable(true)
-        .frame(egui::Frame::NONE.fill(pal.form))
+    tool_hint(app, ui);
+    crate::reports::selector(app, ui);
+    let bar = crate::dock::title_bar(ui, "Map Viewer", pal.menu);
+    // The Overview Map takes the room the panel's contents leave (their
+    // height is measured each frame), so that no scroll bar is needed.
+    let content_id = egui::Id::new("map_viewer_content_height");
+    let content_h: f32 = ui.ctx().data(|d| d.get_temp(content_id)).unwrap_or(520.0);
+    if app.prefs.show_overview {
+        let h = (ui.available_height() - content_h - 4.0).max(120.0);
+        egui::Panel::bottom("overview_map")
+            .exact_size(h)
+            .frame(egui::Frame::NONE.fill(pal.form).inner_margin(6))
+            .show(ui, |ui| overview(app, ui));
+    }
+    egui::ScrollArea::vertical()
+        .id_salt("map_viewer")
+        .auto_shrink(false)
         .show(ui, |ui| {
-            tool_hint(app, ui);
-            crate::reports::selector(app, ui);
-            panel_header(ui, "Map Viewer", pal.menu);
-            // The Overview Map takes the room the panel's contents leave (their
-            // height is measured each frame), so that no scroll bar is needed.
-            let content_id = egui::Id::new("map_viewer_content_height");
-            let content_h: f32 = ui.ctx().data(|d| d.get_temp(content_id)).unwrap_or(520.0);
-            if app.prefs.show_overview {
-                let h = (ui.available_height() - content_h - 4.0).max(120.0);
-                egui::Panel::bottom("overview_map")
-                    .exact_size(h)
-                    .frame(egui::Frame::NONE.fill(pal.form).inner_margin(6))
-                    .show(ui, |ui| overview(app, ui));
-            }
-            egui::ScrollArea::vertical()
-                .auto_shrink(false)
-                .show(ui, |ui| {
-                    let h = egui::Frame::NONE
-                        .inner_margin(egui::Margin::symmetric(10, 8))
-                        .show(ui, |ui| contents(app, ui))
-                        .response
-                        .rect
-                        .height();
-                    ui.ctx().data_mut(|d| d.insert_temp(content_id, h));
-                });
+            let h = egui::Frame::NONE
+                .inner_margin(egui::Margin::symmetric(10, 8))
+                .show(ui, |ui| contents(app, ui))
+                .response
+                .rect
+                .height();
+            ui.ctx().data_mut(|d| d.insert_temp(content_id, h));
         });
+    bar
 }
 
 /// A theme drop-down. The list is tall enough to show every theme without a

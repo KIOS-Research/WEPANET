@@ -175,6 +175,8 @@ pub struct Prefs {
     pub menu_tab: MenuTab,
     pub show_viewer: bool,
     pub show_explorer: bool,
+    /// Where the side panels are (the user moves them).
+    pub dock: crate::dock::Layout,
     // map display settings (Map > Settings)
     /// Version of the map display defaults the settings were saved with.
     #[serde(default)]
@@ -277,6 +279,7 @@ impl Default for Prefs {
             menu_tab: MenuTab::Project,
             show_viewer: true,
             show_explorer: true,
+            dock: Default::default(),
             map_style: MAP_STYLE,
             node_size: 3.0,
             link_width: 1.0,
@@ -1640,12 +1643,7 @@ impl eframe::App for EpanetApp {
             crate::dialogs::show(self, ui.ctx());
             return;
         }
-        if self.prefs.show_viewer {
-            crate::viewer::show(self, ui);
-        }
-        if self.prefs.show_explorer {
-            crate::explorer::show(self, ui);
-        }
+        crate::dock::show(self, ui);
         // under the map, between the side panels
         crate::python::console::show(self, ui);
         // The map sits inset in the window, framed, as in EPANET-UI.

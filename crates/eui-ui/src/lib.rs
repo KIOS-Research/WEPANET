@@ -10,6 +10,7 @@ mod calibration;
 mod catalog;
 mod data_view;
 mod dialogs;
+mod dock;
 mod explorer;
 mod export;
 mod fireflow;
