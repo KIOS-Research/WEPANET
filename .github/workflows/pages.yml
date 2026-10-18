@@ -1,8 +1,10 @@
 name: Web app
 
+# Publishes main at the site's root and dev under dev/, both on every push to
+# either: GitHub Pages holds one site per repository.
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   workflow_dispatch:
 
 permissions:
@@ -17,30 +19,49 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      # one target directory, so dev reuses what main built
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
+          path: main
+      - uses: actions/checkout@v4
+        with:
+          ref: dev
+          path: dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: main -> ../target
       - uses: mymindstorm/setup-emsdk@v14
-      - name: Build EPANET engine (Emscripten)
-        run: bash web-engine/build.sh
       - name: Install trunk
         run: cargo install trunk --locked
-      - name: Build web app
-        working-directory: apps/web
-        run: trunk build --release --public-url "/${{ github.event.repository.name }}/"
+      - name: Build the web apps
+        run: |
+          for branch in main dev; do
+            url="/${{ github.event.repository.name }}/"
+            if [ "$branch" = dev ]; then url="${url}dev/"; fi
+            bash "$branch/web-engine/build.sh"
+            (cd "$branch/apps/web" && trunk build --release --public-url "$url")
+          done
+          mkdir -p site/dev
+          cp -r main/apps/web/dist/. site/
+          cp -r dev/apps/web/dist/. site/dev/
       # Benchmarks hosted where web pages may not download them (no CORS) are
       # published next to the app, gzipped (crates/eui-ui/src/catalog.rs).
       - name: Add large benchmark networks
         run: |
-          mkdir -p apps/web/dist/benchmarks
+          mkdir -p site/benchmarks site/dev/benchmarks
           curl -fsSL --retry 3 https://filedn.com/lumBFq2P9S74PNoLPWtzxG4/Benchmarks/ky-all-customers.inp \
-            | gzip -9 > apps/web/dist/benchmarks/ky-all-customers.inp.gz
+            | gzip -9 > site/benchmarks/ky-all-customers.inp.gz
+          cp site/benchmarks/ky-all-customers.inp.gz site/dev/benchmarks/
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: apps/web/dist
+          path: site
 
   deploy:
     needs: build
