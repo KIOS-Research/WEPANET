@@ -19,14 +19,16 @@ pub enum Pane {
     ProjectExplorer,
     PropertyEditor,
     Layers,
+    Identify,
 }
 
 impl Pane {
-    const ALL: [Pane; 4] = [
+    const ALL: [Pane; 5] = [
         Pane::MapViewer,
         Pane::ProjectExplorer,
         Pane::PropertyEditor,
         Pane::Layers,
+        Pane::Identify,
     ];
 
     fn title(self) -> &'static str {
@@ -35,20 +37,21 @@ impl Pane {
             Pane::ProjectExplorer => "Project Explorer",
             Pane::PropertyEditor => "Property Editor",
             Pane::Layers => "Map Layers",
+            Pane::Identify => "Identify Results",
         }
     }
 
     fn width(self) -> f32 {
         match self {
             Pane::MapViewer | Pane::Layers => 250.0,
-            Pane::ProjectExplorer | Pane::PropertyEditor => 300.0,
+            Pane::ProjectExplorer | Pane::PropertyEditor | Pane::Identify => 300.0,
         }
     }
 
     /// Its height above the next panel on its side, at first.
     fn height(self) -> f32 {
         match self {
-            Pane::ProjectExplorer => 428.0,
+            Pane::ProjectExplorer | Pane::Identify => 428.0,
             Pane::MapViewer => 560.0,
             Pane::PropertyEditor | Pane::Layers => 300.0,
         }
@@ -60,7 +63,7 @@ impl Pane {
             // the tree sits on white, as in EPANET-UI
             Pane::ProjectExplorer if ui.visuals().dark_mode => ui.visuals().extreme_bg_color,
             Pane::ProjectExplorer => Color32::WHITE,
-            Pane::PropertyEditor => ui.visuals().panel_fill,
+            Pane::PropertyEditor | Pane::Identify => ui.visuals().panel_fill,
         }
     }
 
@@ -69,6 +72,7 @@ impl Pane {
             Pane::MapViewer => app.prefs.show_viewer,
             Pane::ProjectExplorer | Pane::PropertyEditor => app.prefs.show_explorer,
             Pane::Layers => !app.prefs.hide_layers,
+            Pane::Identify => app.prefs.show_explorer,
         }
     }
 
@@ -78,6 +82,7 @@ impl Pane {
             Pane::ProjectExplorer => crate::explorer::tree_pane(app, ui),
             Pane::PropertyEditor => crate::explorer::editor_pane(app, ui),
             Pane::Layers => crate::layers::pane(app, ui),
+            Pane::Identify => crate::layers::identify_pane(app, ui),
         }
     }
 }
@@ -114,7 +119,7 @@ impl Default for Layout {
         Layout {
             left: vec![Group::of(&[Pane::MapViewer, Pane::Layers])],
             right: vec![
-                Group::of(&[Pane::ProjectExplorer]),
+                Group::of(&[Pane::ProjectExplorer, Pane::Identify]),
                 Group::of(&[Pane::PropertyEditor]),
             ],
             floating: Vec::new(),
@@ -190,6 +195,10 @@ impl Layout {
                 Pane::Layers if self.contains(Pane::MapViewer) => {
                     self.put(p, Place::With(Pane::MapViewer));
                     self.activate(Pane::MapViewer);
+                }
+                Pane::Identify if self.contains(Pane::ProjectExplorer) => {
+                    self.put(p, Place::With(Pane::ProjectExplorer));
+                    self.activate(Pane::ProjectExplorer);
                 }
                 Pane::MapViewer | Pane::Layers => self.put(p, Place::Left(false)),
                 _ => self.put(p, Place::Right(false)),
@@ -733,8 +742,13 @@ mod tests {
         assert!(layers.center().x > viewer.center().x);
         assert!(t.iter().any(|(s, _)| s == "Themes"));
         assert!(explorer.center().x > 1000.0);
-        // the Property Editor under the Project Explorer
-        assert!((editor.center().x - explorer.center().x).abs() < 1.0);
+        // the Identify Results a tab beside the Project Explorer, which shows
+        let results = at(&t, "Identify Results");
+        assert!((results.center().y - explorer.center().y).abs() < 1.0);
+        assert!(results.center().x > explorer.center().x);
+        assert!(t.iter().any(|(s, _)| s == "Title / Notes"));
+        // the Property Editor under them
+        assert!(editor.left() > 1000.0);
         assert!(
             editor.top() > explorer.bottom() + 100.0,
             "{explorer:?} {editor:?}"
@@ -783,7 +797,8 @@ mod tests {
                 vec![Pane::ProjectExplorer]
             ]
         );
-        assert!(right.is_empty());
+        // its tab stays
+        assert_eq!(right, [vec![Pane::Identify]]);
         let t = frame(&mut app, &ctx, vec![]);
         let (viewer, explorer) = (at(&t, "Map Viewer"), at(&t, "Project Explorer"));
         assert!(explorer.center().x < 400.0 && explorer.top() > viewer.bottom());
@@ -797,7 +812,7 @@ mod tests {
         // and out again, to the top of the right edge
         drag(&mut app, &ctx, "Property Editor", egui::pos2(1380.0, 200.0));
         let (left, right) = sides(&app.prefs.docks);
-        assert_eq!(right, [vec![Pane::PropertyEditor]]);
+        assert_eq!(right, [vec![Pane::PropertyEditor], vec![Pane::Identify]]);
         assert_eq!(left[1], [Pane::ProjectExplorer]);
         assert!(
             at(&frame(&mut app, &ctx, vec![]), "Property Editor")
@@ -825,14 +840,16 @@ mod tests {
         // the Map Layers joins the Map Viewer as a tab
         assert_eq!(left, [vec![Pane::MapViewer, Pane::Layers]]);
         assert_eq!(l.left[0].active, Pane::MapViewer);
-        assert_eq!(right, [vec![Pane::ProjectExplorer]]);
+        // the Identify Results joins the Project Explorer as a tab
+        assert_eq!(right, [vec![Pane::ProjectExplorer, Pane::Identify]]);
+        l.put(Pane::Identify, Place::Floating);
         l.put(Pane::PropertyEditor, Place::Right(true));
         let (_, right) = sides(&l);
         assert_eq!(
             right,
             [vec![Pane::PropertyEditor], vec![Pane::ProjectExplorer]]
         );
-        assert!(l.floating.is_empty());
+        assert_eq!(l.floating, [Pane::Identify]);
         // the last tab of a group taken away: the group goes
         l.put(Pane::PropertyEditor, Place::With(Pane::ProjectExplorer));
         let (_, right) = sides(&l);

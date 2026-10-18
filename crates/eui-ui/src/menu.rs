@@ -506,6 +506,23 @@ fn map_toolbar(app: &mut EpanetApp, ui: &mut Ui) {
             ui.close();
         }
     });
+    let identifying = app.tool == crate::app::Tool::Identify;
+    if tool_button(
+        ui,
+        Icon::Identify,
+        "Identify",
+        true,
+        identifying,
+        "Click on the map to see the features of the map layers there",
+    )
+    .clicked()
+    {
+        app.set_tool(if identifying {
+            crate::app::Tool::Select
+        } else {
+            crate::app::Tool::Identify
+        });
+    }
     let export = tool_button(
         ui,
         Icon::Export,

@@ -152,6 +152,7 @@ pub fn apply(app: &mut EpanetApp, project: Project, image: Option<Vec<u8>>) {
     } else if app.prefs.basemap == BasemapKind::Image {
         app.prefs.basemap = BasemapKind::None;
     }
+    app.saved_layers = project.map_layers.clone();
     app.prefs.map_layers = project.map_layers;
     if let Some(t) = project.node_theme {
         app.prefs.node_theme = t;
@@ -232,6 +233,38 @@ mod tests {
         assert!(!a.dirty);
         assert_eq!(a.file_name, "Town");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A new project starts without the last one's map layers.
+    #[test]
+    fn a_new_project_has_no_map_layers() {
+        let ctx = egui::Context::default();
+        let mut a = EpanetApp::new(&eframe::CreationContext::_new_kittest(ctx));
+        a.load_example("Net1", eui_core::examples::NET1);
+        a.prefs.map_layers.push(MapLayer::default());
+        a.new_project();
+        assert!(a.prefs.map_layers.is_empty());
+    }
+
+    /// Map layers added and not saved with the project are changes to lose.
+    #[test]
+    fn unsaved_map_layers_are_changes() {
+        let ctx = egui::Context::default();
+        let mut a = EpanetApp::new(&eframe::CreationContext::_new_kittest(ctx.clone()));
+        a.load_example("Net1", eui_core::examples::NET1);
+        assert!(!a.unsaved());
+        a.prefs.map_layers.push(MapLayer::default());
+        assert!(a.unsaved());
+        // saved with the project, and opened again: nothing to lose
+        let bytes = write(&a).unwrap();
+        let mut b = EpanetApp::new(&eframe::CreationContext::_new_kittest(ctx));
+        open(&mut b, "Town.wepanet", &bytes, None);
+        assert!(!b.unsaved());
+        b.prefs.map_layers[0].opacity = 0.5;
+        assert!(b.unsaved());
+        // and the preferences do not keep them
+        let json = serde_json::to_string(&b.prefs).unwrap();
+        assert!(!json.contains("map_layers"));
     }
 
     #[test]

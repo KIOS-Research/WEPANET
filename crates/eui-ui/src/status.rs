@@ -144,7 +144,9 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
                 };
                 ui.label(xy);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(egui::RichText::new(&app.status).weak());
+                    // in the room left, cut short rather than over the coordinates
+                    ui.add(egui::Label::new(egui::RichText::new(&app.status).weak()).truncate())
+                        .on_hover_text(&app.status);
                 });
             });
         });

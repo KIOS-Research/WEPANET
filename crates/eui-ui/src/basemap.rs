@@ -1263,7 +1263,7 @@ pub fn dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
 pub(crate) fn crs_label(c: &str) -> String {
     let c = c.trim();
     if c.is_empty() {
-        "Select the coordinate system…".into()
+        crate::i18n::tr("Select the coordinate system…").into()
     } else if c.starts_with('+') {
         format!("Custom CRS: {c}")
     } else {

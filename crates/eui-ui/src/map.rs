@@ -538,8 +538,11 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
 }
 
 fn handle_input(app: &mut EpanetApp, ui: &mut Ui, rect: Rect, response: &egui::Response) {
-    // Zoom with the wheel / pinch, around the cursor.
-    if let Some(hover) = response.hover_pos() {
+    // Zoom with the wheel / pinch, around the cursor (not under a window
+    // over the map, whose own list the wheel scrolls).
+    if let Some(hover) = response.hover_pos()
+        && ui.ctx().layer_id_at(hover) == Some(ui.layer_id())
+    {
         let (scroll, zoom) = ui.input(|i| (i.smooth_scroll_delta.y, i.zoom_delta()));
         let factor = (scroll as f64 * 0.002).exp() * zoom as f64;
         if (factor - 1.0).abs() > 1e-6 {

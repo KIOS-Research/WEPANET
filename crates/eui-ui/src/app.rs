@@ -165,6 +165,8 @@ pub enum Dialog {
     QualityEditor,
     ConfirmDelete,
     ConfirmReplace,
+    /// F5 / Ctrl+R in the browser with changes not saved.
+    ConfirmReload,
 }
 
 /// User preferences, persisted between sessions.
@@ -180,7 +182,9 @@ pub struct Prefs {
     pub show_explorer: bool,
     /// Where the side panels are (the user moves them).
     pub docks: crate::dock::Layout,
-    /// Layers from web map services over the map (see [`crate::layers`]).
+    /// Layers from web map services over the map (see [`crate::layers`]):
+    /// the project's, saved with it (.wepanet), not with the preferences.
+    #[serde(skip)]
     pub map_layers: Vec<crate::layers::MapLayer>,
     /// The Map Layers panel closed (Map > Layers).
     pub hide_layers: bool,
@@ -463,6 +467,9 @@ pub struct EpanetApp {
     /// Whether the document is a WEPANET project (a .wepanet file), which Save
     /// saves as one.
     pub(crate) project: bool,
+    /// The map layers as last saved with the project (or opened), to tell
+    /// whether they changed since.
+    pub(crate) saved_layers: Vec<crate::layers::MapLayer>,
     /// What a project file being opened keeps besides its network, for when
     /// the network is in (and its image basemap's picture).
     pub(crate) pending_project: Option<(crate::project::Project, Option<Vec<u8>>)>,
@@ -576,6 +583,7 @@ impl EpanetApp {
             shp_import: None,
             setup_edit: None,
             project: false,
+            saved_layers: Vec::new(),
             pending_project: None,
             setup_job: None,
             msx: Default::default(),
@@ -782,6 +790,10 @@ impl EpanetApp {
                 self.status = format!("Opened {name} with its EPANET-MSX file {}", m.name);
             }
             if name == "Untitled" {
+                // a new project starts without the last one's map layers
+                self.prefs.map_layers.clear();
+                self.saved_layers.clear();
+                self.layers = Default::default();
                 self.view.center = [0.0, 0.0];
                 self.view.scale = 1.0;
                 self.view.fit_pending = false;
@@ -824,6 +836,12 @@ impl EpanetApp {
         crate::recent::open(self, path);
     }
 
+    /// Whether something would be lost on leaving: changes to the network,
+    /// or map layers added or changed since the project was saved.
+    pub(crate) fn unsaved(&self) -> bool {
+        self.dirty || self.prefs.map_layers != self.saved_layers
+    }
+
     /// Saves the document as a WEPANET project (.wepanet): to its file if it
     /// is one already, else where the user says.
     pub(crate) fn save_project(&mut self) {
@@ -863,6 +881,7 @@ impl EpanetApp {
                 self.set_path(Some(p));
                 self.dirty = false;
                 self.project = true;
+                self.saved_layers = self.prefs.map_layers.clone();
                 if self.replace_after_save {
                     self.accept_document();
                 }
@@ -959,6 +978,9 @@ impl EpanetApp {
                 Ok(Some(name)) => {
                     self.dirty = token.1 != self.generation;
                     self.project = crate::project::is_project(&name);
+                    if self.project {
+                        self.saved_layers = self.prefs.map_layers.clone();
+                    }
                     self.file_name = name
                         .trim_end_matches(".inp")
                         .trim_end_matches(".INP")
@@ -1718,7 +1740,7 @@ impl EpanetApp {
             "{}: {}{}",
             crate::APP_NAME,
             self.file_name,
-            if self.dirty { "*" } else { "" }
+            if self.unsaved() { "*" } else { "" }
         );
         if title != self.title_sent {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
@@ -1735,6 +1757,12 @@ impl eframe::App for EpanetApp {
         self.drain_inbox();
         #[cfg(target_arch = "wasm32")]
         crate::recent::update(self);
+        #[cfg(target_arch = "wasm32")]
+        io::mark_unsaved(self.unsaved());
+        #[cfg(target_arch = "wasm32")]
+        if io::take_reload_request() && self.unsaved() {
+            self.dialog = Dialog::ConfirmReload;
+        }
         crate::style::set_decimals(self.prefs.decimals);
         crate::i18n::set(&self.prefs.language);
         for event in io::take_save_events() {
@@ -1791,6 +1819,13 @@ impl eframe::App for EpanetApp {
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, PREFS_KEY, &self.prefs);
+    }
+
+    /// Often: in the browser the preferences are only saved this way, not
+    /// when the page closes, so a reload lost what changed in the last half
+    /// minute.
+    fn auto_save_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(3)
     }
 }
 

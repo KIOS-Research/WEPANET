@@ -31,23 +31,52 @@ pub fn show(app: &mut EpanetApp, ctx: &egui::Context) {
     if !matches!(dialog, Dialog::MapSettings | Dialog::Preferences) {
         app.prefs_backup = None;
     }
+    if dialog == Dialog::ConfirmReload {
+        // F5 / Ctrl+R in the browser with changes not saved
+        egui::Modal::new(egui::Id::new("reload_page")).show(ctx, |ui| {
+            use crate::i18n::tr;
+            ui.set_width(360.0);
+            ui.label(RichText::new(tr("Reload the page?")).font(crate::fonts::bold(14.0)));
+            ui.add_space(8.0);
+            ui.label(tr(
+                "The project has changes that are not saved: reloading the page loses them.",
+            ));
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.button(tr("Save Project")).clicked() {
+                    app.dialog = Dialog::None;
+                    app.save_project();
+                }
+                if ui.button(tr("Reload")).clicked() {
+                    crate::io::reload_page();
+                }
+                if ui.button(tr("Cancel")).clicked()
+                    || ui.input(|i| i.key_pressed(egui::Key::Escape))
+                {
+                    app.dialog = Dialog::None;
+                }
+            });
+        });
+        return;
+    }
     if dialog == Dialog::ConfirmReplace {
         egui::Modal::new(egui::Id::new("unsaved_project")).show(ctx, |ui| {
+            use crate::i18n::tr;
             ui.set_width(340.0);
             ui.label(
-                RichText::new("Save changes before opening another project?")
+                RichText::new(tr("Save changes before opening another project?"))
                     .font(crate::fonts::bold(14.0)),
             );
             ui.add_space(8.0);
-            ui.label("Your current project has unsaved changes.");
+            ui.label(tr("Your current project has unsaved changes."));
             ui.add_space(12.0);
             if app.save_pending() {
                 ui.spinner();
-                ui.label("Waiting for the save to finish…");
+                ui.label(tr("Waiting for the save to finish…"));
             } else {
                 ui.horizontal(|ui| {
                     for (i, label) in ["Save", "Discard", "Cancel"].iter().enumerate() {
-                        if ui.button(*label).clicked() {
+                        if ui.button(tr(label)).clicked() {
                             app.resolve_document_change(i);
                         }
                     }
@@ -95,6 +124,7 @@ pub fn show(app: &mut EpanetApp, ctx: &egui::Context) {
         Dialog::QualityEditor => "Single Species Water Quality Editor",
         Dialog::ConfirmDelete => "Confirm Deletion",
         Dialog::ConfirmReplace => "Unsaved Changes",
+        Dialog::ConfirmReload => "Unsaved Changes",
     };
     // Message boxes are all white and can only be closed with their buttons.
     let message = matches!(
@@ -193,7 +223,7 @@ pub fn show(app: &mut EpanetApp, ctx: &egui::Context) {
                     Dialog::ErrorCodes => error_codes(ui),
                     Dialog::About => about(ui),
                     Dialog::ConfirmDelete => confirm_delete(app, ui),
-                    Dialog::ConfirmReplace => false,
+                    Dialog::ConfirmReplace | Dialog::ConfirmReload => false,
                     Dialog::RunStatus => run_status(app, ui),
                     Dialog::Preferences => preferences(app, ui),
                     Dialog::Basemap => crate::basemap::dialog(app, ui),

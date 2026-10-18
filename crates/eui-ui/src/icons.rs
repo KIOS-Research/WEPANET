@@ -75,6 +75,7 @@ pub enum Icon {
     /// The Python Console: the Python logo, in its own colors.
     Python,
     Layers,
+    Identify,
     Menu,
 }
 
@@ -195,7 +196,9 @@ fn image_of(icon: Icon) -> Option<(&'static Sheet, usize)> {
         Icon::Menu => m(35),
         Icon::Percentiles => m(36),
         Icon::FireFlow => m(40),
-        Icon::Undo | Icon::Redo | Icon::Pencil | Icon::Python | Icon::Layers => None,
+        Icon::Undo | Icon::Redo | Icon::Pencil | Icon::Python | Icon::Layers | Icon::Identify => {
+            None
+        }
     }
 }
 
@@ -284,6 +287,21 @@ pub fn paint(p: &Painter, icon: Icon, c: Pos2, size: f32, fg: Color32) {
                 block(-0.98, -0.47, -0.56, 0.45, 0.2); // tail
                 p.circle_filled(at(flip * -0.24, flip * -0.72), 0.1 * r, Color32::WHITE);
             }
+        }
+        Icon::Identify => {
+            // an "i" in a circle, with the arrow of the pointer
+            p.circle_stroke(at(-0.15, -0.15), 0.72 * r, s);
+            p.circle_filled(at(-0.15, -0.5), 0.11 * r, fg);
+            p.line_segment(
+                [at(-0.15, -0.28), at(-0.15, 0.25)],
+                Stroke::new(s.width * 1.3, fg),
+            );
+            let tip = at(0.35, 0.35);
+            p.add(Shape::convex_polygon(
+                vec![tip, at(0.95, 0.6), at(0.6, 0.95)],
+                fg,
+                Stroke::NONE,
+            ));
         }
         Icon::Layers => {
             // sheets one above the other: the top one whole, the edges of

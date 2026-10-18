@@ -335,6 +335,49 @@ pub fn save_text(
     }
 }
 
+/// Tells the page whether leaving it would lose changes, so that it asks
+/// first (index.html's `beforeunload`).
+#[cfg(target_arch = "wasm32")]
+pub fn mark_unsaved(unsaved: bool) {
+    thread_local! {
+        static MARKED: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+    }
+    if MARKED.with(|m| m.replace(Some(unsaved))) != Some(unsaved) {
+        let _ = js_sys::Reflect::set(&js_sys::global(), &"euiUnsaved".into(), &unsaved.into());
+    }
+}
+
+/// Whether F5 / Ctrl+R was pressed with changes not saved (index.html stops
+/// the reload and asks the app to ask first).
+#[cfg(target_arch = "wasm32")]
+pub fn take_reload_request() -> bool {
+    let global = js_sys::global();
+    let asked = js_sys::Reflect::get(&global, &"euiAskReload".into())
+        .ok()
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if asked {
+        let _ = js_sys::Reflect::set(&global, &"euiAskReload".into(), &false.into());
+    }
+    asked
+}
+
+/// Reloads the page, the changes given up.
+pub fn reload_page() {
+    #[cfg(target_arch = "wasm32")]
+    {
+        use wasm_bindgen::JsCast;
+        let global = js_sys::global();
+        let _ = js_sys::Reflect::set(&global, &"euiUnsaved".into(), &false.into());
+        if let Ok(location) = js_sys::Reflect::get(&global, &"location".into())
+            && let Ok(reload) = js_sys::Reflect::get(&location, &"reload".into())
+            && let Ok(reload) = reload.dyn_into::<js_sys::Function>()
+        {
+            let _ = reload.call0(&location);
+        }
+    }
+}
+
 /// What is saved: text, or a file's bytes.
 #[cfg(target_arch = "wasm32")]
 pub enum Data {

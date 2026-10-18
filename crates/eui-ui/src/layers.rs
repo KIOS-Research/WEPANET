@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use egui::{Color32, Rect, Response, RichText, Shape, Ui, pos2, vec2};
+use egui::{Color32, Pos2, Rect, Response, RichText, Shape, Ui, pos2, vec2};
 use serde::{Deserialize, Serialize};
 
 use crate::app::EpanetApp;
@@ -51,6 +51,8 @@ pub struct MapLayer {
     pub opacity: f32,
     /// The group it was added in, shown above it in the Map Layers panel.
     pub group: String,
+    /// The form a WMS answers Identify in (GetFeatureInfo's INFO_FORMAT).
+    pub info_format: String,
 }
 
 impl Default for MapLayer {
@@ -65,6 +67,7 @@ impl Default for MapLayer {
             visible: true,
             opacity: 1.0,
             group: String::new(),
+            info_format: String::new(),
         }
     }
 }
@@ -106,6 +109,49 @@ impl MapLayer {
 
     /// The address of a `w` x `h` picture of `b` (in the layer's coordinate
     /// system: x min, y min, x max, y max).
+    /// The address that asks for the features at `xy` (in the layer's
+    /// coordinate system), pixel `ij` of a `w` x `h` picture of `b`.
+    fn identify_url(&self, b: [f64; 4], w: u32, h: u32, xy: [f64; 2], ij: [i64; 2]) -> String {
+        match self.service {
+            Service::ArcGis => format!(
+                "{}/identify?geometry={},{}&geometryType=esriGeometryPoint&sr=3857&layers={}\
+                 &tolerance=6&mapExtent={},{},{},{}&imageDisplay={w},{h},96\
+                 &returnGeometry=true&f=json",
+                self.url.trim_end_matches('/'),
+                xy[0],
+                xy[1],
+                if self.layers.is_empty() {
+                    "visible".to_string()
+                } else {
+                    format!("visible:{}", self.layers.join(","))
+                },
+                b[0],
+                b[1],
+                b[2],
+                b[3]
+            ),
+            Service::Wms => {
+                let v13 = self.version.starts_with("1.3");
+                let format = if self.info_format.is_empty() {
+                    "application/json"
+                } else {
+                    &self.info_format
+                };
+                format!(
+                    "{}&QUERY_LAYERS={}&INFO_FORMAT={}&FEATURE_COUNT=20&{}={}&{}={}",
+                    self.image_url(b, w, h)
+                        .replacen("REQUEST=GetMap", "REQUEST=GetFeatureInfo", 1),
+                    encode(&self.layers.join(",")),
+                    encode(format),
+                    if v13 { "I" } else { "X" },
+                    ij[0],
+                    if v13 { "J" } else { "Y" },
+                    ij[1]
+                )
+            }
+        }
+    }
+
     fn image_url(&self, b: [f64; 4], w: u32, h: u32) -> String {
         match self.service {
             Service::ArcGis => {
@@ -217,6 +263,8 @@ struct Caps {
     url: String,
     version: String,
     crs: String,
+    /// The form GetFeatureInfo answers in (WMS).
+    info_format: String,
     layers: Vec<CapLayer>,
 }
 
@@ -310,9 +358,20 @@ fn parse_arcgis(json: &str, url: &str) -> Result<Caps, String> {
         url: base,
         version: String::new(),
         crs: WEB_MERCATOR.into(),
+        info_format: String::new(),
         layers,
     })
 }
+
+/// The forms GetFeatureInfo can answer in that can be read, best first.
+const INFO_PREFERRED: [&str; 6] = [
+    "application/json",
+    "application/geo+json",
+    "application/geojson",
+    "application/vnd.geo+json",
+    "text/plain",
+    "text/html",
+];
 
 fn parse_wms(xml: &str, url: &str) -> Result<Caps, String> {
     let doc = roxmltree::Document::parse(xml).map_err(|_| "Not a WMS (no capabilities)")?;
@@ -404,12 +463,31 @@ fn parse_wms(xml: &str, url: &str) -> Result<Caps, String> {
             "The WMS offers neither Web Mercator (EPSG:3857) nor longitude/latitude (EPSG:4326)",
         )?;
     let base = without_params(url, &["service", "request", "version"]);
+    // what Identify can be answered in
+    let offered: Vec<String> = root
+        .descendants()
+        .find(|n| n.tag_name().name() == "GetFeatureInfo")
+        .map(|g| {
+            g.children()
+                .filter(|n| n.tag_name().name() == "Format")
+                .filter_map(|n| n.text())
+                .map(|t| t.trim().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    let info_format = INFO_PREFERRED
+        .iter()
+        .find(|p| offered.iter().any(|o| o.eq_ignore_ascii_case(p)))
+        .map(|p| p.to_string())
+        .or_else(|| offered.first().cloned())
+        .unwrap_or_default();
     Ok(Caps {
         title,
         service: Service::Wms,
         url: get_map.unwrap_or(base),
         version,
         crs: chosen.to_string(),
+        info_format,
         layers,
     })
 }
@@ -453,6 +531,9 @@ pub struct LayersState {
     adding: Adding,
     /// The name being edited in the Map Layers panel, and its new text.
     renaming: Option<(Rename, String)>,
+    /// What Identify found where the map was clicked last.
+    identified: Option<Identified>,
+    answers: Answers,
 }
 
 // ----- drawing --------------------------------------------------------------
@@ -613,9 +694,16 @@ fn request(st: &mut LayersState, ctx: &egui::Context, key: String, url: String, 
     });
 }
 
+/// Draws the visible layers over `rect`, and what Identify found.
+pub fn draw(app: &mut EpanetApp, ui: &Ui, painter: &egui::Painter, rect: Rect) {
+    take_answers(&mut app.layers);
+    draw_pictures(app, ui, painter, rect);
+    draw_identified(app, painter, rect);
+}
+
 /// Draws the visible layers over `rect`, bottom one first, asking for new
 /// pictures once the view has settled.
-pub fn draw(app: &mut EpanetApp, ui: &Ui, painter: &egui::Painter, rect: Rect) {
+fn draw_pictures(app: &mut EpanetApp, ui: &Ui, painter: &egui::Painter, rect: Rect) {
     let ctx = ui.ctx().clone();
     poll(app, &ctx);
     if !app.prefs.map_layers.iter().any(|l| l.visible) || crate::basemap::geo(app).is_err() {
@@ -1145,6 +1233,7 @@ fn chosen(st: &Adding) -> Vec<MapLayer> {
             layers: vec![l.name.clone()],
             version: caps.version.clone(),
             crs: caps.crs.clone(),
+            info_format: caps.info_format.clone(),
             group: group.clone(),
             ..Default::default()
         });
@@ -1156,6 +1245,7 @@ fn chosen(st: &Adding) -> Vec<MapLayer> {
             service: caps.service,
             url: caps.url.clone(),
             crs: caps.crs.clone(),
+            info_format: caps.info_format.clone(),
             group,
             ..Default::default()
         });
@@ -1309,6 +1399,448 @@ pub fn dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
         None => {}
     }
     close
+}
+
+// ----- identify ---------------------------------------------------------------
+
+/// A feature Identify found: its layer, its name, its fields and its shape
+/// (in Web Mercator: points, lines or rings) for the map.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Feature {
+    layer: String,
+    name: String,
+    fields: Vec<(String, String)>,
+    shape: Vec<Vec<[f64; 2]>>,
+    closed: bool,
+    /// Its layer's place in the Map Layers panel, the top one 0.
+    rank: usize,
+}
+
+/// The answers of the layers asked: (the click, the layer, its features).
+type Answers = Arc<Mutex<Vec<(u64, String, usize, Result<Vec<Feature>, String>)>>>;
+
+/// What Identify found where the map was clicked last.
+#[derive(Default)]
+struct Identified {
+    id: u64,
+    /// The point clicked, in map coordinates.
+    at: [f64; 2],
+    /// The layers not answered yet.
+    waiting: usize,
+    features: Vec<Feature>,
+    errors: Vec<String>,
+    /// The feature shown on the map.
+    chosen: Option<usize>,
+    /// Whether the user chose it (else the top layer's first is shown).
+    picked: bool,
+}
+
+fn value_text(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Null => String::new(),
+        other => other.to_string(),
+    }
+}
+
+/// An ArcGIS geometry's parts (points, paths or rings), and whether they close.
+fn arcgis_shape(g: &serde_json::Value) -> (Vec<Vec<[f64; 2]>>, bool) {
+    let xy = |p: &serde_json::Value| -> Option<[f64; 2]> {
+        let a = p.as_array()?;
+        Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?])
+    };
+    let parts = |key: &str| -> Vec<Vec<[f64; 2]>> {
+        g.get(key)
+            .and_then(|v| v.as_array())
+            .map(|ps| {
+                ps.iter()
+                    .filter_map(|part| {
+                        part.as_array()
+                            .map(|pts| pts.iter().filter_map(xy).collect())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    if let (Some(x), Some(y)) = (
+        g.get("x").and_then(|v| v.as_f64()),
+        g.get("y").and_then(|v| v.as_f64()),
+    ) {
+        return (vec![vec![[x, y]]], false);
+    }
+    let rings = parts("rings");
+    if !rings.is_empty() {
+        return (rings, true);
+    }
+    let paths = parts("paths");
+    if !paths.is_empty() {
+        return (paths, false);
+    }
+    let points = g
+        .get("points")
+        .and_then(|v| v.as_array())
+        .map(|ps| ps.iter().filter_map(xy).map(|p| vec![p]).collect())
+        .unwrap_or_default();
+    (points, false)
+}
+
+/// The features in a layer's answer to Identify.
+fn parse_identify(layer: &str, text: &str) -> Result<Vec<Feature>, String> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
+        // a WMS answering in text or HTML: its text, as one field
+        let lower = text.to_ascii_lowercase();
+        if lower.contains("serviceexception") {
+            let msg = roxmltree::Document::parse(text)
+                .ok()
+                .and_then(|d| {
+                    d.descendants()
+                        .find(|n| n.tag_name().name() == "ServiceException")
+                        .and_then(|n| n.text().map(|t| t.trim().to_string()))
+                })
+                .unwrap_or_else(|| "The service could not answer".into());
+            return Err(msg);
+        }
+        let plain = strip_tags(text);
+        return Ok(if plain.trim().is_empty() {
+            Vec::new()
+        } else {
+            vec![Feature {
+                layer: layer.into(),
+                name: layer.into(),
+                fields: vec![(String::new(), plain.trim().to_string())],
+                ..Default::default()
+            }]
+        });
+    };
+    if let Some(e) = v.get("error") {
+        return Err(e
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("The service answered with an error")
+            .to_string());
+    }
+    let fields = |o: Option<&serde_json::Value>| -> Vec<(String, String)> {
+        o.and_then(|a| a.as_object())
+            .map(|m| m.iter().map(|(k, v)| (k.clone(), value_text(v))).collect())
+            .unwrap_or_default()
+    };
+    // ArcGIS: results, each of a layer
+    if let Some(results) = v.get("results").and_then(|r| r.as_array()) {
+        return Ok(results
+            .iter()
+            .enumerate()
+            .map(|(k, r)| {
+                let (shape, closed) = r.get("geometry").map(arcgis_shape).unwrap_or_default();
+                let name = r
+                    .get("value")
+                    .map(value_text)
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| format!("{}", k + 1));
+                Feature {
+                    layer: r
+                        .get("layerName")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or(layer)
+                        .to_string(),
+                    name,
+                    fields: fields(r.get("attributes")),
+                    shape,
+                    closed,
+                    rank: 0,
+                }
+            })
+            .collect());
+    }
+    // a WMS answering in GeoJSON
+    if let Some(features) = v.get("features").and_then(|f| f.as_array()) {
+        return Ok(features
+            .iter()
+            .enumerate()
+            .map(|(k, f)| Feature {
+                layer: layer.into(),
+                name: f
+                    .get("id")
+                    .map(value_text)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| format!("{}", k + 1)),
+                fields: fields(f.get("properties")),
+                ..Default::default()
+            })
+            .collect());
+    }
+    Ok(Vec::new())
+}
+
+/// Text without its HTML tags.
+fn strip_tags(s: &str) -> String {
+    let mut out = String::new();
+    let mut inside = false;
+    for ch in s.chars() {
+        match ch {
+            '<' => inside = true,
+            '>' => {
+                inside = false;
+                out.push(' ');
+            }
+            _ if !inside => out.push(ch),
+            _ => {}
+        }
+    }
+    out.lines()
+        .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Asks the visible map layers for their features at screen point `p`.
+pub fn identify(app: &mut EpanetApp, rect: Rect, p: Pos2) {
+    let world = app.view.to_world(rect, p);
+    if !app.prefs.map_layers.iter().any(|l| l.visible) {
+        app.status = "There is no map layer shown to identify (Map > Layers > Add Layer)".into();
+        return;
+    }
+    if crate::basemap::geo(app).is_err() {
+        app.status =
+            "Set the project's coordinate reference system (CRS in the status bar) to identify features"
+                .into();
+        return;
+    }
+    let Ok(geo) = crate::basemap::geo_ref(app) else {
+        return;
+    };
+    let ppp = app.ctx.pixels_per_point();
+    let mut asks = Vec::new();
+    let n = app.prefs.map_layers.len();
+    for (k, l) in app
+        .prefs
+        .map_layers
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.visible)
+    {
+        let merc = mercator(&l.crs);
+        let (Some((b, w, h)), Some([lon, lat])) = (
+            wanted_area(geo, &app.view, rect, ppp, merc),
+            geo.to_lonlat(world),
+        ) else {
+            continue;
+        };
+        let xy = if merc {
+            match Geo::WebMercator.lonlat_to([lon, lat.clamp(-85.0, 85.0)]) {
+                Some(xy) => xy,
+                None => continue,
+            }
+        } else {
+            [lon, lat]
+        };
+        let ij = [
+            ((xy[0] - b[0]) / (b[2] - b[0]) * w as f64).round() as i64,
+            ((b[3] - xy[1]) / (b[3] - b[1]) * h as f64).round() as i64,
+        ];
+        asks.push((l.name.clone(), n - 1 - k, l.identify_url(b, w, h, xy, ij)));
+    }
+    app.prefs.docks.activate(crate::dock::Pane::Identify);
+    let st = &mut app.layers;
+    st.next += 1;
+    let id = st.next;
+    st.identified = Some(Identified {
+        id,
+        at: world,
+        waiting: asks.len(),
+        ..Default::default()
+    });
+    for (layer, rank, url) in asks {
+        let answers = st.answers.clone();
+        let ctx = app.ctx.clone();
+        ehttp::fetch(ehttp::Request::get(url), move |res| {
+            let found = match res {
+                Ok(r) if r.ok => parse_identify(&layer, &crate::io::decode_text(&r.bytes)),
+                Ok(r) => Err(format!("{} {}", r.status, r.status_text)),
+                Err(e) => Err(e),
+            };
+            if let Ok(mut q) = answers.lock() {
+                q.push((id, layer, rank, found));
+            }
+            ctx.request_repaint();
+        });
+    }
+}
+
+/// Takes in the layers' answers to the last Identify.
+fn take_answers(st: &mut LayersState) {
+    let answers: Vec<_> = st
+        .answers
+        .lock()
+        .map(|mut q| std::mem::take(&mut *q))
+        .unwrap_or_default();
+    let Some(found) = st.identified.as_mut() else {
+        return;
+    };
+    let chosen = found.chosen.and_then(|k| found.features.get(k).cloned());
+    let mut came = false;
+    for (id, layer, rank, res) in answers {
+        if id != found.id {
+            continue; // an earlier click's
+        }
+        found.waiting = found.waiting.saturating_sub(1);
+        match res {
+            Ok(fs) => found
+                .features
+                .extend(fs.into_iter().map(|f| Feature { rank, ..f })),
+            Err(e) => found.errors.push(format!("{layer}: {e}")),
+        }
+        came = true;
+    }
+    if !came {
+        return;
+    }
+    // as the layers are in the panel, the top one first; the feature the
+    // user chose stays chosen, else the top layer's first is
+    found.features.sort_by_key(|f| f.rank);
+    found.chosen = match chosen.filter(|_| found.picked) {
+        Some(c) => found.features.iter().position(|f| *f == c),
+        None => (!found.features.is_empty()).then_some(0),
+    };
+}
+
+/// The Identify Results panel (see [`crate::dock`]): the features found where
+/// the map was clicked last, by layer as the layers are in the Map Layers
+/// panel, each with its fields; the one chosen is outlined on the map.
+pub(crate) fn identify_pane(app: &mut EpanetApp, ui: &mut Ui) {
+    take_answers(&mut app.layers);
+    let red = Color32::from_rgb(0xc0, 0x39, 0x2b);
+    let mut clear = false;
+    egui::Frame::NONE
+        .inner_margin(egui::Margin::symmetric(8, 6))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let Some(found) = app.layers.identified.as_mut() else {
+                ui.label(
+                    RichText::new(crate::i18n::tr(
+                        "Turn on Map > Identify and click on the map to see the features of the map layers there.",
+                    ))
+                    .weak(),
+                );
+                return;
+            };
+            ui.horizontal(|ui| {
+                if found.waiting > 0 {
+                    ui.spinner();
+                    ui.label(crate::i18n::tr("Asking the map layers…"));
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    clear = ui.button(crate::i18n::tr("Clear")).clicked();
+                });
+            });
+            for e in &found.errors {
+                ui.add(egui::Label::new(RichText::new(e).color(red).small()).wrap());
+            }
+            if found.waiting == 0 && found.features.is_empty() && found.errors.is_empty() {
+                ui.label(RichText::new(crate::i18n::tr("No features here.")).weak());
+            }
+            egui::ScrollArea::vertical()
+                .id_salt("identify_list")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    let mut layers: Vec<&str> = Vec::new();
+                    for f in &found.features {
+                        if !layers.contains(&f.layer.as_str()) {
+                            layers.push(&f.layer);
+                        }
+                    }
+                    let mut choose = None;
+                    for layer in layers {
+                        egui::CollapsingHeader::new(RichText::new(layer).strong())
+                            .id_salt(("identify_layer", layer))
+                            .default_open(true)
+                            .show(ui, |ui| {
+                                for (k, f) in found.features.iter().enumerate() {
+                                    if f.layer != layer {
+                                        continue;
+                                    }
+                                    let on = found.chosen == Some(k);
+                                    let title = if on {
+                                        RichText::new(&f.name)
+                                            .color(ui.visuals().selection.stroke.color)
+                                    } else {
+                                        RichText::new(&f.name)
+                                    };
+                                    let r = egui::CollapsingHeader::new(title)
+                                        .id_salt(("identify_feature", found.id, k))
+                                        .default_open(on)
+                                        .show(ui, |ui| {
+                                            egui::Grid::new(("identify_fields", found.id, k))
+                                                .num_columns(2)
+                                                .striped(true)
+                                                .spacing([12.0, 4.0])
+                                                .show(ui, |ui| {
+                                                    for (key, value) in &f.fields {
+                                                        ui.label(RichText::new(key).weak());
+                                                        ui.add(
+                                                            egui::Label::new(value)
+                                                                .wrap()
+                                                                .selectable(true),
+                                                        );
+                                                        ui.end_row();
+                                                    }
+                                                });
+                                        });
+                                    if r.header_response.clicked() {
+                                        choose = Some(k);
+                                    }
+                                }
+                            });
+                    }
+                    if choose.is_some() {
+                        found.chosen = choose;
+                        found.picked = true;
+                    }
+                });
+        });
+    if clear {
+        app.layers.identified = None;
+    }
+}
+
+/// The point Identify asked about, and the feature chosen outlined.
+fn draw_identified(app: &mut EpanetApp, painter: &egui::Painter, rect: Rect) {
+    let Some(found) = &app.layers.identified else {
+        return;
+    };
+    let accent = Color32::from_rgb(0xff, 0x2d, 0x55);
+    if let Some(f) = found.chosen.and_then(|k| found.features.get(k))
+        && !f.shape.is_empty()
+        && let Ok(geo) = crate::basemap::geo_ref(app)
+    {
+        let to_screen = |p: &[f64; 2]| {
+            Geo::WebMercator
+                .to_lonlat(*p)
+                .and_then(|ll| geo.lonlat_to(ll))
+                .map(|w| app.view.to_screen(rect, w))
+        };
+        let stroke = egui::Stroke::new(2.5, accent);
+        for part in &f.shape {
+            let pts: Vec<Pos2> = part.iter().filter_map(to_screen).collect();
+            match pts.len() {
+                0 => {}
+                1 => {
+                    painter.circle(pts[0], 6.0, accent.gamma_multiply(0.3), stroke);
+                }
+                _ if f.closed => {
+                    painter.add(Shape::closed_line(pts, stroke));
+                }
+                _ => {
+                    painter.add(Shape::line(pts, stroke));
+                }
+            }
+        }
+    }
+    // the point clicked
+    let c = app.view.to_screen(rect, found.at);
+    let s = egui::Stroke::new(2.0, accent);
+    painter.line_segment([c - vec2(7.0, 0.0), c + vec2(7.0, 0.0)], s);
+    painter.line_segment([c - vec2(0.0, 7.0), c + vec2(0.0, 7.0)], s);
 }
 
 #[cfg(test)]
@@ -1484,6 +2016,73 @@ mod tests {
             first.x <= 1.0 && first.y <= 1.0 && last.x >= 799.0 && last.y >= 599.0,
             "{first:?} {last:?}"
         );
+    }
+
+    #[test]
+    fn identify_asks_and_reads_the_answers() {
+        let arcgis = MapLayer {
+            service: Service::ArcGis,
+            url: "https://x/arcgis/rest/services/A/MapServer".into(),
+            layers: vec!["0".into()],
+            ..Default::default()
+        };
+        let u = arcgis.identify_url([0.0, 0.0, 100.0, 50.0], 200, 100, [10.0, 20.0], [20, 60]);
+        assert!(
+            u.starts_with("https://x/arcgis/rest/services/A/MapServer/identify?geometry=10,20"),
+            "{u}"
+        );
+        assert!(
+            u.contains("&layers=visible:0&")
+                && u.contains("&mapExtent=0,0,100,50&imageDisplay=200,100,96"),
+            "{u}"
+        );
+        let wms = MapLayer {
+            url: "https://m/wms?".into(),
+            layers: vec!["roads".into()],
+            info_format: "application/geojson".into(),
+            ..Default::default()
+        };
+        let u = wms.identify_url([0.0, 0.0, 100.0, 50.0], 200, 100, [10.0, 20.0], [20, 60]);
+        assert!(
+            u.contains("REQUEST=GetFeatureInfo") && !u.contains("GetMap"),
+            "{u}"
+        );
+        assert!(
+            u.ends_with(
+                "&QUERY_LAYERS=roads&INFO_FORMAT=application%2Fgeojson&FEATURE_COUNT=20&I=20&J=60"
+            ),
+            "{u}"
+        );
+
+        // ArcGIS: each result with its layer, name, fields and outline
+        let answer = r#"{"results":[{"layerId":0,"layerName":"ΤΕΜΑΧΙΑ","value":"123",
+            "attributes":{"ΑΡ_ΤΕΜΑΧΙΟΥ":"123","ΕΜΒΑΔΟΝ":"542.5"},
+            "geometry":{"rings":[[[0,0],[10,0],[10,10],[0,0]]]}}]}"#;
+        let f = parse_identify("x", answer).unwrap();
+        assert_eq!(
+            (f[0].layer.as_str(), f[0].name.as_str()),
+            ("ΤΕΜΑΧΙΑ", "123")
+        );
+        assert_eq!(f[0].fields.len(), 2);
+        assert!(f[0].closed && f[0].shape[0].len() == 4);
+        // GeoJSON
+        let answer = r#"{"type":"FeatureCollection","features":[{"id":"roads.7","properties":{"name":"Main St","lanes":2}}]}"#;
+        let f = parse_identify("Roads", answer).unwrap();
+        assert_eq!(
+            (f[0].name.as_str(), f[0].fields[1].1.as_str()),
+            ("roads.7", "Main St")
+        );
+        // text or HTML: one field
+        let f = parse_identify("Roads", "<html><body><b>name</b> = Main St</body></html>").unwrap();
+        assert_eq!(f[0].fields[0].1, "name = Main St");
+        assert!(parse_identify("Roads", "  ").unwrap().is_empty());
+        // errors
+        let err = r#"<ServiceExceptionReport><ServiceException>Layer not queryable</ServiceException></ServiceExceptionReport>"#;
+        assert_eq!(
+            parse_identify("Roads", err).unwrap_err(),
+            "Layer not queryable"
+        );
+        assert!(parse_identify("x", r#"{"error":{"message":"Invalid"}}"#).is_err());
     }
 
     #[test]

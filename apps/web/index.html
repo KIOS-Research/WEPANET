@@ -16,6 +16,32 @@
   <script src="engine/engine.js"></script>
   <script src="engine/python.js"></script>
   <script src="engine/recent.js"></script>
+  <script>
+    // the app sets euiUnsaved while leaving would lose changes (network or map layers)
+    window.addEventListener('beforeunload', (e) => {
+      if (window.euiUnsaved) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    });
+    // F5 / Ctrl+R: the app asks in its own window (the browser's own Reload
+    // button and closing the tab can only show the browser's)
+    let pointer = null;
+    window.addEventListener('mousemove', (e) => { pointer = [e.clientX, e.clientY]; }, true);
+    window.addEventListener('keydown', (e) => {
+      const reload = e.key === 'F5' || ((e.ctrlKey || e.metaKey) && (e.key === 'r' || e.key === 'R'));
+      if (reload && window.euiUnsaved) {
+        e.preventDefault();
+        e.stopPropagation();
+        window.euiAskReload = true;
+        // wake the app up to ask: the pointer "moved" where it is
+        const canvas = document.getElementById('epanet_ui_canvas');
+        const r = canvas.getBoundingClientRect();
+        const [x, y] = pointer || [r.left + r.width / 2, r.top + r.height / 2];
+        canvas.dispatchEvent(new MouseEvent('mousemove', { clientX: x, clientY: y, bubbles: true }));
+      }
+    }, true);
+  </script>
   <style>
     html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #f6f7f9; }
     @media (prefers-color-scheme: dark) { html, body { background: #1b1e23; } }
