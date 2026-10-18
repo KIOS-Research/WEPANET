@@ -193,7 +193,7 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
     }
     egui::Panel::bottom("python_console")
         .default_size(220.0)
-        .size_range(110.0..=700.0)
+        .size_range(140.0..=700.0)
         .resizable(true)
         .show(ui, |ui| body(app, ui));
 }
@@ -307,6 +307,8 @@ fn body(app: &mut EpanetApp, ui: &mut Ui) {
                     .stick_to_bottom(true)
                     .auto_shrink(false)
                     .max_height(h.max(20.0))
+                    // never taller than the room left (it covered the prompt)
+                    .min_scrolled_height(h.clamp(0.0, 20.0))
                     .show(ui, |ui| {
                         for (k, text) in &app.python.console.log {
                             ui.add(
@@ -439,6 +441,59 @@ mod tests {
         );
         toggle(&mut app);
         assert!(!app.python.console.open);
+    }
+
+    /// However short the panel, the prompt shows under the lines (a log
+    /// that would not get shorter covered it).
+    #[test]
+    fn the_prompt_shows_in_a_short_panel() {
+        let ctx = egui::Context::default();
+        let mut app = EpanetApp::new(&eframe::CreationContext::_new_kittest(ctx.clone()));
+        toggle(&mut app);
+        for h in [110.0f32, 140.0, 180.0, 220.0] {
+            let mut rects = (
+                egui::Rect::NOTHING,
+                egui::Rect::NOTHING,
+                egui::Rect::NOTHING,
+            );
+            for _ in 0..3 {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(900.0, 800.0),
+                    )),
+                    ..Default::default()
+                };
+                let mut panel = egui::Rect::NOTHING;
+                let mut out = ctx.run_ui(input, |ui| {
+                    egui::Panel::bottom(egui::Id::new("short").with(h as i32))
+                        .exact_size(h)
+                        .show(ui, |ui| {
+                            panel = ui.max_rect();
+                            body(&mut app, ui)
+                        });
+                });
+                out.textures_delta.clear();
+                let at = |want: &str| {
+                    out.shapes
+                        .iter()
+                        .find_map(|c| match &c.shape {
+                            egui::Shape::Text(t) if t.galley.text().starts_with(want) => {
+                                Some(t.visual_bounding_rect())
+                            }
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| panic!("no {want:?}"))
+                };
+                rects = (panel, at(">>>"), at("Python Console. "));
+            }
+            let (panel, prompt, banner) = rects;
+            assert!(
+                prompt.bottom() <= panel.bottom(),
+                "{h}: {prompt:?} {panel:?}"
+            );
+            assert!(banner.bottom() < prompt.top(), "{h}: {banner:?} {prompt:?}");
+        }
     }
 
     /// The panel keeps the height it is given, frame after frame (it shrank
