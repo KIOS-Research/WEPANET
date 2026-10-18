@@ -631,7 +631,7 @@ fn project_toolbar(app: &mut EpanetApp, ui: &mut Ui) {
         "Delete",
         app.selection.is_some(),
         false,
-        "Delete the selected object from the project (Del)",
+        "Delete the selected object from the project (Del / Backspace)",
     )
     .clicked()
     {

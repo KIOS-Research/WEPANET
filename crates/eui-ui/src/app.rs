@@ -1567,7 +1567,11 @@ impl EpanetApp {
         if ctx.input_mut(|i| i.consume_shortcut(&cmd(Key::V))) {
             self.paste_selection();
         }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Delete)) {
+        // Backspace too: the "delete" key on Mac keyboards sends Backspace.
+        if ctx.input_mut(|i| {
+            i.consume_key(Modifiers::NONE, Key::Delete)
+                || i.consume_key(Modifiers::NONE, Key::Backspace)
+        }) {
             self.request_delete();
         }
         // Esc closes the innermost thing open: a dialog (which handles the key
