@@ -1,7 +1,7 @@
 //! The Plugin Manager (Plugins > Manage Plugins): plugins are
 //! offered by repositories — XML files listing each plugin's name, version,
 //! description and where to download it — read from their URLs. WEPANET's own
-//! repository is `plugins/plugins.xml` of this project; any other can be
+//! repository is the KIOS-Research/WEPANET-Plugins project; any other can be
 //! added by its URL. Plugins can be installed, upgraded when a repository has
 //! a newer version, and uninstalled.
 //!
@@ -32,139 +32,10 @@ const HELP: &str = "https://github.com/KIOS-Research/WEPANET/blob/main/docs/plug
 
 /// WEPANET's own plugin repository.
 pub const DEFAULT_REPOSITORY: &str =
+    "https://raw.githubusercontent.com/KIOS-Research/WEPANET-Plugins/main/plugins.xml";
+/// Where it was before it moved to its own project.
+const OLD_REPOSITORY: &str =
     "https://raw.githubusercontent.com/KIOS-Research/WEPANET/main/plugins/plugins.xml";
-
-/// The repository as it was when this version of WEPANET was built: always
-/// offered, so plugins can be installed offline too. An online repository
-/// with a higher version of a plugin offers it as an upgrade.
-const BUILTIN_XML: &str = include_str!("../../../plugins/plugins.xml");
-const BUILTIN_BASE: &str = "builtin:/plugins.xml";
-const BUILTIN_NAME: &str = "Built into WEPANET";
-/// The scripts `plugins/plugins.xml` lists, by their path there.
-pub(crate) const BUILTIN: &[(&str, &str)] = &[
-    (
-        "Count/Count.rhai",
-        include_str!("../../../plugins/Count/Count.rhai"),
-    ),
-    (
-        "Network Statistics/Network Statistics.rhai",
-        include_str!("../../../plugins/Network Statistics/Network Statistics.rhai"),
-    ),
-    (
-        "Pipe Summary/Pipe Summary.rhai",
-        include_str!("../../../plugins/Pipe Summary/Pipe Summary.rhai"),
-    ),
-    (
-        "Dead Ends/Dead Ends.rhai",
-        include_str!("../../../plugins/Dead Ends/Dead Ends.rhai"),
-    ),
-    (
-        "Low Pressure/Low Pressure.rhai",
-        include_str!("../../../plugins/Low Pressure/Low Pressure.rhai"),
-    ),
-    (
-        "High Velocity/High Velocity.rhai",
-        include_str!("../../../plugins/High Velocity/High Velocity.rhai"),
-    ),
-    (
-        "EPyT Pressure Check/EPyT Pressure Check.py",
-        include_str!("../../../plugins/EPyT Pressure Check/EPyT Pressure Check.py"),
-    ),
-];
-
-/// The built-in repository, with what each plugin's `metadata.txt` adds.
-fn builtin_offers() -> Vec<Offer> {
-    let mut offers = parse_repository(BUILTIN_XML, BUILTIN_BASE, BUILTIN_NAME).unwrap_or_default();
-    for o in &mut offers {
-        if let Some(m) = builtin_meta(&o.url).and_then(|t| crate::plugin_meta::parse(t).ok()) {
-            o.add_meta(&m);
-        }
-    }
-    offers
-}
-
-/// Their icons.
-const BUILTIN_ICONS: &[(&str, &[u8])] = &[
-    (
-        "Count/icon.png",
-        include_bytes!("../../../plugins/Count/icon.png"),
-    ),
-    (
-        "Network Statistics/icon.png",
-        include_bytes!("../../../plugins/Network Statistics/icon.png"),
-    ),
-    (
-        "Pipe Summary/icon.png",
-        include_bytes!("../../../plugins/Pipe Summary/icon.png"),
-    ),
-    (
-        "Dead Ends/icon.png",
-        include_bytes!("../../../plugins/Dead Ends/icon.png"),
-    ),
-    (
-        "Low Pressure/icon.png",
-        include_bytes!("../../../plugins/Low Pressure/icon.png"),
-    ),
-    (
-        "High Velocity/icon.png",
-        include_bytes!("../../../plugins/High Velocity/icon.png"),
-    ),
-    (
-        "EPyT Pressure Check/icon.png",
-        include_bytes!("../../../plugins/EPyT Pressure Check/icon.png"),
-    ),
-];
-
-/// Their `metadata.txt`.
-const BUILTIN_META: &[(&str, &str)] = &[
-    (
-        "Count/metadata.txt",
-        include_str!("../../../plugins/Count/metadata.txt"),
-    ),
-    (
-        "Network Statistics/metadata.txt",
-        include_str!("../../../plugins/Network Statistics/metadata.txt"),
-    ),
-    (
-        "Pipe Summary/metadata.txt",
-        include_str!("../../../plugins/Pipe Summary/metadata.txt"),
-    ),
-    (
-        "Dead Ends/metadata.txt",
-        include_str!("../../../plugins/Dead Ends/metadata.txt"),
-    ),
-    (
-        "Low Pressure/metadata.txt",
-        include_str!("../../../plugins/Low Pressure/metadata.txt"),
-    ),
-    (
-        "High Velocity/metadata.txt",
-        include_str!("../../../plugins/High Velocity/metadata.txt"),
-    ),
-    (
-        "EPyT Pressure Check/metadata.txt",
-        include_str!("../../../plugins/EPyT Pressure Check/metadata.txt"),
-    ),
-];
-
-/// The `metadata.txt` of a built-in plugin's folder (`builtin:/Count`).
-fn builtin_meta(folder: &str) -> Option<&'static str> {
-    let path = format!(
-        "{}/{}",
-        folder.strip_prefix("builtin:/")?.replace("%20", " "),
-        crate::plugin_meta::FILE
-    );
-    BUILTIN_META
-        .iter()
-        .find(|(f, _)| *f == path)
-        .map(|(_, s)| *s)
-}
-
-/// The script of a built-in offer (`builtin:/Count/Count.rhai`, …).
-fn builtin_source(url: &str) -> Option<&'static str> {
-    let path = url.strip_prefix("builtin:/")?.replace("%20", " ");
-    BUILTIN.iter().find(|(f, _)| *f == path).map(|(_, s)| *s)
-}
 
 /// A core plugin: part of WEPANET itself (written in Rust, so it can reach
 /// web services or run the engine), offered in the Plugin Manager like the
@@ -216,14 +87,6 @@ fn core_offers() -> Vec<Offer> {
         .collect()
 }
 
-fn builtin_icon(url: &str) -> Option<&'static [u8]> {
-    let path = url.strip_prefix("builtin:/")?.replace("%20", " ");
-    BUILTIN_ICONS
-        .iter()
-        .find(|(f, _)| *f == path)
-        .map(|(_, b)| *b)
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Repository {
     pub name: String,
@@ -237,6 +100,14 @@ pub fn default_repositories() -> Vec<Repository> {
         url: DEFAULT_REPOSITORY.into(),
         enabled: true,
     }]
+}
+
+/// Points saved settings that still read WEPANET's repository from its old
+/// place to the new one.
+pub fn migrate_repositories(repos: &mut [Repository]) {
+    for r in repos.iter_mut().filter(|r| r.url.trim() == OLD_REPOSITORY) {
+        r.url = DEFAULT_REPOSITORY.into();
+    }
 }
 
 /// A plugin a repository offers.
@@ -464,7 +335,6 @@ fn sync(app: &mut EpanetApp, ctx: &egui::Context) {
     let m = &mut app.plugin_manager;
     m.synced = true;
     m.offers = core_offers();
-    m.offers.extend(builtin_offers());
     m.read.clear();
     m.message = None;
     let repos: Vec<Repository> = app
@@ -503,28 +373,10 @@ fn install(app: &mut EpanetApp, ctx: &egui::Context, offer: &Offer) {
         return;
     }
     app.plugin_manager.installing.push(offer.name.clone());
-    let scripts = script_urls(offer);
-    if let Some((u, src)) = scripts
-        .iter()
-        .find_map(|u| builtin_source(u).map(|s| (u, s)))
-    {
-        reply(
-            &app.plugin_manager.inbox,
-            Reply::Plugin {
-                offer: Box::new(offer.clone()),
-                result: Ok((
-                    file_name(u),
-                    src.as_bytes().to_vec(),
-                    builtin_meta(&offer.url).map(str::to_string),
-                )),
-            },
-        );
-        return;
-    }
     let urls = if is_zip(&offer.url) {
         vec![offer.url.clone()]
     } else {
-        scripts
+        script_urls(offer)
     };
     download(
         app.plugin_manager.inbox.clone(),
@@ -599,10 +451,6 @@ fn fetch_icons(app: &mut EpanetApp, ctx: &egui::Context) {
         .filter(|u| !u.is_empty() && !app.plugin_manager.icons.contains_key(u))
         .collect();
     for url in wanted {
-        if let Some(b) = builtin_icon(&url) {
-            app.plugin_manager.icons.insert(url, Some(b.to_vec()));
-            continue;
-        }
         app.plugin_manager.icons.insert(url.clone(), None);
         let inbox = app.plugin_manager.inbox.clone();
         let ctx = ctx.clone();
@@ -1335,8 +1183,7 @@ fn info(ui: &mut Ui, r: &Row, o: &Offer, from_file: bool, installed_version: Opt
         ui.label(RichText::new("Installed from a file; no repository offers this plugin.").weak());
         ui.add_space(6.0);
     }
-    let download =
-        !(o.url.is_empty() || o.url.starts_with("builtin:") || o.url.starts_with("core:"));
+    let download = !(o.url.is_empty() || o.url.starts_with("core:"));
     egui::Grid::new("plugin_info")
         .num_columns(2)
         .spacing([12.0, 6.0])
@@ -1412,8 +1259,8 @@ fn settings(app: &mut EpanetApp, ui: &mut Ui, ctx: &egui::Context) {
     ui.label(RichText::new("Plugin Repositories").strong().size(15.0));
     ui.label(
         RichText::new(
-            "XML files listing plugins (see plugins/plugins.xml in the WEPANET project for the \
-format). The plugins of all enabled repositories are offered, along with those built into WEPANET.",
+            "XML files listing plugins (see plugins.xml in the WEPANET-Plugins project for the \
+format). The plugins of all enabled repositories are offered, along with WEPANET's core plugins.",
         )
         .weak(),
     );
@@ -1519,30 +1366,49 @@ format). The plugins of all enabled repositories are offered, along with those b
 mod tests {
     use super::*;
 
-    const XML: &str = include_str!("../../../plugins/plugins.xml");
+    /// The offers of WEPANET-Plugins, when it is checked out beside.
+    fn project_offers() -> Option<Vec<Offer>> {
+        let xml = crate::test_plugins::read("plugins.xml")?;
+        Some(parse_repository(&xml, DEFAULT_REPOSITORY, "WEPANET Plugins").unwrap())
+    }
+
+    /// The path in the checkout of one of their URLs.
+    fn project_path(url: &str) -> String {
+        let base = DEFAULT_REPOSITORY.trim_end_matches("plugins.xml");
+        url.strip_prefix(base).unwrap().replace("%20", " ")
+    }
+
+    #[test]
+    fn moves_the_old_repository() {
+        let mut repos = vec![Repository {
+            name: "WEPANET Plugins".into(),
+            url: OLD_REPOSITORY.into(),
+            enabled: false,
+        }];
+        migrate_repositories(&mut repos);
+        assert_eq!(repos[0].url, DEFAULT_REPOSITORY);
+        assert!(!repos[0].enabled);
+    }
 
     #[test]
     fn reads_the_project_repository() {
-        let offers = parse_repository(XML, DEFAULT_REPOSITORY, "WEPANET Plugins").unwrap();
+        let Some(offers) = project_offers() else {
+            return;
+        };
         assert!(offers.len() >= 6);
         let d = offers.iter().find(|o| o.name == "Dead Ends").unwrap();
-        assert_eq!(d.version, "1.0");
         assert_eq!(
             d.url,
-            "https://raw.githubusercontent.com/KIOS-Research/WEPANET/main/plugins/Dead%20Ends"
+            "https://raw.githubusercontent.com/KIOS-Research/WEPANET-Plugins/main/Dead%20Ends"
         );
         assert_eq!(d.icon, format!("{}/icon.png", d.url));
         // every plugin listed is in the project, and calls itself by the listed name
+        let scripts = crate::test_plugins::scripts();
         for o in &offers {
-            let (_, src) = BUILTIN
+            let (_, src) = scripts
                 .iter()
-                .find(|(f, _)| {
-                    let f = f.replace(' ', "%20");
-                    script_urls(o)
-                        .iter()
-                        .any(|u| u.ends_with(&format!("/plugins/{f}")))
-                })
-                .unwrap_or_else(|| panic!("{} is not in plugins/", o.url));
+                .find(|(f, _)| script_urls(o).iter().any(|u| project_path(u) == *f))
+                .unwrap_or_else(|| panic!("{} is not in WEPANET-Plugins", o.url));
             assert!(
                 src.contains(&format!("fn name() {{ \"{}\" }}", o.name))
                     || src.contains(&format!("NAME = \"{}\"", o.name)),
@@ -1592,28 +1458,28 @@ mod tests {
     }
 
     #[test]
-    fn every_plugin_has_an_icon_built_in() {
-        for o in builtin_offers() {
+    fn every_project_plugin_has_an_icon() {
+        let Some(dir) = crate::test_plugins::repository() else {
+            return;
+        };
+        for o in project_offers().unwrap() {
             assert!(!o.icon.is_empty(), "{} has no <icon>", o.name);
-            let png = builtin_icon(&o.icon).unwrap_or_else(|| panic!("{} not built in", o.icon));
-            let img = image::load_from_memory(png).unwrap();
+            let png = std::fs::read(dir.join(project_path(&o.icon)))
+                .unwrap_or_else(|_| panic!("{} is missing", o.icon));
+            let img = image::load_from_memory(&png).unwrap();
             assert_eq!((img.width(), img.height()), (64, 64), "{}", o.icon);
-            assert!(
-                script_urls(&o).iter().any(|u| builtin_source(u).is_some()),
-                "{}",
-                o.url
-            );
         }
     }
 
     /// Each plugin's metadata.txt is read, and agrees with plugins.xml.
     #[test]
-    fn every_plugin_has_its_metadata() {
-        let listed = parse_repository(BUILTIN_XML, BUILTIN_BASE, BUILTIN_NAME).unwrap();
-        assert_eq!(listed.len(), BUILTIN_META.len());
+    fn every_project_plugin_has_its_metadata() {
+        let listed = project_offers().unwrap_or_default();
         for o in &listed {
-            let text = builtin_meta(&o.url).unwrap_or_else(|| panic!("{} has none", o.name));
-            let m = crate::plugin_meta::parse(text).unwrap();
+            let path = format!("{}/{}", project_path(&o.url), crate::plugin_meta::FILE);
+            let text =
+                crate::test_plugins::read(&path).unwrap_or_else(|| panic!("{} has none", o.name));
+            let m = crate::plugin_meta::parse(&text).unwrap();
             assert_eq!(
                 (&m.name, &m.version, &m.description, &m.author),
                 (&o.name, &o.version, &o.description, &o.author),
@@ -1624,11 +1490,15 @@ mod tests {
             assert!(!m.about.is_empty() && !m.changelog.is_empty(), "{}", o.name);
         }
         // the offers carry it
-        let d = builtin_offers()
-            .into_iter()
-            .find(|o| o.name == "Dead Ends")
-            .unwrap();
-        assert!(d.about.contains("stagnate") && d.tracker.ends_with("/issues"));
+        let mut o = Offer::default();
+        o.add_meta(
+            &crate::plugin_meta::parse(
+                "[general]\nname=D\nversion=1\ndescription=d\nauthor=a\n\
+                 about=Where water can stagnate\ntracker=https://x/issues\n",
+            )
+            .unwrap(),
+        );
+        assert!(o.about.contains("stagnate") && o.tracker.ends_with("/issues"));
         // and what an XML says
         let xml = r#"<plugins><plugin name="Q" version="2"><download>q.zip</download>
             <author_name>Me</author_name><about>Long</about><tracker>t</tracker>
@@ -1643,34 +1513,50 @@ mod tests {
     fn installs_upgrades_and_uninstalls() {
         let ctx = egui::Context::default();
         let mut app = EpanetApp::new(&eframe::CreationContext::_new_kittest(ctx.clone()));
-        // from the built-in repository: no network needed
-        app.plugin_manager.offers = builtin_offers();
-        fetch_icons(&mut app, &ctx);
-        let mut o = builtin_offers()
-            .into_iter()
-            .find(|o| o.name == "Dead Ends")
-            .unwrap();
-        install(&mut app, &ctx, &o);
+        // a plugin's folder offered by a repository, and what downloading it brings
+        let mut o = parse_repository(
+            r#"<plugins><plugin name="Count" version="1.0"><download>Count</download></plugin></plugins>"#,
+            "https://r.org/plugins.xml",
+            "r",
+        )
+        .unwrap()
+        .remove(0);
+        app.plugin_manager.offers = vec![o.clone()];
+        app.plugin_manager
+            .icons
+            .insert(o.icon.clone(), Some(crate::test_plugins::icon().to_vec()));
+        let meta = "[general]\nname=Count\nversion=1.0\ndescription=d\nauthor=a\n";
+        reply(
+            &app.plugin_manager.inbox,
+            Reply::Plugin {
+                offer: Box::new(o.clone()),
+                result: Ok((
+                    file_name(&script_urls(&o)[0]),
+                    crate::test_plugins::COUNT.as_bytes().to_vec(),
+                    Some(meta.into()),
+                )),
+            },
+        );
         poll(&mut app);
         let installed = crate::scripting::installed(&app);
-        assert!(installed.contains(&"Dead Ends".to_string()));
+        assert!(installed.contains(&"Count".to_string()));
         assert_eq!(state(&app, &installed, &o), State::Installed);
         // its icon is kept with it, for the toolbar, and its metadata
-        assert!(app.prefs.plugin_icons.contains_key("Dead Ends"));
-        assert_eq!(app.prefs.plugin_meta["Dead Ends"].version, "1.0");
+        assert!(app.prefs.plugin_icons.contains_key("Count"));
+        assert_eq!(app.prefs.plugin_meta["Count"].version, "1.0");
         let mut out = ctx.run_ui(Default::default(), |_| {
-            assert!(installed_icon(&mut app, &ctx, "Dead Ends").is_some());
-            assert!(installed_icon(&mut app, &ctx, "Count").is_none());
+            assert!(installed_icon(&mut app, &ctx, "Count").is_some());
+            assert!(installed_icon(&mut app, &ctx, "Dead Ends").is_none());
         });
         out.textures_delta.clear();
         o.version = "1.1".into();
         assert_eq!(state(&app, &installed, &o), State::Upgradeable);
-        uninstall(&mut app, "Dead Ends");
+        uninstall(&mut app, "Count");
         let installed = crate::scripting::installed(&app);
         assert_eq!(state(&app, &installed, &o), State::NotInstalled);
-        assert!(!app.prefs.plugin_versions.contains_key("Dead Ends"));
-        assert!(!app.prefs.plugin_icons.contains_key("Dead Ends"));
-        assert!(!app.prefs.plugin_meta.contains_key("Dead Ends"));
+        assert!(!app.prefs.plugin_versions.contains_key("Count"));
+        assert!(!app.prefs.plugin_icons.contains_key("Count"));
+        assert!(!app.prefs.plugin_meta.contains_key("Count"));
     }
 
     /// The window as drawn: each piece of text and where it is.
@@ -1702,7 +1588,23 @@ mod tests {
     fn window_is_laid_out() {
         let ctx = egui::Context::default();
         let mut app = EpanetApp::new(&eframe::CreationContext::_new_kittest(ctx.clone()));
-        app.prefs.plugin_repos.clear(); // built-in plugins only: no network
+        // a repository as read: no network
+        let xml = ["Count", "Dead Ends", "High Velocity", "Low Pressure"]
+            .map(|n| format!(r#"<plugin name="{n}" version="1.0"><author>A</author><tags>t</tags><download>{n}</download></plugin>"#))
+            .concat();
+        app.plugin_manager.offers = core_offers();
+        app.plugin_manager.offers.extend(
+            parse_repository(
+                &format!("<plugins>{xml}</plugins>"),
+                "https://r.org/plugins.xml",
+                "r",
+            )
+            .unwrap(),
+        );
+        app.plugin_manager
+            .offers
+            .sort_by_key(|o| o.name.to_ascii_lowercase());
+        app.plugin_manager.synced = true;
         app.dialog = crate::app::Dialog::PluginManager;
         let t = layout(&mut app, &ctx);
         let at = |s: &str| {
@@ -1713,9 +1615,9 @@ mod tests {
         };
         // the sidebar: one entry below the other
         let side = [
-            "All (9)",
+            "All (6)",
             "Installed (0)",
-            "Not installed (9)",
+            "Not installed (6)",
             "Install from ZIP",
             "Settings",
         ]

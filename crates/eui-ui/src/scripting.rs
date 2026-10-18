@@ -944,7 +944,7 @@ pub fn table_dialog(app: &mut EpanetApp, ui: &mut egui::Ui) -> bool {
 mod tests {
     use super::*;
 
-    const COUNT: &str = include_str!("../../../plugins/Count/Count.rhai");
+    use crate::test_plugins::COUNT;
 
     fn ctx() -> Rc<RefCell<Ctx>> {
         Rc::new(RefCell::new(Ctx {
@@ -988,14 +988,8 @@ mod tests {
             .map_err(|x| x.to_string())
         };
         let c = ctx();
-        let _ = run(
-            &c,
-            include_str!("../../../plugins/Pipe Summary/Pipe Summary.rhai"),
-            "Length by Diameter",
-        )
-        .unwrap();
-        let (_, rows) = c.borrow().table.clone().unwrap();
-        assert!(rows.len() > 3, "{rows:?}");
+        let _ = run(&c, COUNT, "Pipes").unwrap();
+        assert_eq!(c.borrow().messages, ["Number of Pipes: 12"]);
         // with results
         let out = eui_engine::run_blocking(eui_core::examples::NET1).unwrap();
         let res = SimResults::from_out(&out.out).unwrap();
@@ -1007,20 +1001,20 @@ mod tests {
             .map(|(k, id)| (id.clone(), k))
             .collect();
         c.borrow_mut().results = Some(res);
-        let _ = run(
-            &c,
-            include_str!("../../../plugins/Low Pressure/Low Pressure.rhai"),
-            "Below 120",
-        )
-        .unwrap();
+        let _ = run(&c, crate::test_plugins::LOW_PRESSURE, "Below 120").unwrap();
         let b = c.borrow();
         let (_, rows) = b.table.clone().expect("a table");
         assert!(rows.len() > 1, "{rows:?}");
         assert!(b.select.is_some());
     }
 
+    /// The plugins of WEPANET-Plugins, when it is checked out beside.
     #[test]
     fn every_repository_plugin_runs_every_command() {
+        let scripts = crate::test_plugins::scripts();
+        if scripts.is_empty() {
+            return;
+        }
         let out = eui_engine::run_blocking(eui_core::examples::NET1).unwrap();
         let res = SimResults::from_out(&out.out).unwrap();
         let rows = |ids: &[String]| {
@@ -1029,7 +1023,7 @@ mod tests {
                 .map(|(k, id)| (id.clone(), k))
                 .collect()
         };
-        for (file, src) in crate::plugin_manager::BUILTIN {
+        for (file, src) in &scripts {
             if crate::python::is_python(file) {
                 continue; // see python::tests
             }
@@ -1044,7 +1038,7 @@ mod tests {
                         b.results = Some(res.clone());
                     }
                     let e = engine(c.clone());
-                    let ast = e.compile(*src).unwrap();
+                    let ast = e.compile(src).unwrap();
                     let _ = e
                         .call_fn::<Dynamic>(
                             &mut Scope::new(),
@@ -1104,8 +1098,8 @@ mod tests {
         let mut app = EpanetApp::new(&eframe::CreationContext::_new_kittest(
             egui::Context::default(),
         ));
-        let icon = include_bytes!("../../../plugins/Low Pressure/icon.png");
-        let src = include_str!("../../../plugins/Low Pressure/Low Pressure.rhai");
+        let icon = crate::test_plugins::icon();
+        let src = crate::test_plugins::LOW_PRESSURE;
         let z = zip_of(&[
             ("Low Pressure/Low Pressure.rhai", src.as_bytes()),
             ("Low Pressure/icon.png", icon),
@@ -1122,7 +1116,7 @@ mod tests {
                 .any(|(f, _)| f == "Low Pressure.rhai")
         );
         // a Python one: of several scripts, the one named like its folder
-        let py = include_str!("../../../plugins/EPyT Pressure Check/EPyT Pressure Check.py");
+        let py = crate::test_plugins::PYTHON;
         // and the rest of its folder is kept: modules, sub-folders
         let z = zip_of(&[
             ("EPyT Pressure Check/helpers.py", b"X = 1\n"),
@@ -1207,6 +1201,6 @@ mod tests {
     }
 
     fn icon_bytes() -> &'static [u8] {
-        include_bytes!("../../../plugins/Count/icon.png")
+        crate::test_plugins::icon()
     }
 }

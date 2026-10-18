@@ -370,7 +370,7 @@ function __wbg_get_imports() {
         __wbg_cancelAnimationFrame_6d30ac112c49342a: function() { return handleError(function (arg0, arg1) {
             arg0.cancelAnimationFrame(arg1);
         }, arguments); },
-        __wbg_cancel_9239ca88902d9c14: function() { return handleError(function () {
+        __wbg_cancel_2fd0a23048fb6b02: function() { return handleError(function () {
             euiEngine.cancel();
         }, arguments); },
         __wbg_changedTouches_df984754af5ef0fa: function(arg0) {
@@ -441,7 +441,7 @@ function __wbg_get_imports() {
         __wbg_compileShader_c2b53ff3a8851f60: function(arg0, arg1) {
             arg0.compileShader(arg1);
         },
-        __wbg_console_62f8a285d8752622: function() { return handleError(function (arg0, arg1, arg2, arg3, arg4) {
+        __wbg_console_72a87084e330a485: function() { return handleError(function (arg0, arg1, arg2, arg3, arg4) {
             const ret = euiPython.console(arg0, getStringFromWasm0(arg1, arg2), arg3 !== 0, arg4);
             return ret;
         }, arguments); },
@@ -453,7 +453,7 @@ function __wbg_get_imports() {
             const ret = arg0.contentRect;
             return ret;
         },
-        __wbg_convert_ab8a7c9db06c8d48: function() { return handleError(function (arg0, arg1, arg2, arg3, arg4) {
+        __wbg_convert_d2eda69cbc777bfa: function() { return handleError(function (arg0, arg1, arg2, arg3, arg4) {
             const ret = euiEngine.convert(getStringFromWasm0(arg0, arg1), arg2, arg3, arg4);
             return ret;
         }, arguments); },
@@ -1406,17 +1406,17 @@ function __wbg_get_imports() {
             const ret = arg0.right;
             return ret;
         },
-        __wbg_run_a1c5ed28b768c882: function() { return handleError(function (arg0, arg1, arg2) {
-            const ret = euiPython.run(arg0, arg1, arg2);
-            return ret;
-        }, arguments); },
-        __wbg_run_ea310b0a22a92787: function() { return handleError(function (arg0, arg1, arg2, arg3, arg4) {
+        __wbg_run_1f91fec60e7f7b6b: function() { return handleError(function (arg0, arg1, arg2, arg3, arg4) {
             let v0;
             if (arg2 !== 0) {
                 v0 = getStringFromWasm0(arg2, arg3);
                 wasm.__wbindgen_free(arg2, arg3 * 1, 1);
             }
             const ret = euiEngine.run(getStringFromWasm0(arg0, arg1), v0, arg4);
+            return ret;
+        }, arguments); },
+        __wbg_run_fed8bad6497ba910: function() { return handleError(function (arg0, arg1, arg2) {
+            const ret = euiPython.run(arg0, arg1, arg2);
             return ret;
         }, arguments); },
         __wbg_scissor_12ddc324094acd50: function(arg0, arg1, arg2, arg3, arg4) {
@@ -1726,7 +1726,7 @@ function __wbg_get_imports() {
             return ret;
         },
         __wbindgen_generic_0000000000000002: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [I32, F64], shim_idx: 1194, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [I32, F64], shim_idx: 1316, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen_686837205a8c621a___convert__closures_____invoke___i32__f64______true_);
             return ret;
         },
@@ -1741,7 +1741,7 @@ function __wbg_get_imports() {
             return ret;
         },
         __wbindgen_generic_0000000000000005: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [String], shim_idx: 1192, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [String], shim_idx: 1314, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen_686837205a8c621a___convert__closures_____invoke___alloc_cb2b8d99256f33df___string__String______true_);
             return ret;
         },

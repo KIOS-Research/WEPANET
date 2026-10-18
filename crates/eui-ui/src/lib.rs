@@ -37,6 +37,8 @@ mod shapefile;
 mod source;
 mod status;
 mod style;
+#[cfg(test)]
+mod test_plugins;
 mod viewer;
 mod widgets;
 

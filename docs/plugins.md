@@ -59,8 +59,9 @@ modules. A plugin then appears on the Plugins toolbar with a
 drop-down of its commands, and WEPANET remembers it for the next session
 (**Remove Plugin** in its drop-down forgets it).
 
-Ready-made examples are in [`plugins`](../plugins), one folder each, and all
-of them can be installed from the Plugin Manager:
+Ready-made examples are in the
+[WEPANET-Plugins](https://github.com/KIOS-Research/WEPANET-Plugins) project,
+one folder each, and all of them can be installed from the Plugin Manager:
 
 | Plugin | What it does |
 |---|---|
@@ -76,7 +77,8 @@ of them can be installed from the Plugin Manager:
 
 Plugin Manager offers the plugins of **repositories**: XML
 files listing plugins, read from their URLs. WEPANET's own repository is
-[`plugins/plugins.xml`](../plugins/plugins.xml); add others under
+[`plugins.xml`](https://github.com/KIOS-Research/WEPANET-Plugins/blob/main/plugins.xml)
+of WEPANET-Plugins (pull requests with new plugins are welcome); add others under
 **Settings** in the Plugin Manager. Installed plugins are offered an
 **Upgrade** when a repository lists a higher version.
 
@@ -233,20 +235,33 @@ DESCRIPTION = "Lowest junction pressures"   # optional: the tooltip
 MENU = ["Lowest 10", "Lowest 20"]       # optional: the commands (default ["Run"])
 REQUIREMENTS = ["epyt"]                 # optional: packages from PyPI
 
+# --- the research code: plain EPyT, nothing of WEPANET ---
 import numpy as np
-import wepanet
 from epyt import epanet
 
+def lowest_pressures(inp_file, n):
+    d = epanet(inp_file, display_msg=False)
+    try:
+        h = d.getComputedHydraulicTimeSeries()
+        lowest = np.asarray(h.Pressure).min(axis=0)
+        ids = d.getNodeNameID()
+    finally:
+        d.unload()
+    return sorted(zip(ids, lowest.round(2)), key=lambda r: r[1])[:n]
+
+# --- the link to WEPANET ---
+import wepanet
+
 def run(item):
-    d = epanet(wepanet.inp_file, display_msg=False)
-    h = d.getComputedHydraulicTimeSeries()
-    lowest = np.asarray(h.Pressure).min(axis=0)
-    ids = d.getNodeNameID()
-    n = int(item.split()[1])
-    rows = sorted(zip(ids, lowest.round(2)), key=lambda r: r[1])[:n]
+    rows = lowest_pressures(wepanet.inp_file, int(item.split()[1]))
     wepanet.table("Lowest pressures", ["Node", "Pressure"], rows)
-    d.unload()
 ```
+
+Keeping the research code apart from `run(item)`, as above, lets code
+written for EPyT come in unchanged: it takes an EPANET input file and returns
+numbers, and `run(item)` only hands it `wepanet.inp_file` and shows what it
+returns. The `EPyT Pressure Check` plugin is laid out this way, and its
+research code also runs on its own, outside WEPANET.
 
 `NAME`, `DESCRIPTION`, `MENU` and `REQUIREMENTS` are read without running the
 file, so they must be plain strings and lists of strings.

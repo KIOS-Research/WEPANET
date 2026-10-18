@@ -86,7 +86,7 @@ fn theme_combo<T: Copy + PartialEq>(
     current: String,
     items: &[(T, String, bool)],
     split: usize,
-) {
+) -> f32 {
     egui::ComboBox::from_id_salt(id)
         .selected_text(crate::i18n::tr(&current))
         .width(130.0)
@@ -114,7 +114,10 @@ fn theme_combo<T: Copy + PartialEq>(
                     *value = t;
                 }
             }
-        });
+        })
+        .response
+        .rect
+        .right()
 }
 
 fn contents(app: &mut EpanetApp, ui: &mut Ui) {
@@ -128,30 +131,34 @@ fn contents(app: &mut EpanetApp, ui: &mut Ui) {
 
     group_box(ui, "Themes", |ui| {
         ui.label(crate::i18n::tr("Nodes"));
-        ui.horizontal(|ui| {
-            let has_results = app.results.is_some();
-            let items: Vec<(NodeTheme, String, bool)> = app
-                .node_themes()
-                .into_iter()
-                .map(|t| (t, app.node_theme_name(t), !t.is_result() || has_results))
-                .collect();
-            let current = app.node_theme_name(app.prefs.node_theme);
-            theme_combo(
-                ui,
-                "node_theme",
-                &mut app.prefs.node_theme,
-                current,
-                &items,
-                items
-                    .iter()
-                    .filter(|i| !matches!(i.0, NodeTheme::Msx(_)))
-                    .count(),
-            );
-            ui.label(RichText::new(app.node_theme_units(app.prefs.node_theme)).weak());
-        });
+        // the pencil below the right end of the drop-down, as in EPANET-UI
+        let combo_right = ui
+            .horizontal(|ui| {
+                let has_results = app.results.is_some();
+                let items: Vec<(NodeTheme, String, bool)> = app
+                    .node_themes()
+                    .into_iter()
+                    .map(|t| (t, app.node_theme_name(t), !t.is_result() || has_results))
+                    .collect();
+                let current = app.node_theme_name(app.prefs.node_theme);
+                let right = theme_combo(
+                    ui,
+                    "node_theme",
+                    &mut app.prefs.node_theme,
+                    current,
+                    &items,
+                    items
+                        .iter()
+                        .filter(|i| !matches!(i.0, NodeTheme::Msx(_)))
+                        .count(),
+                );
+                ui.label(RichText::new(app.node_theme_units(app.prefs.node_theme)).weak());
+                right
+            })
+            .inner;
         ui.horizontal(|ui| {
             crate::widgets::checkbox(ui, &mut app.prefs.node_legend_visible, "Legend");
-            ui.add_space((ui.available_width() - 38.0).max(0.0));
+            ui.add_space((combo_right - PENCIL - ui.cursor().left()).max(4.0));
             if ui
                 .add(pencil_button())
                 .on_hover_text(crate::i18n::tr("Edit the node legend"))
@@ -162,30 +169,33 @@ fn contents(app: &mut EpanetApp, ui: &mut Ui) {
         });
         ui.add_space(4.0);
         ui.label(crate::i18n::tr("Links"));
-        ui.horizontal(|ui| {
-            let has_results = app.results.is_some();
-            let items: Vec<(LinkTheme, String, bool)> = app
-                .link_themes()
-                .into_iter()
-                .map(|t| (t, app.link_theme_name(t), !t.is_result() || has_results))
-                .collect();
-            let current = app.link_theme_name(app.prefs.link_theme);
-            theme_combo(
-                ui,
-                "link_theme",
-                &mut app.prefs.link_theme,
-                current,
-                &items,
-                items
-                    .iter()
-                    .filter(|i| !matches!(i.0, LinkTheme::Msx(_)))
-                    .count(),
-            );
-            ui.label(RichText::new(app.link_theme_units(app.prefs.link_theme)).weak());
-        });
+        let combo_right = ui
+            .horizontal(|ui| {
+                let has_results = app.results.is_some();
+                let items: Vec<(LinkTheme, String, bool)> = app
+                    .link_themes()
+                    .into_iter()
+                    .map(|t| (t, app.link_theme_name(t), !t.is_result() || has_results))
+                    .collect();
+                let current = app.link_theme_name(app.prefs.link_theme);
+                let right = theme_combo(
+                    ui,
+                    "link_theme",
+                    &mut app.prefs.link_theme,
+                    current,
+                    &items,
+                    items
+                        .iter()
+                        .filter(|i| !matches!(i.0, LinkTheme::Msx(_)))
+                        .count(),
+                );
+                ui.label(RichText::new(app.link_theme_units(app.prefs.link_theme)).weak());
+                right
+            })
+            .inner;
         ui.horizontal(|ui| {
             crate::widgets::checkbox(ui, &mut app.prefs.link_legend_visible, "Legend");
-            ui.add_space((ui.available_width() - 38.0).max(0.0));
+            ui.add_space((combo_right - PENCIL - ui.cursor().left()).max(4.0));
             if ui
                 .add(pencil_button())
                 .on_hover_text(crate::i18n::tr("Edit the link legend"))
@@ -255,10 +265,12 @@ fn contents(app: &mut EpanetApp, ui: &mut Ui) {
     });
 }
 
+const PENCIL: f32 = 28.0;
+
 /// The small pencil button beside "Legend".
 fn pencil_button() -> impl egui::Widget {
     |ui: &mut Ui| {
-        let (rect, resp) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::click());
+        let (rect, resp) = ui.allocate_exact_size(vec2(PENCIL, PENCIL), Sense::click());
         let v = ui.visuals();
         ui.painter().rect(
             rect,

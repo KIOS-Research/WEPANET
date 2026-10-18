@@ -7,8 +7,8 @@
   <meta name="description" content="Open-source water distribution network modeling in your browser. Runs locally, no account needed.">
   
 <script type="module">
-import init, * as bindings from '/epanet-ui-web-65c6d4d68d066a43.js';
-const wasm = await init({ module_or_path: '/epanet-ui-web-65c6d4d68d066a43_bg.wasm' });
+import init, * as bindings from '/epanet-ui-web-e86dbc1dce4813f7.js';
+const wasm = await init({ module_or_path: '/epanet-ui-web-e86dbc1dce4813f7_bg.wasm' });
 
 
 window.wasmBindings = bindings;
@@ -40,7 +40,7 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
     async
     src="https://gc.zgo.at/count.js">
   </script>
-<link rel="modulepreload" href="/epanet-ui-web-65c6d4d68d066a43.js" crossorigin="anonymous" integrity="sha384-/XGidnEoKfKWndG4nZW8/NIBiVOQqTB7HvNOENIy9zukCqepCqrmJzEoIwzASKyW"><link rel="preload" href="/epanet-ui-web-65c6d4d68d066a43_bg.wasm" crossorigin="anonymous" integrity="sha384-dJO4zwZqsoxBDrK0qXrucNmk9Lmxtj4lNzptsUpurDUqHTrA+m+2i7lIK2COZOYd" as="fetch" type="application/wasm"></head>
+<link rel="modulepreload" href="/epanet-ui-web-e86dbc1dce4813f7.js" crossorigin="anonymous" integrity="sha384-sT1dOc2kovFDdFtexIBFmgRNGDAbNDl0xWgBTCgpxpdwGvAR0u5UYwSNY3PS+QIz"><link rel="preload" href="/epanet-ui-web-e86dbc1dce4813f7_bg.wasm" crossorigin="anonymous" integrity="sha384-365tDFjiMGh+PbfLl5Cb/pTxaaN5CmBXSUiRxg0D5gzmv/KC+uVcYWPGdsiPCCzH" as="fetch" type="application/wasm"></head>
 <body>
   <canvas id="epanet_ui_canvas"></canvas>
   <div id="loading"><img src="logo.png" alt=""><span>Loading WEPANET…</span></div>

@@ -710,8 +710,7 @@ mod backend {
 mod tests {
     use super::*;
 
-    const EXAMPLE: &str =
-        include_str!("../../../plugins/EPyT Pressure Check/EPyT Pressure Check.py");
+    use crate::test_plugins::PYTHON as EXAMPLE;
 
     #[test]
     fn reads_the_header() {
@@ -766,7 +765,12 @@ mod tests {
             egui::Context::default(),
         ));
         app.load_example("Net1", eui_core::examples::NET1);
-        let p = describe("epyt_pressure.py", EXAMPLE).unwrap();
+        // the EPyT plugin of WEPANET-Plugins, when it is checked out beside
+        let Some(example) = crate::test_plugins::read("EPyT Pressure Check/EPyT Pressure Check.py")
+        else {
+            return;
+        };
+        let p = describe("epyt_pressure.py", &example).unwrap();
         let Some(o) = run_local(&app, &p, "Lowest Pressures") else {
             return;
         };
