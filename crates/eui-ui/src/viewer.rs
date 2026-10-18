@@ -24,12 +24,11 @@ pub(crate) fn group_box(ui: &mut Ui, title: &str, add: impl FnOnce(&mut Ui)) {
     ui.add_space(6.0);
 }
 
-/// The panel's contents (see [`crate::dock`]); returns its title bar.
-pub(crate) fn pane(app: &mut EpanetApp, ui: &mut Ui) -> egui::Response {
+/// The panel's contents (see [`crate::dock`]).
+pub(crate) fn pane(app: &mut EpanetApp, ui: &mut Ui) {
     let pal = app.palette();
     tool_hint(app, ui);
     crate::reports::selector(app, ui);
-    let bar = crate::dock::title_bar(ui, "Map Viewer", pal.menu);
     // The Overview Map takes the room the panel's contents leave (their
     // height is measured each frame), so that no scroll bar is needed.
     let content_id = egui::Id::new("map_viewer_content_height");
@@ -53,7 +52,6 @@ pub(crate) fn pane(app: &mut EpanetApp, ui: &mut Ui) -> egui::Response {
                 .height();
             ui.ctx().data_mut(|d| d.insert_temp(content_id, h));
         });
-    bar
 }
 
 /// A theme drop-down. The list is tall enough to show every theme without a

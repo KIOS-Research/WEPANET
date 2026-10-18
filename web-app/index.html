@@ -7,8 +7,8 @@
   <meta name="description" content="Open-source water distribution network modeling in your browser. Runs locally, no account needed.">
   
 <script type="module">
-import init, * as bindings from '/epanet-ui-web-269d6929667eae74.js';
-const wasm = await init({ module_or_path: '/epanet-ui-web-269d6929667eae74_bg.wasm' });
+import init, * as bindings from '/epanet-ui-web-48b544e5fd974dc.js';
+const wasm = await init({ module_or_path: '/epanet-ui-web-48b544e5fd974dc_bg.wasm' });
 
 
 window.wasmBindings = bindings;
@@ -26,6 +26,7 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
   <link rel="apple-touch-icon" href="logo.png">
   <script src="engine/engine.js"></script>
   <script src="engine/python.js"></script>
+  <script src="engine/recent.js"></script>
   <style>
     html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #f6f7f9; }
     @media (prefers-color-scheme: dark) { html, body { background: #1b1e23; } }
@@ -40,7 +41,7 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
     async
     src="https://gc.zgo.at/count.js">
   </script>
-<link rel="modulepreload" href="/epanet-ui-web-269d6929667eae74.js" crossorigin="anonymous" integrity="sha384-/Ucwgrejr0aAR8p8R49iEr/WhwmXsUdXbx+wsP6hYI0X0V4BDFQCapYvQmIoYLo8"><link rel="preload" href="/epanet-ui-web-269d6929667eae74_bg.wasm" crossorigin="anonymous" integrity="sha384-Qe3e+1RntekBHNLBP0sK4IrJCUB+jLPo/uqqYzeYCh4G0ozUaDvoigW12nrPQFMe" as="fetch" type="application/wasm"></head>
+<link rel="modulepreload" href="/epanet-ui-web-48b544e5fd974dc.js" crossorigin="anonymous" integrity="sha384-m74XFBOzEkK6OBO5MVnNd5kVv9ikGODqngXmQlHpBepTUd5P8K8CZZq7ePuFhsom"><link rel="preload" href="/epanet-ui-web-48b544e5fd974dc_bg.wasm" crossorigin="anonymous" integrity="sha384-V4n70SLjXcrmQPzW6g9IfXYs+wxX5JORZTzySYFyUfQWmamVD0GdLfyY7UTP6XFU" as="fetch" type="application/wasm"></head>
 <body>
   <canvas id="epanet_ui_canvas"></canvas>
   <div id="loading"><img src="logo.png" alt=""><span>Loading WEPANET…</span></div>

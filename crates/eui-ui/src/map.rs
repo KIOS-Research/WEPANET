@@ -42,6 +42,14 @@ impl Default for MapView {
 }
 
 impl MapView {
+    /// Shows the map around `center` at `scale`, as it was left.
+    pub fn place(&mut self, center: [f64; 2], scale: f64) {
+        self.center = center;
+        self.scale = scale;
+        self.fit_pending = false;
+        self.auto_fit = false;
+    }
+
     pub fn to_screen(&self, rect: Rect, p: [f64; 2]) -> Pos2 {
         let c = rect.center();
         pos2(
@@ -244,6 +252,7 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
     // Edits made by the input above show up in this frame's drawing.
     app.refresh_geometry();
     crate::basemap::draw(app, ui, &painter, rect, pal.map_bg);
+    crate::layers::draw(app, ui, &painter, rect);
 
     let highlight = |is_node: bool, i: usize| {
         app.query.active && app.query.nodes == is_node && app.query.hits.binary_search(&i).is_ok()
@@ -502,7 +511,9 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
 
     // ---- overlays ----
     draw_legends(app, ui, rect, node_legend, link_legend);
-    if app.net.nodes.is_empty() {
+    // only on a map with nothing on it: no network, basemap or map layers
+    let bare = app.prefs.basemap == crate::basemap::BasemapKind::None || !app.prefs.show_basemap;
+    if app.net.nodes.is_empty() && bare && !app.prefs.map_layers.iter().any(|l| l.visible) {
         painter.text(
             rect.center(),
             Align2::CENTER_CENTER,
@@ -622,7 +633,9 @@ fn handle_input(app: &mut EpanetApp, ui: &mut Ui, rect: Rect, response: &egui::R
         // Right-click cancels the link being drawn, or stops adding objects.
         match app.tool {
             Tool::AddLink(_) if app.link_start.is_some() => {}
-            Tool::AddNode(_) | Tool::AddLink(_) | Tool::AddLabel => app.set_tool(Tool::Select),
+            Tool::AddNode(_) | Tool::AddLink(_) | Tool::AddLabel | Tool::Identify => {
+                app.set_tool(Tool::Select)
+            }
             _ => {}
         }
         app.link_start = None;
@@ -660,6 +673,7 @@ fn handle_input(app: &mut EpanetApp, ui: &mut Ui, rect: Rect, response: &egui::R
             _ => {}
         },
         Tool::AddLabel => app.label_edit = Some((app.view.to_world(rect, p), String::new())),
+        Tool::Identify => crate::layers::identify(app, rect, p),
         Tool::AddNode(kind) => {
             app.checkpoint();
             let i = app

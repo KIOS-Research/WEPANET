@@ -188,6 +188,10 @@ pub struct Network {
     /// The project's EPANET-MSX input file, kept with the network (it names
     /// its nodes and links, and undo covers it) but saved to its own file.
     pub msx: Option<crate::MsxFile>,
+    /// The coordinate reference system of the coordinates ("EPSG:nnnn" or a
+    /// proj string). EPANET has no place for it, so it is kept in a comment,
+    /// `;CRS: EPSG:2100`, at the head of [COORDINATES].
+    pub crs: Option<String>,
     node_lookup: HashMap<String, usize>,
     link_lookup: HashMap<String, usize>,
 }
@@ -304,6 +308,14 @@ fn canonical_section(name: &str) -> String {
 }
 
 /// Splits an INP line into tokens and trailing comment. Supports quoted tokens.
+/// The coordinate reference system a `;CRS: …` comment line names.
+fn crs_comment(line: &str) -> Option<String> {
+    let rest = line.strip_prefix(';')?.trim_start();
+    let (key, value) = rest.split_once(':')?;
+    let value = value.trim();
+    (key.trim().eq_ignore_ascii_case("CRS") && !value.is_empty()).then(|| value.to_string())
+}
+
 pub(crate) fn tokenize_line(line: &str) -> (Vec<String>, String) {
     let (data, comment) = match line.find(';') {
         Some(i) => (&line[..i], line[i + 1..].trim().to_string()),
@@ -407,6 +419,12 @@ impl Network {
                 continue;
             }
 
+            if section == "COORDINATES"
+                && let Some(crs) = crs_comment(trimmed)
+            {
+                net.crs = Some(crs);
+                continue;
+            }
             let (tokens, comment) = tokenize_line(trimmed);
             if tokens.is_empty() {
                 continue; // comment-only line, e.g. column headers
@@ -578,6 +596,9 @@ impl Network {
 
     fn write_coordinates(&self, out: &mut String) {
         out.push_str("[COORDINATES]\n");
+        if let Some(crs) = &self.crs {
+            let _ = writeln!(out, ";CRS: {crs}");
+        }
         let _ = writeln!(out, ";{:<16}\t{:<16}\tY-Coord", "Node", "X-Coord");
         for n in &self.nodes {
             if let Some([x, y]) = n.pos {
@@ -994,6 +1015,32 @@ fn write_record(out: &mut String, head: &[&str], fields: &[String], comment: &st
 mod tests {
     use super::*;
     use crate::examples;
+
+    /// The coordinate reference system goes in and out of the INP file in a
+    /// comment at the head of [COORDINATES].
+    #[test]
+    fn keeps_the_coordinate_reference_system() {
+        let mut net = Network::from_inp(examples::NET1).unwrap();
+        assert_eq!(net.crs, None);
+        assert!(!net.to_inp().contains(";CRS"));
+        net.crs = Some("EPSG:2100".into());
+        let text = net.to_inp();
+        assert!(text.contains("[COORDINATES]\n;CRS: EPSG:2100\n"), "{text}");
+        let back = Network::from_inp(&text).unwrap();
+        assert_eq!(back.crs.as_deref(), Some("EPSG:2100"));
+        assert_eq!(back.nodes.len(), net.nodes.len());
+        assert!(back.nodes.iter().all(|n| n.pos.is_some()));
+        // written by hand, in any case, with a proj string
+        let text = text.replace(
+            ";CRS: EPSG:2100",
+            ";  crs:  +proj=utm +zone=36 +datum=WGS84",
+        );
+        let back = Network::from_inp(&text).unwrap();
+        assert_eq!(back.crs.as_deref(), Some("+proj=utm +zone=36 +datum=WGS84"));
+        // other comments there are not taken for one
+        assert_eq!(crs_comment(";Node  X-Coord  Y-Coord"), None);
+        assert_eq!(crs_comment(";CRS:"), None);
+    }
 
     #[test]
     fn parse_net1() {

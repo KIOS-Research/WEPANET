@@ -27,6 +27,8 @@ pub enum Tool {
     Reshape,
     /// Click on the map to place a map label.
     AddLabel,
+    /// Click on the map to see the features of the map layers there.
+    Identify,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -140,6 +142,7 @@ pub enum Dialog {
     RunStatus,
     Preferences,
     Basemap,
+    AddLayer,
     ImportShapefile,
     Georeference,
     BasemapAlign,
@@ -176,7 +179,13 @@ pub struct Prefs {
     pub show_viewer: bool,
     pub show_explorer: bool,
     /// Where the side panels are (the user moves them).
-    pub dock: crate::dock::Layout,
+    pub docks: crate::dock::Layout,
+    /// Layers from web map services over the map (see [`crate::layers`]).
+    pub map_layers: Vec<crate::layers::MapLayer>,
+    /// The Map Layers panel closed (Map > Layers).
+    pub hide_layers: bool,
+    /// Map service addresses used before, latest first.
+    pub layer_urls: Vec<String>,
     // map display settings (Map > Settings)
     /// Version of the map display defaults the settings were saved with.
     #[serde(default)]
@@ -279,7 +288,10 @@ impl Default for Prefs {
             menu_tab: MenuTab::Project,
             show_viewer: true,
             show_explorer: true,
-            dock: Default::default(),
+            docks: Default::default(),
+            map_layers: Vec::new(),
+            hide_layers: false,
+            layer_urls: Vec::new(),
             map_style: MAP_STYLE,
             node_size: 3.0,
             link_width: 1.0,
@@ -356,7 +368,7 @@ pub(crate) fn color([r, g, b]: [u8; 3]) -> egui::Color32 {
 /// Bumped when the map display defaults change, so saved settings pick them up.
 const MAP_STYLE: u32 = 1;
 const MAX_UNDO: usize = 100;
-const MAX_RECENT: usize = 8;
+pub(crate) const MAX_RECENT: usize = 8;
 
 /// What the Map Query found.
 #[derive(Clone, Debug, Default)]
@@ -373,7 +385,7 @@ pub struct QueryState {
 }
 
 pub struct EpanetApp {
-    ctx: egui::Context,
+    pub(crate) ctx: egui::Context,
     pub(crate) document_id: u64,
     pending_document: Option<(Network, String, Option<PathBuf>)>,
     saving: Option<(u64, u64)>,
@@ -443,10 +455,17 @@ pub struct EpanetApp {
     pub(crate) legend_edit: crate::dialogs::LegendEdit,
     pub(crate) cursor: Option<[f64; 2]>,
     pub(crate) basemap: crate::basemap::BasemapState,
+    pub(crate) layers: crate::layers::LayersState,
     pub(crate) plugins: crate::plugins::PluginsState,
     /// This project's ID prefixes and properties for new objects.
     pub(crate) setup: crate::setup::SetupDefaults,
     pub(crate) setup_edit: Option<crate::setup::SetupEdit>,
+    /// Whether the document is a WEPANET project (a .wepanet file), which Save
+    /// saves as one.
+    pub(crate) project: bool,
+    /// What a project file being opened keeps besides its network, for when
+    /// the network is in (and its image basemap's picture).
+    pub(crate) pending_project: Option<(crate::project::Project, Option<Vec<u8>>)>,
     pub(crate) scripts: crate::scripting::ScriptState,
     pub(crate) python: crate::python::PythonState,
     pub(crate) export: crate::export::ExportState,
@@ -460,7 +479,7 @@ pub struct EpanetApp {
     pub(crate) source_edit: Option<crate::source::SourceEdit>,
     /// The MSX text of the run in progress (its results need it).
     run_msx: Option<String>,
-    inbox: Inbox,
+    pub(crate) inbox: Inbox,
     title_sent: String,
 }
 
@@ -548,6 +567,7 @@ impl EpanetApp {
             legend_edit: Default::default(),
             cursor: None,
             basemap: Default::default(),
+            layers: Default::default(),
             plugins: Default::default(),
             setup: Default::default(),
             scripts: Default::default(),
@@ -555,6 +575,8 @@ impl EpanetApp {
             export: Default::default(),
             shp_import: None,
             setup_edit: None,
+            project: false,
+            pending_project: None,
             setup_job: None,
             msx: Default::default(),
             source_edit: None,
@@ -639,6 +661,7 @@ impl EpanetApp {
             .trim_end_matches(".gz")
             .trim_end_matches(".inp")
             .trim_end_matches(".INP")
+            .trim_end_matches(".wepanet")
             .to_string();
         self.path = None;
         self.dirty = false;
@@ -694,6 +717,25 @@ impl EpanetApp {
         self.path = path;
     }
 
+    /// The project's coordinate reference system ("EPSG:nnnn" or a proj
+    /// string): the one its file names, else the one chosen before for a file
+    /// of its name.
+    pub(crate) fn project_crs(&self) -> Option<String> {
+        self.net
+            .crs
+            .clone()
+            .or_else(|| self.prefs.basemap_crs.get(&self.file_name).cloned())
+    }
+
+    /// Sets the project's coordinate reference system, which is saved with it.
+    pub(crate) fn set_project_crs(&mut self, def: String) {
+        if self.net.crs.as_deref() != Some(def.as_str()) {
+            self.net.crs = Some(def.clone());
+            self.touch();
+        }
+        self.prefs.basemap_crs.insert(self.file_name.clone(), def);
+    }
+
     pub(crate) fn load_example(&mut self, name: &str, text: &str) {
         self.load_document(&format!("{name}.inp"), text, None);
     }
@@ -730,6 +772,12 @@ impl EpanetApp {
             self.set_network(net, &name);
             self.set_path(path);
             self.status = format!("Opened {name}");
+            // a project: what goes with its network
+            self.project = false;
+            if let Some((project, image)) = self.pending_project.take() {
+                crate::project::apply(self, project, image);
+                self.project = true;
+            }
             if let Some(m) = &self.net.msx {
                 self.status = format!("Opened {name} with its EPANET-MSX file {}", m.name);
             }
@@ -753,6 +801,7 @@ impl EpanetApp {
             1 => self.accept_document(),
             _ => {
                 self.pending_document = None;
+                self.pending_project = None;
                 self.msx.pending = None;
                 self.replace_after_save = false;
                 self.dialog = Dialog::None;
@@ -766,13 +815,80 @@ impl EpanetApp {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    /// Opens a project of the Recent Projects list: a path on desktop, a
+    /// file name in the browser (see [`crate::recent`]).
     pub(crate) fn open_recent(&mut self, path: &str) {
+        #[cfg(not(target_arch = "wasm32"))]
         self.open_path(PathBuf::from(path));
+        #[cfg(target_arch = "wasm32")]
+        crate::recent::open(self, path);
+    }
+
+    /// Saves the document as a WEPANET project (.wepanet): to its file if it
+    /// is one already, else where the user says.
+    pub(crate) fn save_project(&mut self) {
+        let ask = !self.project;
+        self.write_project(ask);
+    }
+
+    fn write_project(&mut self, ask: bool) {
+        if self.saving.is_some() {
+            return;
+        }
+        let bytes = match crate::project::write(self) {
+            Ok(b) => b,
+            Err(e) => {
+                self.status = format!("Save failed: {e}");
+                return;
+            }
+        };
+        let suggested = format!("{}.{}", self.file_name, crate::project::EXT);
+        let token = (self.document_id, self.generation);
+        match io::save_binary(
+            bytes,
+            &suggested,
+            "WEPANET project",
+            crate::project::EXT,
+            self.path.as_deref(),
+            ask,
+            token,
+            &self.ctx,
+        ) {
+            Ok(Some(p)) => {
+                self.file_name = p
+                    .file_stem()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                self.status = format!("Saved the project {}", self.file_name);
+                self.set_path(Some(p));
+                self.dirty = false;
+                self.project = true;
+                if self.replace_after_save {
+                    self.accept_document();
+                }
+            }
+            Ok(None) => {
+                if cfg!(target_arch = "wasm32") {
+                    self.saving = Some(token);
+                    self.status = format!("Saving {suggested}…");
+                } else {
+                    self.replace_after_save = false;
+                }
+            }
+            Err(e) => {
+                self.replace_after_save = false;
+                self.status = format!("Save failed: {e}");
+            }
+        }
     }
 
     pub(crate) fn save(&mut self, save_as: bool) {
         if self.saving.is_some() {
+            return;
+        }
+        // a project's Save saves the project (Save As, an INP file)
+        if self.project && !save_as {
+            self.write_project(false);
             return;
         }
         let text = self.net.to_inp();
@@ -842,9 +958,11 @@ impl EpanetApp {
             match event.result {
                 Ok(Some(name)) => {
                     self.dirty = token.1 != self.generation;
+                    self.project = crate::project::is_project(&name);
                     self.file_name = name
                         .trim_end_matches(".inp")
                         .trim_end_matches(".INP")
+                        .trim_end_matches(".wepanet")
                         .to_string();
                     self.status = format!("Saved {name}");
                     if self.replace_after_save && !self.dirty {
@@ -883,6 +1001,10 @@ impl EpanetApp {
                     if name.to_ascii_lowercase().ends_with(".msx") {
                         // an MSX file dropped on the window joins the project
                         crate::msx::take_file(self, &name, &bytes);
+                        continue;
+                    }
+                    if crate::project::is_project(&name) {
+                        crate::project::open(self, &name, &bytes, path);
                         continue;
                     }
                     self.load_document(&name, &io::decode_text(&bytes), path);
@@ -997,6 +1119,7 @@ impl EpanetApp {
             Tool::AddLink(k) => format!("Click the start node, then the end node of the new {} (Esc to stop)", k.label().to_lowercase()),
             Tool::Reshape => "Drag a vertex to move it, click the link to add one, right-click a vertex to delete it".into(),
             Tool::AddLabel => "Click on the map to place a label (Esc to stop)".into(),
+            Tool::Identify => "Click on the map to see the features of the map layers there (Esc to stop)".into(),
         };
     }
 
@@ -1610,6 +1733,8 @@ impl eframe::App for EpanetApp {
             self.pending_path = Some(p);
         }
         self.drain_inbox();
+        #[cfg(target_arch = "wasm32")]
+        crate::recent::update(self);
         crate::style::set_decimals(self.prefs.decimals);
         crate::i18n::set(&self.prefs.language);
         for event in io::take_save_events() {
@@ -1677,6 +1802,25 @@ mod document_tests {
         EpanetApp::new(&eframe::CreationContext::_new_kittest(
             egui::Context::default(),
         ))
+    }
+
+    /// The coordinate reference system is saved in the project's file and
+    /// read back from it, wherever the file goes.
+    #[test]
+    fn the_coordinate_reference_system_goes_with_the_project() {
+        let mut a = app();
+        a.load_example("Net1", eui_core::examples::NET1);
+        assert_eq!(a.project_crs(), None);
+        a.set_project_crs("EPSG:2100".into());
+        assert!(a.dirty);
+        let text = a.net.to_inp();
+        assert!(text.contains(";CRS: EPSG:2100"));
+        // another machine: nothing remembered for this file name
+        let mut b = app();
+        b.load_document("Elsewhere.inp", &text, None);
+        assert_eq!(b.project_crs().as_deref(), Some("EPSG:2100"));
+        assert_eq!(crate::basemap::crs_def(&b).as_deref(), Some("EPSG:2100"));
+        assert!(!b.dirty);
     }
 
     #[test]

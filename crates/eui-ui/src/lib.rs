@@ -24,13 +24,17 @@ mod images;
 mod import;
 mod import_shp;
 mod io;
+mod layers;
 mod map;
 mod menu;
 mod msx;
 mod plugin_manager;
 mod plugin_meta;
 mod plugins;
+mod project;
 mod python;
+#[cfg(target_arch = "wasm32")]
+mod recent;
 mod reports;
 mod scripting;
 mod setup;

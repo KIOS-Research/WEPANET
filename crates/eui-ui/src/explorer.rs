@@ -18,14 +18,20 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
     egui::Panel::right("project_explorer")
         .default_size(300.0)
         .show(ui, |ui| {
-            crate::dock::stack(app, ui, &[Pane::ProjectExplorer, Pane::PropertyEditor]);
+            crate::dock::stack(
+                app,
+                ui,
+                &[
+                    (vec![Pane::ProjectExplorer], Pane::ProjectExplorer),
+                    (vec![Pane::PropertyEditor], Pane::PropertyEditor),
+                ],
+            );
         });
 }
 
 /// The Project Explorer panel (see [`crate::dock`]): the tree, on white as
-/// in EPANET-UI. Returns its title bar.
-pub(crate) fn tree_pane(app: &mut EpanetApp, ui: &mut Ui) -> egui::Response {
-    let bar = crate::dock::title_bar(ui, "Project Explorer", app.palette().menu);
+/// in EPANET-UI.
+pub(crate) fn tree_pane(app: &mut EpanetApp, ui: &mut Ui) {
     egui::ScrollArea::vertical()
         .id_salt("tree")
         .auto_shrink(false)
@@ -37,13 +43,10 @@ pub(crate) fn tree_pane(app: &mut EpanetApp, ui: &mut Ui) -> egui::Response {
                     tree(app, ui)
                 });
         });
-    bar
 }
 
 /// The Property Editor panel: what the item chosen in the tree holds.
-/// Returns its title bar.
-pub(crate) fn editor_pane(app: &mut EpanetApp, ui: &mut Ui) -> egui::Response {
-    let bar = crate::dock::title_bar(ui, "Property Editor", app.palette().menu);
+pub(crate) fn editor_pane(app: &mut EpanetApp, ui: &mut Ui) {
     // Reset edit buffers whenever the edited object or the project changes.
     let owner = (app.selection, app.explorer, app.generation);
     if app.buffer_owner != Some(owner) {
@@ -59,7 +62,6 @@ pub(crate) fn editor_pane(app: &mut EpanetApp, ui: &mut Ui) -> egui::Response {
         .id_salt("props")
         .auto_shrink(false)
         .show(ui, |ui| editor(app, ui));
-    bar
 }
 
 fn tree(app: &mut EpanetApp, ui: &mut Ui) {

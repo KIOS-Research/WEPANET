@@ -74,6 +74,7 @@ pub enum Icon {
     Pencil,
     /// The Python Console: the Python logo, in its own colors.
     Python,
+    Layers,
     Menu,
 }
 
@@ -194,7 +195,7 @@ fn image_of(icon: Icon) -> Option<(&'static Sheet, usize)> {
         Icon::Menu => m(35),
         Icon::Percentiles => m(36),
         Icon::FireFlow => m(40),
-        Icon::Undo | Icon::Redo | Icon::Pencil | Icon::Python => None,
+        Icon::Undo | Icon::Redo | Icon::Pencil | Icon::Python | Icon::Layers => None,
     }
 }
 
@@ -282,6 +283,22 @@ pub fn paint(p: &Painter, icon: Icon, c: Pos2, size: f32, fg: Color32) {
                 block(-0.98, -0.47, 0.45, -0.05, 0.14); // bar
                 block(-0.98, -0.47, -0.56, 0.45, 0.2); // tail
                 p.circle_filled(at(flip * -0.24, flip * -0.72), 0.1 * r, Color32::WHITE);
+            }
+        }
+        Icon::Layers => {
+            // sheets one above the other: the top one whole, the edges of
+            // two below
+            let top = [(0.0, -0.75), (0.95, -0.3), (0.0, 0.15), (-0.95, -0.3)];
+            p.add(Shape::convex_polygon(
+                top.iter().map(|&(x, y)| at(x, y)).collect(),
+                fg.gamma_multiply(0.25),
+                s,
+            ));
+            for y in [0.15, 0.5] {
+                p.add(Shape::line(
+                    vec![at(-0.95, y), at(0.0, y + 0.45), at(0.95, y)],
+                    s,
+                ));
             }
         }
         _ => {

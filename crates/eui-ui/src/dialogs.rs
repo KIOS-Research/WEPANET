@@ -10,6 +10,7 @@ use crate::app::{Dialog, EpanetApp};
 use crate::style::{Legend, LinkTheme, NodeTheme};
 
 pub fn show(app: &mut EpanetApp, ctx: &egui::Context) {
+    crate::basemap::project_crs_window(app, ctx);
     let dialog = app.dialog;
     // Dialogs can be moved (dragged by any free part of them). Each opens in
     // the middle of the screen and stays there while the screen changes size
@@ -74,6 +75,7 @@ pub fn show(app: &mut EpanetApp, ctx: &egui::Context) {
         Dialog::RunStatus => "Run Status",
         Dialog::Preferences => "Program Preferences",
         Dialog::Basemap => "Select a Basemap Source",
+        Dialog::AddLayer => "Add a Map Layer",
         Dialog::ImportShapefile => "Shapefile Importer",
         Dialog::Georeference => "Map Georeference Tool",
         Dialog::BasemapAlign => "Map Alignment Tool",
@@ -195,6 +197,7 @@ pub fn show(app: &mut EpanetApp, ctx: &egui::Context) {
                     Dialog::RunStatus => run_status(app, ui),
                     Dialog::Preferences => preferences(app, ui),
                     Dialog::Basemap => crate::basemap::dialog(app, ui),
+                    Dialog::AddLayer => crate::layers::dialog(app, ui),
                     Dialog::ImportShapefile => crate::import_shp::dialog(app, ui),
                     Dialog::Georeference => crate::basemap::georef_dialog(app, ui),
                     Dialog::BasemapAlign => crate::basemap::align_dialog(app, ui),
@@ -437,7 +440,6 @@ fn welcome(app: &mut EpanetApp, ui: &mut Ui) -> bool {
             }
         } else {
             heading(ui, "Open a Recent Project");
-            #[cfg(not(target_arch = "wasm32"))]
             for r in app.prefs.recent.clone() {
                 let name = std::path::Path::new(&r)
                     .file_name()
@@ -448,7 +450,7 @@ fn welcome(app: &mut EpanetApp, ui: &mut Ui) -> bool {
                     *close = true;
                 }
             }
-            if app.prefs.recent.is_empty() || cfg!(target_arch = "wasm32") {
+            if app.prefs.recent.is_empty() {
                 ui.label(RichText::new(crate::i18n::tr("There are no recent projects")).weak());
             }
             ui.add_space(16.0);
@@ -686,7 +688,10 @@ fn preferences(app: &mut EpanetApp, ui: &mut Ui) -> bool {
         Some(0) => crate::help::open(&ctx, "Program Preferences"),
         Some(1) => {
             if clear_recent {
+                #[cfg(not(target_arch = "wasm32"))]
                 app.prefs.recent.clear();
+                #[cfg(target_arch = "wasm32")]
+                crate::recent::clear(app);
             }
             close = true;
         }

@@ -63,7 +63,7 @@ const MAP_NAMES: [&str; 6] = [
     "Upper Right X",
     "Upper Right Y",
     "Map Units",
-    "EPSG",
+    "CRS",
 ];
 const HINTS: [&str; 4] = [
     "Project hydraulic options",
@@ -178,6 +178,8 @@ pub struct SetupEdit {
     confirm: Option<String>,
     roughness: Roughness,
     old: [String; 3],
+    /// The Coordinate Reference System Selector, while open for the CRS row.
+    crs_selector: Option<crate::basemap::CrsSelector>,
 }
 
 /// A unit conversion in progress, finished by [`poll`].
@@ -227,12 +229,9 @@ pub fn open(app: &mut EpanetApp) {
                 .to_string()
         })
         .unwrap_or_else(|| "None".into());
-    let epsg = app
-        .prefs
-        .basemap_crs
-        .get(&app.file_name)
-        .and_then(|c| c.strip_prefix("EPSG:").map(str::to_string))
-        .unwrap_or_else(|| "0".into());
+    // the EPSG code, or the proj string of a custom system
+    let crs = crate::basemap::crs_def(app).unwrap_or_default();
+    let epsg = crs.strip_prefix("EPSG:").unwrap_or(&crs).to_string();
     let old = [options[0].clone(), options[1].clone(), options[2].clone()];
     app.setup_edit = Some(SetupEdit {
         page: 0,
@@ -252,18 +251,23 @@ pub fn open(app: &mut EpanetApp) {
         confirm: None,
         roughness: Roughness::Formula,
         old,
+        crs_selector: None,
     });
     app.dialog = crate::app::Dialog::Setup;
 }
 
 /// A two-column "property / value" table, as EPANET-UI's value list editor.
+/// A row given a text by `button` shows a button with that text instead of a
+/// field; returns the row whose button was clicked.
 fn table(
     ui: &mut Ui,
     head: [&str; 2],
     names: &[&str],
     values: &mut [String],
     choices: &dyn Fn(usize) -> Option<&'static [&'static str]>,
-) {
+    button: &dyn Fn(usize) -> Option<String>,
+) -> Option<usize> {
+    let mut clicked = None;
     let dark = ui.visuals().dark_mode;
     let white = if dark {
         ui.visuals().extreme_bg_color
@@ -335,8 +339,19 @@ fn table(
                     &mut |ui| {
                         ui.label(*name);
                     },
-                    &mut |ui| match choices(k) {
-                        Some(list) => {
+                    &mut |ui| match (button(k), choices(k)) {
+                        (Some(text), _) => {
+                            if ui
+                                .add_sized(
+                                    [ui.available_width() - 4.0, 26.0],
+                                    egui::Button::new(text).truncate(),
+                                )
+                                .clicked()
+                            {
+                                clicked = Some(k);
+                            }
+                        }
+                        (None, Some(list)) => {
                             egui::ComboBox::from_id_salt(("setup_choice", *name))
                                 .selected_text(v.clone())
                                 .width(ui.available_width() - 4.0)
@@ -351,7 +366,7 @@ fn table(
                                     }
                                 });
                         }
-                        None => {
+                        (None, None) => {
                             ui.add(
                                 egui::TextEdit::singleline(v)
                                     .frame(egui::Frame::NONE)
@@ -363,6 +378,7 @@ fn table(
                 );
             }
         });
+    clicked
 }
 
 /// Whether flow units are SI (index 5 onwards, as in EPANET).
@@ -398,8 +414,9 @@ fn validate(e: &SetupEdit) -> Result<(), (usize, String)> {
             "Map coordinates are not valid longitudes/latitudes".into(),
         ));
     }
-    if !e.map[5].trim().is_empty() && e.map[5].trim().parse::<u32>().is_err() {
-        return Err((3, format!("{} is not a valid EPSG code", e.map[5].trim())));
+    let crs = e.map[5].trim();
+    if !crs.is_empty() && !crs.starts_with('+') && crs.parse::<u32>().is_err() {
+        return Err((3, format!("{crs} is not a valid EPSG code")));
     }
     for k in 3..9 {
         if num(&e.options[k]).is_none() {
@@ -458,6 +475,7 @@ pub fn dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
     let ctx = ui.ctx().clone();
     let has_results = app.results.is_some();
     let empty = app.net.nodes.is_empty();
+    let crs_recent = app.prefs.crs_recent.clone();
     let Some(e) = app.setup_edit.as_mut() else {
         return true;
     };
@@ -529,7 +547,7 @@ pub fn dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
                 }
             });
         });
-    match e.page {
+    let _ = match e.page {
         0 => table(
             ui,
             ["Project Option", "Value"],
@@ -541,12 +559,14 @@ pub fn dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
                 2 => Some(&HEADLOSS),
                 _ => None,
             },
+            &|_| None,
         ),
         1 => table(
             ui,
             ["Object Type", "ID Prefix"],
             &PREFIX_NAMES,
             &mut e.prefixes,
+            &|_| None,
             &|_| None,
         ),
         2 => table(
@@ -555,14 +575,35 @@ pub fn dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
             &PROPERTY_NAMES,
             &mut e.properties,
             &|_| None,
+            &|_| None,
         ),
-        _ => table(
-            ui,
-            ["Map Property", "Value"],
-            &MAP_NAMES,
-            &mut e.map,
-            &|k| (k == 4).then_some(&MAP_UNITS[..]),
-        ),
+        _ => {
+            // the coordinate reference system, chosen as from the status bar
+            let crs = e.map[5].trim().to_string();
+            let crs = if crs == "0" { String::new() } else { crs };
+            let label = crate::basemap::crs_label(&crs);
+            let clicked = table(
+                ui,
+                ["Map Property", "Value"],
+                &MAP_NAMES,
+                &mut e.map,
+                &|k| (k == 4).then_some(&MAP_UNITS[..]),
+                &|k| (k == 5).then(|| label.clone()),
+            );
+            if clicked == Some(5) {
+                e.crs_selector = Some(crate::basemap::CrsSelector::new(&crs));
+            }
+            None
+        }
+    };
+    if let Some(sel) = &mut e.crs_selector
+        && let Some(choice) = crate::basemap::crs_selector(&ctx, sel, &crs_recent)
+    {
+        e.crs_selector = None;
+        if let Some(c) = choice {
+            e.map[4] = MAP_UNITS[crate::basemap::crs_units(&c)].to_string();
+            e.map[5] = c;
+        }
     }
     // hint panel
     egui::Frame::NONE
@@ -665,17 +706,11 @@ fn apply(app: &mut EpanetApp, ctx: &egui::Context) {
     }
     app.net
         .set_option("BACKDROP", "UNITS", &e.map[4].to_ascii_uppercase());
-    match e.map[5].trim().parse::<u32>() {
-        Ok(code) if code > 0 => {
-            app.prefs
-                .basemap_crs
-                .insert(app.file_name.clone(), format!("EPSG:{code}"));
-        }
-        _ if e.map[4] == "Degrees" => {
-            app.prefs
-                .basemap_crs
-                .insert(app.file_name.clone(), "EPSG:4326".into());
-        }
+    let crs = e.map[5].trim();
+    match crs.parse::<u32>() {
+        Ok(code) if code > 0 => app.set_project_crs(format!("EPSG:{code}")),
+        _ if crs.starts_with('+') => app.set_project_crs(crs.to_string()),
+        _ if e.map[4] == "Degrees" => app.set_project_crs("EPSG:4326".into()),
         _ => {}
     }
     // units and head loss formula, converted by EPANET

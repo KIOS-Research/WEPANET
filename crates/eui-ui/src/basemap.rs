@@ -396,6 +396,48 @@ impl BasemapImage {
     }
 }
 
+/// The image basemap, for a project file: its name, as PNG, and where it lies.
+pub(crate) fn image_for_project(app: &EpanetApp) -> Option<(String, Vec<u8>, [f64; 4])> {
+    let img = app.basemap.image.as_ref()?;
+    let o = &img.original;
+    let rgba: Vec<u8> = o
+        .pixels
+        .iter()
+        .flat_map(|p| p.to_srgba_unmultiplied())
+        .collect();
+    let buf = image::RgbaImage::from_raw(o.size[0] as u32, o.size[1] as u32, rgba)?;
+    let mut png = std::io::Cursor::new(Vec::new());
+    buf.write_to(&mut png, image::ImageFormat::Png).ok()?;
+    Some((img.name.clone(), png.into_inner(), img.bounds))
+}
+
+/// Puts back the image basemap of a project file.
+pub(crate) fn restore_image(
+    app: &mut EpanetApp,
+    ctx: &egui::Context,
+    name: &str,
+    png: &[u8],
+    bounds: [f64; 4],
+) -> Result<(), String> {
+    let original = decode(png, false)?;
+    let mut image = BasemapImage {
+        name: name.to_string(),
+        texture: ctx.load_texture(
+            "basemap-image",
+            original.clone(),
+            egui::TextureOptions::LINEAR,
+        ),
+        bounds,
+        size: original.size,
+        original,
+    };
+    if app.prefs.basemap_gray {
+        image.set_gray(ctx, true);
+    }
+    app.basemap.image = Some(image);
+    Ok(())
+}
+
 #[derive(Default)]
 pub struct BasemapState {
     tiles: HashMap<TileKey, Tile>,
@@ -411,6 +453,8 @@ pub struct BasemapState {
     units_edit: usize,
     /// The Coordinate Reference System Selector, while open.
     selector: Option<CrsSelector>,
+    /// The selector opened for the project alone (from the status bar).
+    project_selector: Option<CrsSelector>,
     source_error: Option<String>,
     pub georef: Option<Georef>,
     pub align: Option<Align>,
@@ -420,19 +464,73 @@ pub struct BasemapState {
 impl BasemapState {
     /// Whether the Coordinate Reference System Selector is open.
     pub fn selector_open(&self) -> bool {
-        self.selector.is_some()
+        self.selector.is_some() || self.project_selector.is_some()
     }
 }
 
 /// The coordinate system definition in effect: the one chosen for this file,
 /// else longitude/latitude when the coordinates can only be that.
-fn crs_def(app: &EpanetApp) -> Option<String> {
-    if let Some(d) = app.prefs.basemap_crs.get(&app.file_name) {
-        return Some(d.clone());
+pub(crate) fn crs_def(app: &EpanetApp) -> Option<String> {
+    if let Some(d) = app.project_crs() {
+        return Some(d);
     }
     app.bounds()
         .filter(|&b| looks_lonlat(b))
         .map(|_| "EPSG:4326".to_string())
+}
+
+/// Opens the Coordinate Reference System Selector for the project.
+pub fn open_crs(app: &mut EpanetApp) {
+    let current = crs_def(app).unwrap_or_default();
+    let code = current
+        .strip_prefix("EPSG:")
+        .unwrap_or(&current)
+        .to_string();
+    app.basemap.project_selector = Some(CrsSelector::new(&code));
+}
+
+/// The selector opened by [`open_crs`], while it is; what is chosen there
+/// becomes the project's coordinate reference system.
+pub fn project_crs_window(app: &mut EpanetApp, ctx: &egui::Context) {
+    let recent = app.prefs.crs_recent.clone();
+    let Some(choice) = app
+        .basemap
+        .project_selector
+        .as_mut()
+        .and_then(|s| crs_selector(ctx, s, &recent))
+    else {
+        return;
+    };
+    app.basemap.project_selector = None;
+    let Some(c) = choice else {
+        return;
+    };
+    let def = if c.starts_with('+') {
+        c.clone()
+    } else {
+        format!("EPSG:{}", c.trim_start_matches("EPSG:"))
+    };
+    let bounds = app.bounds();
+    match Geo::parse(&def) {
+        Err(e) => app.status = e,
+        Ok(g) if bounds.is_some_and(|b| !fits(&g, b)) => {
+            app.status = format!("The network's coordinates are not in {def}");
+        }
+        Ok(_) => {
+            let key = def.strip_prefix("EPSG:").unwrap_or(&def).to_string();
+            let recent = &mut app.prefs.crs_recent;
+            recent.retain(|r| *r != key);
+            recent.insert(0, key);
+            recent.truncate(10);
+            app.net.set_option(
+                "BACKDROP",
+                "UNITS",
+                &UNITS[crs_units(&c)].to_ascii_uppercase(),
+            );
+            app.status = format!("Coordinate reference system: {def}");
+            app.set_project_crs(def);
+        }
+    }
 }
 
 /// The network's coordinate transformation, if it is known.
@@ -766,7 +864,7 @@ fn draw_tiles(
 }
 
 /// The coordinate transformation already made by [`geo`].
-fn geo_ref(app: &EpanetApp) -> Result<&Geo, String> {
+pub(crate) fn geo_ref(app: &EpanetApp) -> Result<&Geo, String> {
     match &app.basemap.geo {
         Some((_, Ok(g))) => Ok(g),
         _ => Err("no coordinate system".into()),
@@ -871,9 +969,7 @@ pub fn dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
     if app.basemap.crs_edit.is_none() {
         // EPANET-UI: an empty project is laid out in longitude/latitude
         let saved = app
-            .prefs
-            .basemap_crs
-            .get(&app.file_name)
+            .project_crs()
             .and_then(|c| c.strip_prefix("EPSG:").map(str::to_string));
         let units = app
             .net
@@ -882,12 +978,7 @@ pub fn dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
         let lonlat = app.bounds().is_some_and(looks_lonlat);
         // Longitude/latitude (EPSG:4326) unless another system was chosen for this file.
         let custom = !empty && saved.as_deref().is_some_and(|c| c != "4326");
-        let saved_proj = app
-            .prefs
-            .basemap_crs
-            .get(&app.file_name)
-            .filter(|c| !c.starts_with("EPSG:"))
-            .cloned();
+        let saved_proj = app.project_crs().filter(|c| !c.starts_with("EPSG:"));
         app.basemap.crs_edit = Some(if custom {
             saved.unwrap_or_default()
         } else if let Some(p) = saved_proj.filter(|_| !empty) {
@@ -1145,7 +1236,7 @@ pub fn dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
                     recent.retain(|c| *c != key);
                     recent.insert(0, key);
                     recent.truncate(10);
-                    app.prefs.basemap_crs.insert(app.file_name.clone(), def);
+                    app.set_project_crs(def);
                     app.net
                         .set_option("BACKDROP", "UNITS", &UNITS[units].to_ascii_uppercase());
                     app.prefs.basemap = kind;
@@ -1169,7 +1260,7 @@ pub fn dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
 
 /// How a coordinate system of the CRS field reads: "EPSG:6312 - CGRS93 /
 /// Cyprus Local Transverse Mercator", or the proj string of a custom one.
-fn crs_label(c: &str) -> String {
+pub(crate) fn crs_label(c: &str) -> String {
     let c = c.trim();
     if c.is_empty() {
         "Select the coordinate system…".into()
@@ -1185,7 +1276,7 @@ fn crs_label(c: &str) -> String {
 }
 
 /// The CRS Units entry of a coordinate system of the CRS field.
-fn crs_units(c: &str) -> usize {
+pub(crate) fn crs_units(c: &str) -> usize {
     let c = c.trim();
     if c.starts_with('+') {
         if c.contains("+proj=longlat") {
@@ -1215,6 +1306,7 @@ fn globe_button(ui: &mut Ui) -> egui::Response {
 }
 
 /// The state of the Coordinate Reference System Selector.
+#[derive(Clone, Debug)]
 pub struct CrsSelector {
     filter: String,
     /// A proj string instead of a predefined system.
@@ -1229,7 +1321,7 @@ pub struct CrsSelector {
 }
 
 impl CrsSelector {
-    fn new(current: &str) -> Self {
+    pub(crate) fn new(current: &str) -> Self {
         let c = current.trim();
         let custom = c.starts_with('+');
         CrsSelector {
@@ -1412,7 +1504,7 @@ fn crs_table(
 /// filter), the recently used ones and the chosen one's properties, or a
 /// custom proj string. Returns Some once closed: with the chosen system
 /// ("6312" or a proj string) on OK, None on Cancel.
-fn crs_selector(
+pub(crate) fn crs_selector(
     ctx: &egui::Context,
     sel: &mut CrsSelector,
     recent: &[String],

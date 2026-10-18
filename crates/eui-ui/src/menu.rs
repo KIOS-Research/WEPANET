@@ -488,6 +488,24 @@ fn map_toolbar(app: &mut EpanetApp, ui: &mut Ui) {
         "Add/remove/adjust a basemap layer",
     );
     dropdown(&basemap, |ui| crate::basemap::menu(app, ui));
+    let layers = tool_button(
+        ui,
+        Icon::Layers,
+        "Layers ▾",
+        true,
+        app.prefs.map_layers.iter().any(|l| l.visible),
+        "Add layers from WMS or ArcGIS REST map services",
+    );
+    dropdown(&layers, |ui| {
+        if icons::menu_item(ui, Icon::Add, "Add Layer", true).clicked() {
+            crate::layers::open_add(app);
+            ui.close();
+        }
+        if icons::check_item(ui, "Map Layers Panel", !app.prefs.hide_layers).clicked() {
+            app.prefs.hide_layers = !app.prefs.hide_layers;
+            ui.close();
+        }
+    });
     let export = tool_button(
         ui,
         Icon::Export,
@@ -1020,6 +1038,17 @@ pub fn file_menu(app: &mut EpanetApp, ctx: &egui::Context) {
                 app.save(true);
                 close = true;
             }
+            if item(
+                ui,
+                Icon::Layers,
+                "Save Project",
+                "Save the network with its coordinate system, basemap, map layers and view, in one .wepanet file.",
+                true,
+                49.0,
+            ) {
+                app.save_project();
+                close = true;
+            }
             let import_y = y.get();
             let import_id = egui::Id::new("backstage_import");
             let mut importing: bool = ctx.data(|d| d.get_temp(import_id)).unwrap_or(false);
@@ -1160,7 +1189,6 @@ pub fn file_menu(app: &mut EpanetApp, ctx: &egui::Context) {
                 }
             } else {
                 heading(&mut child, "Recent Projects");
-                #[cfg(not(target_arch = "wasm32"))]
                 for (k, r) in app.prefs.recent.clone().into_iter().enumerate() {
                     let name = std::path::Path::new(&r)
                         .file_name()
@@ -1171,7 +1199,7 @@ pub fn file_menu(app: &mut EpanetApp, ctx: &egui::Context) {
                         close = true;
                     }
                 }
-                if app.prefs.recent.is_empty() || cfg!(target_arch = "wasm32") {
+                if app.prefs.recent.is_empty() {
                     child.add_space(4.0);
                     child.label(
                         egui::RichText::new(format!("  {}", tr("There are no recent projects")))

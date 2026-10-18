@@ -51,7 +51,10 @@ pub fn open_dialog(inbox: &Inbox, ctx: &egui::Context) -> Option<std::path::Path
     {
         let _ = ctx;
         let path = rfd::FileDialog::new()
-            .add_filter("EPANET input file", &["inp", "INP", "gz"])
+            .add_filter(
+                "EPANET input file or WEPANET project",
+                &["inp", "INP", "gz", "wepanet"],
+            )
             .add_filter("All files", &["*"])
             .pick_file()?;
         inbox.push(read_path(&path));
@@ -59,11 +62,19 @@ pub fn open_dialog(inbox: &Inbox, ctx: &egui::Context) -> Option<std::path::Path
     }
     #[cfg(target_arch = "wasm32")]
     {
+        // where it can, the browser remembers the file, for Recent Projects
+        if crate::recent::supported() {
+            crate::recent::pick(inbox, ctx);
+            return None;
+        }
         let inbox = inbox.clone();
         let ctx = ctx.clone();
         wasm_bindgen_futures::spawn_local(async move {
             if let Some(file) = rfd::AsyncFileDialog::new()
-                .add_filter("EPANET input file", &["inp", "INP", "gz"])
+                .add_filter(
+                    "EPANET input file or WEPANET project",
+                    &["inp", "INP", "gz", "wepanet"],
+                )
                 .pick_file()
                 .await
             {
@@ -135,7 +146,15 @@ pub fn save_report(text: &str, suggested_name: &str, ctx: &egui::Context) -> Res
             .next()
             .unwrap_or("txt")
             .to_string();
-        save_in_browser(text, suggested_name, "Text file", &ext, true, None, ctx);
+        save_in_browser(
+            Data::Text(text.to_string()),
+            suggested_name,
+            "Text file",
+            &ext,
+            true,
+            None,
+            ctx,
+        );
         Ok(())
     }
 }
@@ -286,7 +305,8 @@ pub fn save_text(
     {
         let _ = (token, ctx);
         let target = match path {
-            Some(p) if !ask => p.to_path_buf(),
+            // never over a file of another kind (a project's)
+            Some(p) if !ask && has_ext(p, "inp") => p.to_path_buf(),
             _ => match rfd::FileDialog::new()
                 .add_filter("EPANET input file", &["inp"])
                 .set_file_name(suggested_name)
@@ -303,10 +323,69 @@ pub fn save_text(
     {
         let _ = path;
         save_in_browser(
-            text,
+            Data::Text(text.to_string()),
             suggested_name,
             "EPANET input file",
             "inp",
+            ask,
+            Some(token),
+            ctx,
+        );
+        Ok(None)
+    }
+}
+
+/// What is saved: text, or a file's bytes.
+#[cfg(target_arch = "wasm32")]
+pub enum Data {
+    Text(String),
+    Bytes(Vec<u8>),
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn has_ext(p: &std::path::Path, ext: &str) -> bool {
+    p.extension().is_some_and(|e| e.eq_ignore_ascii_case(ext))
+}
+
+/// Saves a file's bytes as [`save_text`] saves text: to `path` (with the
+/// extension `ext`) or where the user says on desktop, in the browser with a
+/// Save window where it has one. Returns the path written on desktop.
+#[allow(clippy::too_many_arguments)]
+pub fn save_binary(
+    bytes: Vec<u8>,
+    suggested_name: &str,
+    kind: &str,
+    ext: &str,
+    path: Option<&std::path::Path>,
+    ask: bool,
+    token: (u64, u64),
+    ctx: &egui::Context,
+) -> Result<Option<std::path::PathBuf>, String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = (token, ctx);
+        let target = match path {
+            Some(p) if !ask && has_ext(p, ext) => p.to_path_buf(),
+            _ => match rfd::FileDialog::new()
+                .add_filter(kind, &[ext])
+                .set_file_name(suggested_name)
+                .save_file()
+            {
+                Some(p) => p,
+                None => return Ok(None),
+            },
+        };
+        std::fs::write(&target, bytes).map_err(|e| format!("{}: {e}", target.display()))?;
+        Ok(Some(target))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = path;
+        save_in_browser(
+            Data::Bytes(bytes),
+            suggested_name,
+            kind,
+            ext,
             ask,
             Some(token),
             ctx,
@@ -377,7 +456,7 @@ pub fn forget_project_file() {
 #[cfg(target_arch = "wasm32")]
 #[allow(clippy::too_many_arguments)]
 fn save_in_browser(
-    text: &str,
+    data: Data,
     name: &str,
     kind: &str,
     ext: &str,
@@ -389,7 +468,10 @@ fn save_in_browser(
     use wasm_bindgen::{JsCast, JsValue};
     use wasm_bindgen_futures::JsFuture;
 
-    let text = text.to_string();
+    let mime = match &data {
+        Data::Text(_) => "text/plain",
+        Data::Bytes(_) => "application/zip",
+    };
     let name = name.to_string();
     let kind = kind.to_string();
     let ext = ext.to_string();
@@ -400,9 +482,12 @@ fn save_in_browser(
         let window: JsValue = js_sys::global().into();
         let picker = Reflect::get(&window, &"showSaveFilePicker".into()).ok();
         let Some(picker) = picker.and_then(|p| p.dyn_into::<Function>().ok()) else {
-            let result = download(&name, &text)
-                .map(|()| Some(name.clone()))
-                .map_err(|e| format!("{e:?}"));
+            let result = match &data {
+                Data::Text(t) => download(&name, t),
+                Data::Bytes(b) => download_bytes(&name, b, mime),
+            }
+            .map(|()| Some(name.clone()))
+            .map_err(|e| format!("{e:?}"));
             SAVE_EVENTS.with(|m| m.borrow_mut().push(SaveEvent { token, result }));
             ctx.request_repaint();
             return;
@@ -413,8 +498,15 @@ fn save_in_browser(
             r.dyn_into::<Promise>()
         };
         let result: Result<String, JsValue> = async {
+            // the file saved to before, if it is of this kind (an .inp file
+            // is not written over with a project)
             let known = if project && !ask {
-                PROJECT_HANDLE.with(|h| h.borrow().clone())
+                PROJECT_HANDLE.with(|h| h.borrow().clone()).filter(|h| {
+                    Reflect::get(h, &"name".into())
+                        .ok()
+                        .and_then(|n| n.as_string())
+                        .is_some_and(|n| n.to_ascii_lowercase().ends_with(&format!(".{ext}")))
+                })
             } else {
                 None
             };
@@ -424,7 +516,7 @@ fn save_in_browser(
                     let accept = Object::new();
                     Reflect::set(
                         &accept,
-                        &"text/plain".into(),
+                        &mime.into(),
                         &Array::of1(&format!(".{ext}").into()),
                     )?;
                     let ty = Object::new();
@@ -443,10 +535,15 @@ fn save_in_browser(
                 ));
             }
             let writable = JsFuture::from(call(&handle, "createWritable", &[])?).await?;
-            JsFuture::from(call(&writable, "write", &[text.clone().into()])?).await?;
+            let payload: JsValue = match &data {
+                Data::Text(t) => t.clone().into(),
+                Data::Bytes(b) => js_sys::Uint8Array::from(&b[..]).into(),
+            };
+            JsFuture::from(call(&writable, "write", &[payload])?).await?;
             JsFuture::from(call(&writable, "close", &[])?).await?;
             if project && PROJECT_EPOCH.with(|e| e.get()) == epoch {
                 PROJECT_HANDLE.with(|h| *h.borrow_mut() = Some(handle.clone()));
+                crate::recent::remember(&handle);
             }
             let saved = Reflect::get(&handle, &"name".into())?
                 .as_string()

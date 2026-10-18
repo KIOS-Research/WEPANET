@@ -252,6 +252,16 @@ mod tests {
         assert!((h - 1004.35).abs() < 0.05, "head = {h}");
     }
 
+    /// EPANET reads a file that keeps its coordinate reference system in a
+    /// comment (eui_core::Network::crs).
+    #[test]
+    fn runs_a_file_with_its_coordinate_reference_system() {
+        let mut net = eui_core::Network::from_inp(examples::NET1).unwrap();
+        net.crs = Some("EPSG:2100".into());
+        let r = run_blocking(&net.to_inp()).unwrap();
+        assert_eq!(r.code, 0, "{}", r.report);
+    }
+
     /// Emitter flow, which the output file only includes in the demand, comes
     /// back per reporting period with the extra results.
     #[test]

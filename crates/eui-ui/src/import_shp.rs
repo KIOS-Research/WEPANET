@@ -136,12 +136,9 @@ pub fn open(app: &mut EpanetApp) {
         _ => 0,
     };
     let epsg = app
-        .prefs
-        .basemap_crs
-        .get(&app.file_name)
-        .and_then(|c| c.strip_prefix("EPSG:"))
-        .unwrap_or("")
-        .to_string();
+        .project_crs()
+        .and_then(|c| c.strip_prefix("EPSG:").map(str::to_string))
+        .unwrap_or_default();
     app.shp_import = Some(ShpImport {
         units,
         epsg,
@@ -995,7 +992,7 @@ fn run(app: &mut EpanetApp) -> Result<String, String> {
     let mut units = src_units;
     if !empty
         && let Some(code) = src_epsg
-        && let Some(dst) = app.prefs.basemap_crs.get(&app.file_name).cloned()
+        && let Some(dst) = app.project_crs()
         && dst != format!("EPSG:{code}")
     {
         let src = crate::basemap::Geo::parse(&format!("EPSG:{code}"))?;
@@ -1107,9 +1104,7 @@ fn run(app: &mut EpanetApp) -> Result<String, String> {
     let sum = crate::import::build(&mut app.net, &setup, &nodes, &links, &opt);
     if empty {
         if let Some(code) = src_epsg {
-            app.prefs
-                .basemap_crs
-                .insert(app.file_name.clone(), format!("EPSG:{code}"));
+            app.set_project_crs(format!("EPSG:{code}"));
         }
         app.net
             .set_option("BACKDROP", "UNITS", &src_units.label().to_ascii_uppercase());

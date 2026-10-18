@@ -124,6 +124,20 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
                     ("No Results", None)
                 };
                 cell(ui, 210.0, text, fill);
+                let crs = match crate::basemap::crs_def(app) {
+                    Some(c) if c.starts_with("EPSG:") => c,
+                    Some(_) => tr("Custom").to_string(),
+                    None => tr("Not set").to_string(),
+                };
+                if cell(ui, 150.0, &format!("CRS: {crs}"), None)
+                    .interact(Sense::click())
+                    .on_hover_text(tr(
+                        "The coordinate reference system of the project's coordinates, saved in its file — click to set it",
+                    ))
+                    .clicked()
+                {
+                    crate::basemap::open_crs(app);
+                }
                 let xy = match app.cursor {
                     Some([x, y]) => format!("  X,Y: {x:.3}, {y:.3}"),
                     None => "  X,Y:".into(),
