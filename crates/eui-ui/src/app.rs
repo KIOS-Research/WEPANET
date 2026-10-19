@@ -190,6 +190,8 @@ pub struct Prefs {
     pub map_layers: Vec<crate::layers::MapLayer>,
     /// The Map Layers panel closed (Map > Layers).
     pub hide_layers: bool,
+    /// The Identify Results panel closed (the Identify tool opens it).
+    pub hide_identify: bool,
     /// Map service addresses used before, latest first.
     pub layer_urls: Vec<String>,
     // map display settings (Map > Settings)
@@ -299,6 +301,7 @@ impl Default for Prefs {
             docks: Default::default(),
             map_layers: Vec::new(),
             hide_layers: false,
+            hide_identify: false,
             layer_urls: Vec::new(),
             map_style: MAP_STYLE,
             node_size: 3.0,

@@ -517,11 +517,11 @@ fn map_toolbar(app: &mut EpanetApp, ui: &mut Ui) {
     )
     .clicked()
     {
-        app.set_tool(if identifying {
-            crate::app::Tool::Select
+        if identifying {
+            app.set_tool(crate::app::Tool::Select);
         } else {
-            crate::app::Tool::Identify
-        });
+            crate::layers::start_identify(app);
+        }
     }
     let export = tool_button(
         ui,

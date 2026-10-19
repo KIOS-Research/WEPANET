@@ -72,7 +72,19 @@ impl Pane {
             Pane::MapViewer => app.prefs.show_viewer,
             Pane::ProjectExplorer | Pane::PropertyEditor => app.prefs.show_explorer,
             Pane::Layers => !app.prefs.hide_layers,
-            Pane::Identify => app.prefs.show_explorer,
+            Pane::Identify => app.prefs.show_explorer && !app.prefs.hide_identify,
+        }
+    }
+
+    /// Whether its title bar (or tab) has a cross that closes it.
+    fn closable(self) -> bool {
+        self == Pane::Identify
+    }
+
+    /// Closes it (the Identify tool opens it again).
+    fn close(self, app: &mut EpanetApp) {
+        if self == Pane::Identify {
+            app.prefs.hide_identify = true;
         }
     }
 
@@ -336,6 +348,9 @@ pub(crate) fn show(app: &mut EpanetApp, ui: &mut Ui) {
             )
             .show(&ctx, |ui| {
                 let bar = title_bar(ui, p.title(), menu);
+                if p.closable() && cross(ui, bar.rect, p) {
+                    p.close(app);
+                }
                 p.draw(app, ui);
                 bar
             });
@@ -391,7 +406,10 @@ pub(crate) fn stack(app: &mut EpanetApp, ui: &mut Ui, groups: &[(Vec<Pane>, Pane
         let p = *active;
         let fill = p.fill(app, ui);
         let body = |app: &mut EpanetApp, ui: &mut Ui| {
-            let (tabs, rect) = header(app, ui, panes, p);
+            let (tabs, rect, closed) = header(app, ui, panes, p);
+            if let Some(c) = closed {
+                c.close(app);
+            }
             p.draw(app, ui);
             (tabs, rect)
         };
@@ -405,7 +423,12 @@ pub(crate) fn stack(app: &mut EpanetApp, ui: &mut Ui, groups: &[(Vec<Pane>, Pane
                 .size_range(60.0..=max)
                 .resizable(true)
                 .frame(egui::Frame::NONE.fill(fill))
-                .show(ui, |ui| body(app, ui))
+                .show(ui, |ui| {
+                    // a panel with little in it (a tab) keeps the place's
+                    // height: the panel takes the height of what it holds
+                    ui.set_min_height(ui.available_height());
+                    body(app, ui)
+                })
                 .inner
         } else {
             let rect = ui.available_rect_before_wrap();
@@ -417,21 +440,26 @@ pub(crate) fn stack(app: &mut EpanetApp, ui: &mut Ui, groups: &[(Vec<Pane>, Pane
     drawn
 }
 
-/// A group's title bar, or its tabs when it holds more than one panel.
+/// A group's title bar, or its tabs when it holds more than one panel; and
+/// the panel whose cross was clicked.
 fn header(
     app: &EpanetApp,
     ui: &mut Ui,
     panes: &[Pane],
     active: Pane,
-) -> (Vec<(Pane, Response)>, Rect) {
+) -> (Vec<(Pane, Response)>, Rect, Option<Pane>) {
     let menu = app.palette().menu;
+    let mut closed = None;
     if panes.len() == 1 {
         let r = title_bar(ui, panes[0].title(), menu);
         let rect = r.rect;
-        return (vec![(panes[0], r)], rect);
+        if panes[0].closable() && cross(ui, rect, panes[0]) {
+            closed = Some(panes[0]);
+        }
+        return (vec![(panes[0], r)], rect, closed);
     }
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), BAR_H), Sense::hover());
-    let painter = ui.painter();
+    let painter = ui.painter().clone();
     painter.rect_filled(rect, 0.0, menu.gamma_multiply(0.55));
     let w = rect.width() / panes.len() as f32;
     let mut tabs = Vec::new();
@@ -462,16 +490,46 @@ fn header(
         } else {
             Color32::from_white_alpha(225)
         };
-        painter.with_clip_rect(r.shrink2(vec2(4.0, 0.0))).text(
-            r.center(),
+        // the title clear of the cross
+        let text = if p.closable() {
+            Rect::from_min_max(r.min, egui::pos2(r.right() - 24.0, r.bottom()))
+        } else {
+            r
+        };
+        painter.with_clip_rect(text.shrink2(vec2(4.0, 0.0))).text(
+            text.center(),
             Align2::CENTER_CENTER,
             title,
             font,
             color,
         );
         tabs.push((p, grab(resp)));
+        if p.closable() && cross(ui, r, p) {
+            closed = Some(p);
+        }
     }
-    (tabs, rect)
+    (tabs, rect, closed)
+}
+
+/// The cross at the right of a title bar or tab that closes its panel.
+fn cross(ui: &mut Ui, bar: Rect, pane: Pane) -> bool {
+    let r = Rect::from_center_size(
+        egui::pos2(bar.right() - 14.0, bar.center().y),
+        vec2(18.0, 18.0),
+    );
+    let resp = ui.interact(r, Id::new("dock_close").with(pane), Sense::click());
+    if resp.hovered() {
+        ui.painter()
+            .rect_filled(r, 3.0, Color32::from_white_alpha(70));
+    }
+    ui.painter().text(
+        r.center(),
+        Align2::CENTER_CENTER,
+        "×",
+        egui::FontId::proportional(16.0),
+        Color32::WHITE,
+    );
+    resp.on_hover_text(crate::i18n::tr("Close")).clicked()
 }
 
 /// A title bar's cursor and tooltip.
@@ -775,6 +833,49 @@ mod tests {
             "the Map Viewer is hidden"
         );
         assert!(t.iter().any(|(s, _)| s.starts_with("No layers yet")));
+    }
+
+    /// A short panel shown as a tab (the Identify Results before any click)
+    /// leaves its group's height as it was.
+    #[test]
+    fn a_short_tab_keeps_the_group_height() {
+        let (mut app, ctx) = app();
+
+        let editor = at(&frame(&mut app, &ctx, vec![]), "Property Editor").top();
+        app.prefs.docks.activate(Pane::Identify);
+        for _ in 0..4 {
+            frame(&mut app, &ctx, vec![]);
+        }
+        app.prefs.docks.activate(Pane::ProjectExplorer);
+        frame(&mut app, &ctx, vec![]);
+        let after = at(&frame(&mut app, &ctx, vec![]), "Property Editor").top();
+        assert!((after - editor).abs() < 2.0, "{editor} -> {after}");
+    }
+
+    /// The Identify Results closes with the cross on its tab, and opens again
+    /// with the Identify tool.
+    #[test]
+    fn identify_results_close() {
+        let (mut app, ctx) = app();
+        let t = frame(&mut app, &ctx, vec![]);
+        let cross = at(&t, "×").center();
+        let click = |pressed| egui::Event::PointerButton {
+            pos: cross,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame(&mut app, &ctx, vec![egui::Event::PointerMoved(cross)]);
+        frame(&mut app, &ctx, vec![click(true)]);
+        frame(&mut app, &ctx, vec![click(false)]);
+        assert!(app.prefs.hide_identify);
+        let t = frame(&mut app, &ctx, vec![]);
+        assert!(!t.iter().any(|(s, _)| s == "Identify Results"));
+        // the Project Explorer stays, with its own title bar
+        at(&t, "Project Explorer");
+        crate::layers::start_identify(&mut app);
+        assert!(!app.prefs.hide_identify);
+        at(&frame(&mut app, &ctx, vec![]), "Identify Results");
     }
 
     #[test]

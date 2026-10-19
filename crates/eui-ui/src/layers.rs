@@ -1640,7 +1640,7 @@ pub fn identify(app: &mut EpanetApp, rect: Rect, p: Pos2) {
         ];
         asks.push((l.name.clone(), n - 1 - k, l.identify_url(b, w, h, xy, ij)));
     }
-    app.prefs.docks.activate(crate::dock::Pane::Identify);
+    show_identify_results(app);
     let st = &mut app.layers;
     st.next += 1;
     let id = st.next;
@@ -1707,6 +1707,18 @@ fn take_answers(st: &mut LayersState) {
 /// The Identify Results panel (see [`crate::dock`]): the features found where
 /// the map was clicked last, by layer as the layers are in the Map Layers
 /// panel, each with its fields; the one chosen is outlined on the map.
+/// Opens the Identify Results panel, as the shown tab of its place.
+fn show_identify_results(app: &mut EpanetApp) {
+    app.prefs.hide_identify = false;
+    app.prefs.docks.activate(crate::dock::Pane::Identify);
+}
+
+/// Turns the Identify tool on, with its results panel open.
+pub(crate) fn start_identify(app: &mut EpanetApp) {
+    app.set_tool(crate::app::Tool::Identify);
+    show_identify_results(app);
+}
+
 pub(crate) fn identify_pane(app: &mut EpanetApp, ui: &mut Ui) {
     take_answers(&mut app.layers);
     let red = Color32::from_rgb(0xc0, 0x39, 0x2b);
