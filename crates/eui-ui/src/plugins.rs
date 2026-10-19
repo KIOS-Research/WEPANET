@@ -331,7 +331,7 @@ fn read_pressures(net: &Network, node: usize, out: &[u8]) -> Option<(f64, f64)> 
 fn start_curve(app: &mut EpanetApp, ctx: &egui::Context) {
     let c = &mut app.plugins.curve;
     c.error = None;
-    let num = |s: &str| s.trim().parse::<f64>().ok();
+    let num = eui_core::num::parse;
     let (Some(lo), Some(step), Some(hi)) = (num(&c.min), num(&c.step), num(&c.max)) else {
         c.error = Some("Enter numbers for the demands".into());
         return;

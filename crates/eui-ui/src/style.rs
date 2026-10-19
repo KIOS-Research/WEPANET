@@ -488,13 +488,122 @@ pub fn set_decimals(n: usize) {
     DECIMALS.store(n.min(6), std::sync::atomic::Ordering::Relaxed);
 }
 
+/// How decimal numbers are written (Preferences > Decimal Separator).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum DecimalSeparator {
+    /// As the computer's regional settings write them.
+    #[default]
+    System,
+    Point,
+    Comma,
+}
+
+impl DecimalSeparator {
+    pub const ALL: [DecimalSeparator; 3] = [Self::System, Self::Point, Self::Comma];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::System => "Regional Settings",
+            Self::Point => "Point (0.5)",
+            Self::Comma => "Comma (0,5)",
+        }
+    }
+
+    pub fn is_comma(self) -> bool {
+        match self {
+            Self::System => system_decimal_comma(),
+            Self::Point => false,
+            Self::Comma => true,
+        }
+    }
+}
+
+/// Whether the computer's (or the browser's) regional settings write
+/// decimals with a comma.
+fn system_decimal_comma() -> bool {
+    static COMMA: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *COMMA.get_or_init(|| system_decimal_separator() == Some(','))
+}
+
+#[cfg(windows)]
+fn system_decimal_separator() -> Option<char> {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetLocaleInfoEx(name: *const u16, kind: u32, data: *mut u16, len: i32) -> i32;
+    }
+    const LOCALE_SDECIMAL: u32 = 0x0E;
+    let mut buf = [0u16; 8];
+    // a null locale name is the user's default locale
+    let n = unsafe { GetLocaleInfoEx(std::ptr::null(), LOCALE_SDECIMAL, buf.as_mut_ptr(), 8) };
+    char::decode_utf16(buf[..(n.max(1) - 1) as usize].iter().copied())
+        .next()?
+        .ok()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn system_decimal_separator() -> Option<char> {
+    // how the browser's language writes 1.5
+    let lang = js_sys::Reflect::get(&js_sys::global(), &"navigator".into())
+        .and_then(|n| js_sys::Reflect::get(&n, &"language".into()))
+        .ok()?
+        .as_string()?;
+    let s: String = js_sys::Number::from(1.5).to_locale_string(&lang).into();
+    s.chars().find(|c| !c.is_ascii_digit())
+}
+
+#[cfg(not(any(windows, target_arch = "wasm32")))]
+fn system_decimal_separator() -> Option<char> {
+    // the numeric locale's language, e.g. "de_DE.UTF-8"
+    let locale = ["LC_ALL", "LC_NUMERIC", "LANG"]
+        .iter()
+        .filter_map(|v| std::env::var(v).ok())
+        .find(|v| !v.is_empty())?;
+    let lang = locale
+        .split(['_', '.', '@', '-'])
+        .next()?
+        .to_ascii_lowercase();
+    const POINT: &[&str] = &[
+        "c", "posix", "en", "zh", "ja", "ko", "he", "th", "hi", "ms", "fil",
+    ];
+    Some(if POINT.contains(&lang.as_str()) {
+        '.'
+    } else {
+        ','
+    })
+}
+
+/// Numbers shown with a decimal comma (Preferences > Decimal Separator).
+static DECIMAL_COMMA: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_decimal_comma(on: bool) {
+    DECIMAL_COMMA.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn decimal_comma() -> bool {
+    DECIMAL_COMMA.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A number's text with the chosen decimal separator; other text unchanged.
+/// What is typed back is read by [`eui_core::num`], which takes either.
+pub fn show_num(s: &str) -> String {
+    if decimal_comma() {
+        eui_core::num::with_comma(s)
+    } else {
+        s.to_string()
+    }
+}
+
 /// A report value with the chosen number of decimal places.
 pub fn fmt_fixed(v: f64) -> String {
     let n = DECIMALS.load(std::sync::atomic::Ordering::Relaxed);
-    format!("{v:.n$}")
+    show_num(&format!("{v:.n$}"))
 }
 
 pub fn fmt_value(v: f32) -> String {
+    show_num(&fmt_value_point(v))
+}
+
+fn fmt_value_point(v: f32) -> String {
     let a = v.abs();
     if !v.is_finite() {
         "—".into()
@@ -514,12 +623,22 @@ pub fn fmt_value(v: f32) -> String {
 /// Legend interval label as EPANET-UI shows it (shortest exact form).
 pub fn fmt_break(v: f32) -> String {
     let s = format!("{v}");
-    if s.len() > 8 { fmt_value(v) } else { s }
+    if s.len() > 8 {
+        fmt_value(v)
+    } else {
+        show_num(&s)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn reads_the_regional_decimal_separator() {
+        assert!(matches!(system_decimal_separator(), Some('.' | ',')));
+    }
 
     #[test]
     fn colors_follow_breaks() {

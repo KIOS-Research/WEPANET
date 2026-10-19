@@ -39,7 +39,7 @@ pub struct SourceEdit {
 fn parse(text: &str) -> (usize, String, String) {
     let tok: Vec<&str> = text.split_whitespace().collect();
     let (kind, rest) = match tok.first() {
-        Some(t) if t.parse::<f64>().is_err() => (
+        Some(t) if !eui_core::num::is_number(t) => (
             TYPES
                 .iter()
                 .position(|(k, _)| k.eq_ignore_ascii_case(t))
@@ -76,7 +76,7 @@ pub fn open(app: &mut EpanetApp, target: Target) {
     let (kind, strength, pattern) = parse(&current(app, &target));
     app.source_edit = Some(SourceEdit {
         target,
-        strength,
+        strength: crate::style::show_num(&strength),
         pattern,
         kind,
         error: None,
@@ -100,14 +100,14 @@ fn patterns(app: &EpanetApp, target: &Target) -> Vec<String> {
 
 /// Applies the editor's source (an empty strength removes it).
 fn apply(app: &mut EpanetApp, e: &SourceEdit) -> Result<(), String> {
-    let strength = e.strength.trim();
+    let strength = eui_core::num::normalize(&e.strength);
     // EPANET-UI: a strength of 0 removes the source
     let text = if strength.is_empty() || strength.parse::<f64>() == Ok(0.0) {
         String::new()
     } else {
         strength
             .parse::<f64>()
-            .map_err(|_| format!("\"{strength}\" is not a valid number"))?;
+            .map_err(|_| format!("\"{}\" is not a valid number", e.strength.trim()))?;
         let mut t = format!("{} {strength}", TYPES[e.kind].0);
         if !e.pattern.trim().is_empty() {
             t += &format!(" {}", e.pattern.trim());

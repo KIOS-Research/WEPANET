@@ -208,7 +208,7 @@ fn option_value(net: &Network, k: usize) -> String {
 /// Opens Project Setup.
 pub fn open(app: &mut EpanetApp) {
     let net = &app.net;
-    let options = std::array::from_fn(|k| option_value(net, k));
+    let options = std::array::from_fn(|k| crate::style::show_num(&option_value(net, k)));
     let dims: Option<[f64; 4]> = net.option("BACKDROP", "DIMENSIONS").and_then(|s| {
         let v: Vec<f64> = s
             .split_whitespace()
@@ -237,12 +237,16 @@ pub fn open(app: &mut EpanetApp) {
         page: 0,
         options,
         prefixes: app.setup.prefixes.clone(),
-        properties: app.setup.properties.clone(),
+        properties: app
+            .setup
+            .properties
+            .clone()
+            .map(|p| crate::style::show_num(&p)),
         map: [
-            format!("{:.6}", ext[0]),
-            format!("{:.6}", ext[1]),
-            format!("{:.6}", ext[2]),
-            format!("{:.6}", ext[3]),
+            crate::style::show_num(&format!("{:.6}", ext[0])),
+            crate::style::show_num(&format!("{:.6}", ext[1])),
+            crate::style::show_num(&format!("{:.6}", ext[2])),
+            crate::style::show_num(&format!("{:.6}", ext[3])),
             units,
             epsg,
         ],
@@ -392,7 +396,7 @@ fn is_si(flow: &str) -> bool {
 /// Checks the entries (EPANET-UI's ValidateEditorValues); returns the page
 /// and message of the first problem.
 fn validate(e: &SetupEdit) -> Result<(), (usize, String)> {
-    let num = |s: &str| s.trim().parse::<f64>().ok();
+    let num = eui_core::num::parse;
     for (k, p) in e.properties.iter().enumerate() {
         match num(p) {
             Some(x) if k == 0 || x > 0.0 => {}
@@ -677,9 +681,17 @@ pub fn dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
 
 /// Puts the dialog's choices into the project.
 fn apply(app: &mut EpanetApp, ctx: &egui::Context) {
-    let Some(e) = app.setup_edit.take() else {
+    let Some(mut e) = app.setup_edit.take() else {
         return;
     };
+    // numbers typed with a decimal comma are stored with a point
+    for v in e.options[3..]
+        .iter_mut()
+        .chain(&mut e.properties)
+        .chain(&mut e.map[..4])
+    {
+        *v = eui_core::num::normalize(v);
+    }
     app.checkpoint();
     for (key, value) in OPTION_KEYS.iter().zip(&e.options).skip(3) {
         app.net.set_option("OPTIONS", key, value.trim());

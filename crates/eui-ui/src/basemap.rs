@@ -1823,9 +1823,9 @@ fn start_georef(app: &mut EpanetApp) {
     let b = img.bounds;
     let s = (b[2] - b[0]) / img.size[0].max(1) as f64;
     app.basemap.georef = Some(Georef {
-        scale: format!("{s:.6}"),
-        llx: format!("{:.6}", b[0]),
-        lly: format!("{:.6}", b[1]),
+        scale: crate::style::show_num(&format!("{s:.6}")),
+        llx: crate::style::show_num(&format!("{:.6}", b[0])),
+        lly: crate::style::show_num(&format!("{:.6}", b[1])),
         original: b,
         ..Default::default()
     });
@@ -1889,9 +1889,9 @@ pub fn georef_dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
             Some((s, left, top)) => {
                 let h = s * img.size[1] as f64;
                 place(img, s, left, top - h);
-                g.scale = format!("{s:.6}");
-                g.llx = format!("{left:.6}");
-                g.lly = format!("{:.6}", top - h);
+                g.scale = crate::style::show_num(&format!("{s:.6}"));
+                g.llx = crate::style::show_num(&format!("{left:.6}"));
+                g.lly = crate::style::show_num(&format!("{:.6}", top - h));
                 g.error = None;
             }
             None => g.error = Some("That is not a world file".into()),
@@ -1921,7 +1921,7 @@ pub fn georef_dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
         }
     }
     ui.separator();
-    let num = |s: &str| s.trim().parse::<f64>().ok();
+    let num = eui_core::num::parse;
     match g.method {
         0 => {
             let done = |p: &Option<[f64; 2]>| {

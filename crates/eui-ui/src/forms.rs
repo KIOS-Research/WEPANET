@@ -5,10 +5,12 @@
 
 use egui::{Color32, RichText, Ui, vec2};
 use egui_plot::{Bar, BarChart, Line, Plot, PlotPoints};
+use eui_core::num;
 use eui_core::props::{self, Element, PropKey, PropKind};
 use eui_core::{DataCurve, TimePattern};
 
 use crate::app::{Dialog, EpanetApp};
+use crate::style;
 
 /// What a selector's choice is for (OK assigns it).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -641,7 +643,10 @@ impl PatternEdit {
             original,
             id,
             description,
-            values: values.iter().map(|v| format!("{v:.4}")).collect(),
+            values: values
+                .iter()
+                .map(|v| style::show_num(&format!("{v:.4}")))
+                .collect(),
             error: None,
         }
     }
@@ -701,7 +706,10 @@ fn pattern_editor_body(app: &mut EpanetApp, ui: &mut Ui, panel: Option<f32>) -> 
         ui.label("Description");
         ui.add(egui::TextEdit::singleline(&mut e.description).desired_width(w));
         if ui.link("Use typical diurnal pattern").clicked() {
-            e.values = DIURNAL.iter().map(|v| format!("{v:.4}")).collect();
+            e.values = DIURNAL
+                .iter()
+                .map(|v| style::show_num(&format!("{v:.4}")))
+                .collect();
         }
     } else {
         ui.horizontal(|ui| {
@@ -715,7 +723,10 @@ fn pattern_editor_body(app: &mut EpanetApp, ui: &mut Ui, panel: Option<f32>) -> 
                     ui.label("Description");
                     ui.add_space(60.0);
                     if ui.link("Use typical diurnal pattern").clicked() {
-                        e.values = DIURNAL.iter().map(|v| format!("{v:.4}")).collect();
+                        e.values = DIURNAL
+                            .iter()
+                            .map(|v| style::show_num(&format!("{v:.4}")))
+                            .collect();
                     }
                 });
                 ui.add(egui::TextEdit::singleline(&mut e.description).desired_width(300.0));
@@ -754,11 +765,7 @@ fn pattern_editor_body(app: &mut EpanetApp, ui: &mut Ui, panel: Option<f32>) -> 
     {
         e.values.pop();
     }
-    let vals: Vec<f64> = e
-        .values
-        .iter()
-        .filter_map(|v| v.trim().parse::<f64>().ok())
-        .collect();
+    let vals: Vec<f64> = e.values.iter().filter_map(|v| num::parse(v)).collect();
     ui.add_space(8.0);
     let size = panel.map_or(vec2(440.0, 200.0), |w| vec2(w, 160.0));
     pattern_chart(ui, "pattern_editor_chart", &vals, size, &step);
@@ -835,8 +842,8 @@ fn take_loaded(app: &mut EpanetApp) {
             let vals: Vec<String> = body
                 .iter()
                 .flat_map(|l| l.split_whitespace())
-                .filter(|v| v.parse::<f64>().is_ok())
-                .map(str::to_string)
+                .filter(|v| num::is_number(v))
+                .map(|v| style::show_num(&num::normalize(v)))
                 .collect();
             if !vals.is_empty() {
                 e.values = vals;
@@ -856,10 +863,7 @@ fn accept_pattern(app: &mut EpanetApp) -> Result<(), String> {
     }
     let mut values = Vec::new();
     for v in e.values.iter().map(|v| v.trim()).filter(|v| !v.is_empty()) {
-        values.push(
-            v.parse::<f64>()
-                .map_err(|_| format!("\"{v}\" is not a number"))?,
-        );
+        values.push(num::parse(v).ok_or_else(|| format!("\"{v}\" is not a number"))?);
     }
     if values.is_empty() {
         return Err("Enter at least one multiplier".into());
@@ -911,7 +915,7 @@ impl CurveEdit {
             points: c
                 .points
                 .iter()
-                .map(|[x, y]| [format!("{x:.4}"), format!("{y:.4}")])
+                .map(|[x, y]| [x, y].map(|v| style::show_num(&format!("{v:.4}"))))
                 .collect(),
             error: None,
         }
@@ -1029,7 +1033,7 @@ fn curve_editor_body(app: &mut EpanetApp, ui: &mut Ui, panel: Option<f32>) -> bo
     let pts: Vec<[f64; 2]> = e
         .points
         .iter()
-        .filter_map(|[x, y]| Some([x.trim().parse().ok()?, y.trim().parse().ok()?]))
+        .filter_map(|[x, y]| Some([num::parse(x)?, num::parse(y)?]))
         .collect();
     let line: PlotPoints = curve_line(&e.kind, &pts).into_iter().collect();
     let chart = |ui: &mut Ui, size: egui::Vec2| {
@@ -1135,11 +1139,8 @@ fn accept_curve(app: &mut EpanetApp) -> Result<(), String> {
         if x.is_empty() && y.is_empty() {
             continue;
         }
-        let num = |v: &str| {
-            v.parse::<f64>()
-                .map_err(|_| format!("\"{v}\" is not a number"))
-        };
-        points.push([num(x)?, num(y)?]);
+        let number = |v: &str| num::parse(v).ok_or_else(|| format!("\"{v}\" is not a number"));
+        points.push([number(x)?, number(y)?]);
     }
     if points.is_empty() {
         return Err("Enter at least one point".into());
@@ -1191,9 +1192,15 @@ pub fn open_quality(app: &mut EpanetApp) {
     let values = props::quality_specs()
         .iter()
         .map(|s| {
-            app.net
+            let v = app
+                .net
                 .option(s.section, s.key)
-                .unwrap_or_else(|| s.default.to_string())
+                .unwrap_or_else(|| s.default.to_string());
+            if s.kind == PropKind::Number {
+                style::show_num(&v)
+            } else {
+                v
+            }
         })
         .collect();
     app.forms.quality = Some(QualityEdit {
@@ -1331,7 +1338,7 @@ fn accept_quality(app: &mut EpanetApp) -> Result<(), String> {
     }
     let specs = props::quality_specs();
     for (s, v) in specs.iter().zip(&e.values) {
-        if s.kind == PropKind::Number && !v.trim().is_empty() && v.trim().parse::<f64>().is_err() {
+        if s.kind == PropKind::Number && !v.trim().is_empty() && !num::is_number(v) {
             return Err(format!("{}: \"{}\" is not a number", s.name, v.trim()));
         }
     }
@@ -1348,8 +1355,13 @@ fn accept_quality(app: &mut EpanetApp) -> Result<(), String> {
         let current = net
             .option(s.section, s.key)
             .unwrap_or_else(|| s.default.into());
-        if v.trim() != current {
-            net.set_option(s.section, s.key, v.trim());
+        let v = if s.kind == PropKind::Number {
+            num::normalize(v)
+        } else {
+            v.trim().to_string()
+        };
+        if v != current {
+            net.set_option(s.section, s.key, &v);
         }
     }
     if net != app.net {
@@ -1410,7 +1422,7 @@ impl ControlForm {
             ("IF", "NODE") if t.len() >= 8 => {
                 f.node = t[5].to_string();
                 f.above = up(6) == "ABOVE";
-                f.level = t[7].to_string();
+                f.level = style::show_num(t[7]);
             }
             ("AT", "TIME") | ("AT", "CLOCKTIME") if t.len() >= 6 => {
                 f.on_node = false;
@@ -1433,7 +1445,7 @@ impl ControlForm {
                 "{head} IF NODE {} {} {}",
                 self.node.trim(),
                 if self.above { "ABOVE" } else { "BELOW" },
-                self.level.trim()
+                num::normalize(&self.level)
             )
         } else {
             format!(
@@ -1730,7 +1742,7 @@ fn controls_body(app: &mut EpanetApp, ui: &mut Ui, w: f32) -> bool {
                         Some(format!("There is no link \"{}\"", f.link.trim()))
                     } else if f.on_node && app.net.node_index(f.node.trim()).is_none() {
                         Some(format!("There is no node \"{}\"", f.node.trim()))
-                    } else if f.on_node && f.level.trim().parse::<f64>().is_err() {
+                    } else if f.on_node && !num::is_number(&f.level) {
                         Some("Enter a number for the node's level".into())
                     } else if !f.on_node
                         && eui_core::analysis::parse_time(

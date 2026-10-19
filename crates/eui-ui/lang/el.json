@@ -203,6 +203,11 @@
   "Clear Recent Projects List": "Εκκαθάριση Λίστας Πρόσφατων Έργων",
   "Numerical Precision": "Αριθμητική Ακρίβεια",
   "Language": "Γλώσσα",
+  "Decimal Separator": "Υποδιαστολή",
+  "Regional Settings": "Τοπικές Ρυθμίσεις",
+  "Point (0.5)": "Τελεία (0.5)",
+  "Comma (0,5)": "Κόμμα (0,5)",
+  "Numbers may be typed with either a point or a comma; files always use a point": "Οι αριθμοί πληκτρολογούνται με τελεία ή κόμμα· τα αρχεία χρησιμοποιούν πάντα τελεία",
 
   "Map Viewer": "Προβολή Χάρτη",
   "View": "Προβολή",

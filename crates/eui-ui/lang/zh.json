@@ -203,6 +203,11 @@
   "Clear Recent Projects List": "清除最近项目列表",
   "Numerical Precision": "数值精度",
   "Language": "语言",
+  "Decimal Separator": "小数分隔符",
+  "Regional Settings": "区域设置",
+  "Point (0.5)": "点 (0.5)",
+  "Comma (0,5)": "逗号 (0,5)",
+  "Numbers may be typed with either a point or a comma; files always use a point": "数字可用点或逗号输入；文件始终使用点",
 
   "Map Viewer": "地图浏览器",
   "View": "视图",

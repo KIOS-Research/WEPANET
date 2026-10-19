@@ -266,9 +266,9 @@ pub fn selector(app: &mut EpanetApp, ui: &mut Ui) {
 fn start(app: &mut EpanetApp, ctx: &egui::Context) {
     let (_, _, qi, pi) = fire_units(&app.net);
     let ff = &app.rpt.ff;
-    let (Ok(q), Ok(p)) = (
-        ff.target_flow.trim().parse::<f64>(),
-        ff.target_pressure.trim().parse::<f64>(),
+    let (Some(q), Some(p)) = (
+        eui_core::num::parse(&ff.target_flow),
+        eui_core::num::parse(&ff.target_pressure),
     ) else {
         app.status = "Enter numbers for the target fire flow and pressure".into();
         return;

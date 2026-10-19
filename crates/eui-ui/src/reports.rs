@@ -626,8 +626,8 @@ pub fn table(ui: &mut Ui, id: &str, rows: &Rows, sort: &mut Option<(usize, bool)
     if let Some((col, asc)) = *sort {
         order.sort_by(|&a, &b| {
             let (x, y) = (&body[a][col], &body[b][col]);
-            let o = match (x.trim().parse::<f64>(), y.trim().parse::<f64>()) {
-                (Ok(p), Ok(q)) => p.total_cmp(&q),
+            let o = match (eui_core::num::parse(x), eui_core::num::parse(y)) {
+                (Some(p), Some(q)) => p.total_cmp(&q),
                 _ => natural_cmp(x, y),
             };
             if asc { o } else { o.reverse() }

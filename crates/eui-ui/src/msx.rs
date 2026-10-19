@@ -827,7 +827,22 @@ fn section_page(app: &mut EpanetApp, ui: &mut Ui, k: usize) {
                 });
         });
     if changed {
-        let rows = rows.clone();
+        // numbers typed with a decimal comma go in the file with a point
+        let rows: Vec<Vec<String>> = rows
+            .iter()
+            .map(|r| {
+                r.iter()
+                    .enumerate()
+                    .map(|(k, c)| {
+                        if k < n {
+                            eui_core::num::normalize(c)
+                        } else {
+                            c.clone()
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
         if let Some(w) = &mut app.msx.work {
             w.set_rows(s, &rows);
         }

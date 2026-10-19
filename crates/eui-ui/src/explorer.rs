@@ -271,7 +271,7 @@ fn prop_row(
     let mut out = None;
     match kind {
         PropKind::ReadOnly => {
-            ui.label(RichText::new(value).weak());
+            ui.label(RichText::new(style::show_num(value)).weak());
         }
         PropKind::Choice(choices) => {
             let shown = if value.is_empty() { "(none)" } else { value };
@@ -292,23 +292,30 @@ fn prop_row(
                 });
         }
         PropKind::Text | PropKind::Number => {
+            let shown = if kind == PropKind::Number {
+                style::show_num(value)
+            } else {
+                value.to_string()
+            };
             let buf = app
                 .buffers
                 .entry(name.to_string())
-                .or_insert_with(|| value.to_string());
+                .or_insert_with(|| shown.clone());
             let resp = ui.add(egui::TextEdit::singleline(buf).desired_width(120.0));
             if resp.lost_focus() {
-                if *buf != value {
+                if *buf != shown {
                     let v = buf.trim().to_string();
-                    if kind == PropKind::Number && !v.is_empty() && v.parse::<f64>().is_err() {
-                        app.prop_hint = format!("\"{v}\" is not a valid number for {name}");
-                        *buf = value.to_string();
-                    } else {
+                    if kind != PropKind::Number {
                         out = Some(v);
+                    } else if !v.is_empty() && !eui_core::num::is_number(&v) {
+                        app.prop_hint = format!("\"{v}\" is not a valid number for {name}");
+                        *buf = shown;
+                    } else {
+                        out = Some(eui_core::num::normalize(&v));
                     }
                 }
-            } else if !resp.has_focus() && *buf != value {
-                *buf = value.to_string();
+            } else if !resp.has_focus() && *buf != shown {
+                *buf = shown;
             }
         }
     }
@@ -845,10 +852,10 @@ fn options_grid(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
 /// four decimals, the pump efficiency to two, keywords by their names.
 fn option_shown(key: &str, value: &str) -> String {
     let num = |d: usize| {
-        value
-            .trim()
-            .parse::<f64>()
-            .map_or_else(|_| value.to_string(), |v| format!("{v:.d$}"))
+        value.trim().parse::<f64>().map_or_else(
+            |_| value.to_string(),
+            |v| style::show_num(&format!("{v:.d$}")),
+        )
     };
     match key {
         "DURATION" | "HYDRAULIC TIMESTEP" | "QUALITY TIMESTEP" | "PATTERN TIMESTEP"
@@ -856,7 +863,7 @@ fn option_shown(key: &str, value: &str) -> String {
         | "START CLOCKTIME" => eui_core::analysis::format_time_option(value),
         "GLOBAL EFFICIENCY" => num(2),
         "GLOBAL PRICE" | "DEMAND CHARGE" => num(4),
-        _ => value.to_string(),
+        _ => style::show_num(value),
     }
 }
 
@@ -973,13 +980,13 @@ fn options_editor(app: &mut EpanetApp, ui: &mut Ui, cat: OptionCategory) {
                         if v != shown {
                             if s.kind == PropKind::Number
                                 && !v.is_empty()
-                                && v.parse::<f64>().is_err()
+                                && !eui_core::num::is_number(&v)
                             {
                                 app.prop_hint =
                                     format!("\"{v}\" is not a valid number for {}", s.name);
                                 *buf = shown;
                             } else {
-                                commit = Some((s.section, s.key, v));
+                                commit = Some((s.section, s.key, eui_core::num::normalize(&v)));
                             }
                         }
                     } else if !resp.has_focus() && *buf != shown {

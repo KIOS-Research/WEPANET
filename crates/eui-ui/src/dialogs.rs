@@ -695,6 +695,22 @@ fn preferences(app: &mut EpanetApp, ui: &mut Ui) -> bool {
             ui.add(egui::DragValue::new(&mut app.prefs.decimals).range(0..=6));
         });
         ui.horizontal(|ui| {
+            ui.label(crate::i18n::tr("Decimal Separator"));
+            ui.add_space(30.0);
+            let sep = &mut app.prefs.decimal_separator;
+            egui::ComboBox::from_id_salt("prefs_decimal_separator")
+                .selected_text(crate::i18n::tr(sep.label()))
+                .show_ui(ui, |ui| {
+                    for s in crate::style::DecimalSeparator::ALL {
+                        ui.selectable_value(sep, s, crate::i18n::tr(s.label()));
+                    }
+                });
+        })
+        .response
+        .on_hover_text(crate::i18n::tr(
+            "Numbers may be typed with either a point or a comma; files always use a point",
+        ));
+        ui.horizontal(|ui| {
             ui.label(crate::i18n::tr("Language"));
             ui.add_space(30.0);
             let current = crate::i18n::all()
@@ -1026,9 +1042,10 @@ fn query(app: &mut EpanetApp, ui: &mut Ui) -> bool {
         app.query.hits.clear();
     }
     if run {
-        match app.query.value.trim().parse::<f32>() {
-            Err(_) => app.status = "Enter a numeric value to search for".into(),
-            Ok(target) => {
+        match eui_core::num::parse(&app.query.value) {
+            None => app.status = "Enter a numeric value to search for".into(),
+            Some(target) => {
+                let target = target as f32;
                 let op = app.query.op;
                 let test = |v: f32| match op {
                     0 => v < target,
@@ -1453,8 +1470,8 @@ fn legend_editor(app: &mut EpanetApp, ui: &mut Ui, nodes: bool) -> bool {
             }
             ui.add_space(12.0);
             match buttons(ui, &["Apply", "Cancel"]) {
-                Some(0) => match (e.min.trim().parse::<f64>(), e.max.trim().parse::<f64>()) {
-                    (Ok(lo), Ok(hi)) if lo < hi => {
+                Some(0) => match (eui_core::num::parse(&e.min), eui_core::num::parse(&e.max)) {
+                    (Some(lo), Some(hi)) if lo < hi => {
                         e.breaks =
                             crate::style::interval_scale(lo, hi).map(crate::style::fmt_break);
                         e.error = None;
@@ -1591,7 +1608,11 @@ fn legend_editor(app: &mut EpanetApp, ui: &mut Ui, nodes: bool) -> bool {
     }
     if apply {
         // EPANET-UI: numbers, each no smaller than the one before
-        let parsed: Option<Vec<f32>> = e.breaks.iter().map(|s| s.trim().parse().ok()).collect();
+        let parsed: Option<Vec<f32>> = e
+            .breaks
+            .iter()
+            .map(|s| eui_core::num::parse(s).map(|v| v as f32))
+            .collect();
         match parsed {
             None => {
                 e.error = Some("The intervals must be numbers".into());
@@ -2071,6 +2092,22 @@ mod tests {
             texts = frame(&mut app, &ctx, size, Vec::new());
         }
         assert!(find(&texts, "Open a Recent Project").top() > find(&texts, "Develop").bottom());
+    }
+
+    /// Program Preferences fits the Decimal Separator choice above its buttons.
+    #[test]
+    fn preferences_show_the_decimal_separator() {
+        let (ctx, mut app) = crate::msx::tests::new_app();
+        app.dialog = Dialog::Preferences;
+        let mut texts = Vec::new();
+        for _ in 0..4 {
+            texts = frame(&mut app, &ctx, vec2(1400.0, 900.0), Vec::new());
+        }
+        let window = window_rect(&ctx, "Program Preferences", false);
+        let sep = *find(&texts, "Decimal Separator");
+        let ok = *find(&texts, "OK");
+        assert!(window.contains_rect(sep) && window.contains_rect(ok));
+        assert!(sep.bottom() < ok.top());
     }
 
     /// The rectangle of a dialog's window.

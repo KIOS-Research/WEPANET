@@ -203,6 +203,11 @@
   "Clear Recent Projects List": "Vaciar la Lista de Proyectos Recientes",
   "Numerical Precision": "Precisión Numérica",
   "Language": "Idioma",
+  "Decimal Separator": "Separador Decimal",
+  "Regional Settings": "Configuración Regional",
+  "Point (0.5)": "Punto (0.5)",
+  "Comma (0,5)": "Coma (0,5)",
+  "Numbers may be typed with either a point or a comma; files always use a point": "Los números pueden escribirse con punto o coma; los archivos siempre usan punto",
 
   "Map Viewer": "Visor del Mapa",
   "View": "Vista",

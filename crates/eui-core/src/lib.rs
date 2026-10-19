@@ -8,11 +8,13 @@
 //! * [`msx`]     – EPANET-MSX species and its binary output file.
 //! * [`analysis`] – quantities derived from results, for the reports.
 //! * [`units`]   – unit labels.
+//! * [`num`]     – numbers typed with a decimal comma.
 
 pub mod analysis;
 pub mod data;
 pub mod msx;
 pub mod network;
+pub mod num;
 pub mod props;
 pub mod results;
 pub mod units;
