@@ -124,10 +124,21 @@ fn fit_scale(rect: Rect, [x0, y0, x1, y1]: [f64; 4]) -> f64 {
 
 const HIT_RADIUS: f32 = 8.0;
 
+/// Junctions can be hidden; tanks and reservoirs are always drawn, as plain
+/// nodes when their symbols are turned off (Tanks/Reservoirs unticked).
 fn node_visible(app: &EpanetApp, kind: NodeKind) -> bool {
     match kind {
         NodeKind::Junction => app.prefs.show_junctions,
-        _ => app.prefs.show_tanks,
+        _ => true,
+    }
+}
+
+/// The shape a node is drawn with.
+fn node_shape(app: &EpanetApp, kind: NodeKind) -> NodeKind {
+    if app.prefs.show_tanks {
+        kind
+    } else {
+        NodeKind::Junction
     }
 }
 
@@ -285,11 +296,6 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
         let mut specks = Occupancy::new(rect, 1.0);
         for i in 0..app.net.links.len() {
             let kind = app.net.links[i].kind;
-            if (kind == LinkKind::Pump && !app.prefs.show_pumps)
-                || (kind == LinkKind::Valve && !app.prefs.show_valves)
-            {
-                continue;
-            }
             let Some(wb) = app.geom.boxes.get(i).copied().flatten() else {
                 continue;
             };
@@ -337,10 +343,15 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
 
             let (mid, dir) = midpoint(&pts);
             mids.push((i, mid));
+            // unticked Pumps or Valves leave the link without its symbol
             match kind {
-                LinkKind::Pump => draw_pump(&painter, mid, dir, symbol, color),
-                LinkKind::Valve => draw_valve(&painter, mid, dir, symbol, color),
-                LinkKind::Pipe => {}
+                LinkKind::Pump if app.prefs.show_pumps => {
+                    draw_pump(&painter, mid, dir, symbol, color)
+                }
+                LinkKind::Valve if app.prefs.show_valves => {
+                    draw_valve(&painter, mid, dir, symbol, color)
+                }
+                _ => {}
             }
             if arrows
                 && kind == LinkKind::Pipe
@@ -413,7 +424,14 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
             r += node_legend.class(v) as f32;
         }
         visible_nodes.push((i, s, r));
-        draw_node(&painter, s, n.kind, r, fill, app.prefs.node_border);
+        draw_node(
+            &painter,
+            s,
+            node_shape(app, n.kind),
+            r,
+            fill,
+            app.prefs.node_border,
+        );
         if app.selection == Some(Element::Node(i)) || app.link_start == Some(i) {
             // The marker blinks (about twice a second) if the user wants it to.
             let on = !app.prefs.blink_marker
@@ -1065,6 +1083,22 @@ fn label_editor(app: &mut EpanetApp, ui: &mut Ui, rect: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Unticking Tanks/Reservoirs, Pumps or Valves hides only their symbols:
+    /// the nodes stay (drawn and picked as plain nodes) and so do the links.
+    #[test]
+    fn symbol_layers_hide_only_symbols() {
+        let (_, mut app) = crate::msx::tests::new_app();
+        app.prefs.show_tanks = false;
+        app.prefs.show_pumps = false;
+        app.prefs.show_valves = false;
+        assert!(node_visible(&app, NodeKind::Tank) && node_visible(&app, NodeKind::Reservoir));
+        assert_eq!(node_shape(&app, NodeKind::Tank), NodeKind::Junction);
+        app.prefs.show_tanks = true;
+        assert_eq!(node_shape(&app, NodeKind::Tank), NodeKind::Tank);
+        app.prefs.show_junctions = false;
+        assert!(!node_visible(&app, NodeKind::Junction));
+    }
 
     /// Times map frames for a large network:
     /// `WEPANET_BENCH_INP=big.inp cargo test --release -p eui-ui map_frame_time -- --ignored --nocapture`
