@@ -134,6 +134,13 @@ pub fn install(ctx: &egui::Context) {
             v.widgets.active.bg_stroke = Stroke::new(1.0, Color32::from_rgb(0x00, 0x5a, 0x9e));
             v.selection.bg_fill = Color32::from_rgb(0xcc, 0xe4, 0xf7);
             v.selection.stroke = Stroke::new(1.0, Color32::from_rgb(0x00, 0x5a, 0x9e));
+        } else {
+            // Bright text on the dark panels.
+            v.widgets.noninteractive.fg_stroke.color = Color32::from_gray(228);
+            v.widgets.inactive.fg_stroke.color = Color32::from_gray(236);
+            v.widgets.hovered.fg_stroke.color = Color32::from_gray(250);
+            v.widgets.active.fg_stroke.color = Color32::WHITE;
+            v.weak_text_color = Some(Color32::from_gray(175));
         }
         for w in [
             &mut v.widgets.inactive,
@@ -145,4 +152,19 @@ pub fn install(ctx: &egui::Context) {
         }
         style.spacing.button_padding = egui::vec2(10.0, 4.0);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    /// The dark theme's text is bright, its weak text still readable.
+    #[test]
+    fn dark_theme_text_is_bright() {
+        let ctx = egui::Context::default();
+        super::install(&ctx);
+        let v = ctx.style_of(egui::Theme::Dark).visuals.clone();
+        assert!(v.text_color().r() >= 220, "{:?}", v.text_color());
+        assert!(v.weak_text_color().r() >= 160);
+        let light = ctx.style_of(egui::Theme::Light).visuals.clone();
+        assert!(light.text_color().r() <= 20);
+    }
 }

@@ -42,7 +42,7 @@ pub fn palette(dark: bool, blue: bool) -> Palette {
             map_bg: Color32::from_rgb(0x1b, 0x1e, 0x23),
             link: Color32::from_rgb(0x9a, 0xa4, 0xb1),
             node: Color32::from_rgb(0xc9, 0xd1, 0xd9),
-            label: Color32::from_rgb(0xc9, 0xd1, 0xd9),
+            label: Color32::from_rgb(0xe6, 0xea, 0xee),
         }
     } else {
         Palette {
