@@ -9,6 +9,26 @@ use std::rc::Rc;
 /// A file that has been read: (file name, contents).
 pub type Loaded = (String, Vec<u8>);
 
+/// Polls a file handed over by the local Python launcher.
+#[cfg(target_arch = "wasm32")]
+pub fn take_launch_file() -> Option<Loaded> {
+    use wasm_bindgen::prelude::*;
+    #[wasm_bindgen(
+        inline_js = "export function takeLaunchFile() { return window.euiTakeLaunchFile?.() ?? null; }"
+    )]
+    extern "C" {
+        fn takeLaunchFile() -> JsValue;
+    }
+    let value = takeLaunchFile();
+    if value.is_null() || value.is_undefined() {
+        return None;
+    }
+    let parts = js_sys::Array::from(&value);
+    let name = parts.get(0).as_string()?;
+    let bytes = js_sys::Uint8Array::new(&parts.get(1)).to_vec();
+    Some((name, bytes))
+}
+
 #[derive(Clone, Default)]
 pub struct Inbox(Rc<RefCell<Vec<Result<Loaded, String>>>>);
 

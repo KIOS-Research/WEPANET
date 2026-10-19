@@ -509,5 +509,9 @@
   "; skipped {} shapes": "; se omitieron {} formas",
   "{} lines": "{} líneas",
   "{} records": "{} registros",
-  "Drag to move the legend; right-click to edit it, double-click to hide it": "Arrastre para mover la leyenda; clic derecho para editarla, doble clic para ocultarla"
+  "Drag to move the legend; right-click to edit it, double-click to hide it": "Arrastre para mover la leyenda; clic derecho para editarla, doble clic para ocultarla",
+  "Click a column header to sort it": "Haga clic en un encabezado de columna para ordenar",
+  "{} time periods": "{} periodos de tiempo",
+  "{} rows": "{} filas",
+  "Insert": "Insertar"
 }

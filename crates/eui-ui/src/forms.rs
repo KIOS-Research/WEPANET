@@ -1569,19 +1569,22 @@ fn controls_body(app: &mut EpanetApp, ui: &mut Ui, w: f32) -> bool {
     ui.horizontal_wrapped(|ui| {
         let b = |ui: &mut Ui, on: bool, t: &str| {
             let min = if t.chars().count() == 1 { 32.0 } else { 76.0 };
-            ui.add_enabled(on, egui::Button::new(t).min_size(vec2(min, 26.0)))
-                .clicked()
+            ui.add_enabled(
+                on,
+                egui::Button::new(crate::i18n::tr(t)).min_size(vec2(min, 26.0)),
+            )
+            .clicked()
         };
-        if b(ui, !editing, "+ Insert") {
+        if b(ui, !editing, "Insert") {
             e.form = Some((None, ControlForm::default()));
         }
-        if b(ui, !editing && has, "✏ Edit")
+        if b(ui, !editing && has, "Edit")
             && let Some(k) = e.selected
         {
             let f = ControlForm::parse(&e.rows[k].1).unwrap_or_default();
             e.form = Some((Some(k), f));
         }
-        if b(ui, !editing && has, "✕ Delete")
+        if b(ui, !editing && has, "Delete")
             && let Some(k) = e.selected
         {
             e.rows.remove(k);
@@ -1954,18 +1957,21 @@ fn rules_body(app: &mut EpanetApp, ui: &mut Ui, w: f32) -> bool {
     ui.horizontal_wrapped(|ui| {
         let b = |ui: &mut Ui, on: bool, t: &str| {
             let min = if t.chars().count() == 1 { 32.0 } else { 76.0 };
-            ui.add_enabled(on, egui::Button::new(t).min_size(vec2(min, 26.0)))
-                .clicked()
+            ui.add_enabled(
+                on,
+                egui::Button::new(crate::i18n::tr(t)).min_size(vec2(min, 26.0)),
+            )
+            .clicked()
         };
-        if b(ui, !editing, "+ Insert") {
+        if b(ui, !editing, "Insert") {
             e.edit = Some((None, "RULE \nIF   \nTHEN ".into()));
         }
-        if b(ui, !editing && has, "✏ Edit")
+        if b(ui, !editing && has, "Edit")
             && let Some(k) = e.selected
         {
             e.edit = Some((Some(k), e.rows[k].2.clone()));
         }
-        if b(ui, !editing && has, "✕ Delete")
+        if b(ui, !editing && has, "Delete")
             && let Some(k) = e.selected
         {
             e.rows.remove(k);
@@ -2337,7 +2343,7 @@ mod size_tests {
                 }
                 let what = format!("width {width} rules {rules} editing {editing}");
                 assert!(right <= width + 0.5, "{what}: {right}");
-                assert!(texts.iter().any(|t| t == "+ Insert"), "{what}: {texts:?}");
+                assert!(texts.iter().any(|t| t == "Insert"), "{what}: {texts:?}");
                 assert!(!texts.iter().any(|t| t.contains("Editor…")), "{what}");
                 if editing && !rules {
                     assert!(texts.iter().any(|t| t == "NODE"), "{what}: {texts:?}");

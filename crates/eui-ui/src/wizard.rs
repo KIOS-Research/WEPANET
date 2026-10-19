@@ -351,19 +351,12 @@ pub fn mapping(ui: &mut Ui, m: Mapping) {
 pub fn records(ui: &mut Ui, id: &str, fields: &[String], records: &[Vec<String>], height: f32) {
     let mut rows = vec![fields.to_vec()];
     rows.extend(records.iter().take(1000).cloned());
-    let mut sort = None;
     egui::ScrollArea::both()
         .id_salt(id)
         .max_height(height)
         .auto_shrink(false)
         .show(ui, |ui| {
-            crate::reports::table(
-                ui,
-                id,
-                &rows,
-                &mut sort,
-                &trf("{} records", &[&records.len()]),
-            );
+            crate::reports::table_kept(ui, id, &rows, &trf("{} records", &[&records.len()]));
         });
 }
 

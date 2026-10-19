@@ -11,6 +11,7 @@ use eui_core::props::Element;
 use eui_core::{LinkKind, LinkVar, NodeKind, NodeVar, SimResults};
 
 use crate::app::{EpanetApp, ReportKind, ViewMode};
+use crate::i18n::trf;
 use crate::icons::{self, Icon};
 
 /// The selector panel shown above the Map Viewer, if any.
@@ -622,14 +623,15 @@ pub fn table(ui: &mut Ui, id: &str, rows: &Rows, sort: &mut Option<(usize, bool)
         return;
     };
     let ncols = head.len();
+    // a column the table no longer has (other rows shown under the same id)
+    if sort.is_some_and(|(col, _)| col >= ncols) {
+        *sort = None;
+    }
     let mut order: Vec<usize> = (0..body.len()).collect();
     if let Some((col, asc)) = *sort {
+        let cell = |r: usize| body[r].get(col).map_or("", String::as_str);
         order.sort_by(|&a, &b| {
-            let (x, y) = (&body[a][col], &body[b][col]);
-            let o = match (eui_core::num::parse(x), eui_core::num::parse(y)) {
-                (Some(p), Some(q)) => p.total_cmp(&q),
-                _ => natural_cmp(x, y),
-            };
+            let o = cell_cmp(cell(a), cell(b));
             if asc { o } else { o.reverse() }
         });
     }
@@ -684,16 +686,25 @@ pub fn table(ui: &mut Ui, id: &str, rows: &Rows, sort: &mut Option<(usize, bool)
                     (Align2::CENTER_BOTTOM, r.center().x)
                 };
                 let mut y = r.bottom() - 6.0;
-                let mut label = heading.clone();
-                if let Some((col, asc)) = *sort
-                    && col == c
-                {
-                    label.push_str(if asc { " ▲" } else { " ▼" });
-                }
-                for line in label.lines().rev() {
-                    ui.painter()
-                        .text(pos2(x, y), align, line, font.clone(), v.text_color());
+                // the sorted column: a triangle after its last line, drawn
+                // (the interface font has no arrow characters)
+                let arrow = sort.filter(|(col, _)| *col == c).map(|(_, asc)| asc);
+                let x = if arrow.is_some() && c > 0 { x - 6.0 } else { x };
+                let mut last = None;
+                for line in heading.lines().rev() {
+                    let tr =
+                        ui.painter()
+                            .text(pos2(x, y), align, line, font.clone(), v.text_color());
+                    last.get_or_insert(tr);
                     y -= 17.0;
+                }
+                if let (Some(asc), Some(t)) = (arrow, last) {
+                    sort_triangle(
+                        ui.painter(),
+                        pos2(t.right() + 9.0, t.center().y),
+                        asc,
+                        v.text_color(),
+                    );
                 }
                 if resp.clicked() {
                     *sort = match *sort {
@@ -746,10 +757,64 @@ pub fn table(ui: &mut Ui, id: &str, rows: &Rows, sort: &mut Option<(usize, bool)
     ui.painter().text(
         fr.right_center() - vec2(14.0, 0.0),
         Align2::RIGHT_CENTER,
-        "Click a column header to sort it",
+        crate::i18n::tr("Click a column header to sort it"),
         font,
         v.text_color(),
     );
+}
+
+/// The triangle beside a sorted column's heading: up when ascending.
+fn sort_triangle(painter: &egui::Painter, c: egui::Pos2, up: bool, color: Color32) {
+    let (w, h) = (4.5, 4.0);
+    let (tip, base) = if up { (-h, h) } else { (h, -h) };
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            pos2(c.x, c.y + tip),
+            pos2(c.x + w, c.y + base),
+            pos2(c.x - w, c.y + base),
+        ],
+        color,
+        Stroke::NONE,
+    ));
+}
+
+/// [`table`] keeping the sorting from frame to frame by itself (for tables
+/// whose sorting is not part of the app's state).
+pub fn table_kept(ui: &mut Ui, id: &str, rows: &Rows, footer: &str) {
+    let key = egui::Id::new(("table_sort", id));
+    let mut sort: Option<(usize, bool)> = ui.data(|d| d.get_temp(key)).flatten();
+    table(ui, id, rows, &mut sort, footer);
+    ui.data_mut(|d| d.insert_temp(key, sort));
+}
+
+/// Seconds of a time cell: "13:30", "1:30 pm", "12:00 am".
+fn time_secs(s: &str) -> Option<u32> {
+    let s = s.trim();
+    let (clock, half) = match s.rsplit_once(' ') {
+        Some((c, h)) if h.eq_ignore_ascii_case("am") => (c, Some(false)),
+        Some((c, h)) if h.eq_ignore_ascii_case("pm") => (c, Some(true)),
+        _ => (s, None),
+    };
+    let mut parts = clock.split(':');
+    let h: u32 = parts.next()?.trim().parse().ok()?;
+    let m: u32 = parts.next()?.trim().parse().ok()?;
+    let sec: u32 = parts.next().map_or(Some(0), |x| x.trim().parse().ok())?;
+    let h = match half {
+        Some(pm) => h % 12 + if pm { 12 } else { 0 },
+        None => h,
+    };
+    Some(h * 3600 + m * 60 + sec)
+}
+
+/// Order of two cells: as numbers, times, or text with numbers in order.
+fn cell_cmp(x: &str, y: &str) -> std::cmp::Ordering {
+    if let (Some(p), Some(q)) = (eui_core::num::parse(x), eui_core::num::parse(y)) {
+        return p.total_cmp(&q);
+    }
+    if let (Some(p), Some(q)) = (time_secs(x), time_secs(y)) {
+        return p.cmp(&q);
+    }
+    natural_cmp(x, y)
 }
 
 /// Compares IDs so that "10" sorts after "9".
@@ -1531,9 +1596,8 @@ fn system_flow(app: &mut EpanetApp, ui: &mut Ui) {
     let res = app.results.as_ref().unwrap();
     if app.rpt.sf_data {
         let rows = sysflow_rows(app, res);
-        let footer = format!("{} time periods", rows.len() - 1);
-        let mut sort = None;
-        table(ui, "sysflow_table", &rows, &mut sort, &footer);
+        let footer = trf("{} time periods", &[&(rows.len() - 1)]);
+        table_kept(ui, "sysflow_table", &rows, &footer);
         return;
     }
     let flows = &app.rpt.flows;
@@ -1738,9 +1802,8 @@ fn time_series(app: &mut EpanetApp, ui: &mut Ui) {
     let res = app.results.as_ref().unwrap();
     if app.rpt.ts_table {
         let rows = ts_rows(app, res);
-        let footer = format!("{} time periods", rows.len() - 1);
-        let mut sort = None;
-        table(ui, "ts_table", &rows, &mut sort, &footer);
+        let footer = trf("{} time periods", &[&(rows.len() - 1)]);
+        table_kept(ui, "ts_table", &rows, &footer);
         return;
     }
     let mut data: Vec<TsData> = app
@@ -2776,6 +2839,72 @@ fn pf_selector(app: &mut EpanetApp, ui: &mut Ui) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A table whose sorting the app does not keep (System Flow, Time
+    /// Series, plugin results, file records) stays sorted by the column
+    /// clicked, times in the order of the day.
+    #[test]
+    fn kept_tables_stay_sorted() {
+        let ctx = egui::Context::default();
+        let rows: Rows = vec![
+            vec!["Time\nof Day".into(), "Volume\nML".into()],
+            vec!["2:00 am".into(), "5".into()],
+            vec!["10:00 am".into(), "1".into()],
+            vec!["12:00 am".into(), "3".into()],
+            vec!["1:00 pm".into(), "2".into()],
+        ];
+        let run = |events: Vec<egui::Event>| {
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(800.0, 600.0))),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
+                        table_kept(ui, "test_table", &rows, "");
+                    });
+                },
+            );
+            out.textures_delta.clear();
+            let mut cells: Vec<(String, f32)> = out
+                .shapes
+                .iter()
+                .filter_map(|c| match &c.shape {
+                    egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos.y)),
+                    _ => None,
+                })
+                .collect();
+            cells.retain(|(s, _)| {
+                s.ends_with(" am") || s.ends_with(" pm") || s.starts_with("of Day")
+            });
+            cells
+        };
+        let cells = run(vec![]);
+        let head = cells
+            .iter()
+            .find(|(s, _)| s.starts_with("of Day"))
+            .unwrap()
+            .1;
+        let click = |pressed| egui::Event::PointerButton {
+            pos: egui::pos2(40.0, head),
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        run(vec![egui::Event::PointerMoved(egui::pos2(40.0, head))]);
+        run(vec![click(true)]);
+        run(vec![click(false)]);
+        // a later frame still shows the order chosen
+        run(vec![]);
+        let mut times = run(vec![]);
+        times.retain(|(s, _)| !s.starts_with("of Day"));
+        times.sort_by(|a, b| a.1.total_cmp(&b.1));
+        let order: Vec<&str> = times.iter().map(|(s, _)| s.as_str()).collect();
+        assert_eq!(order, ["12:00 am", "2:00 am", "10:00 am", "1:00 pm"]);
+        assert_eq!(time_secs("1:30 pm"), Some(13 * 3600 + 1800));
+        assert_eq!(time_secs("13:30"), Some(13 * 3600 + 1800));
+    }
 
     /// No graph draws a crosshair under the mouse.
     #[test]

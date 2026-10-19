@@ -917,12 +917,11 @@ pub fn table_dialog(app: &mut EpanetApp, ui: &mut egui::Ui) -> bool {
     ui.set_min_size(egui::vec2(520.0, 360.0));
     ui.label(egui::RichText::new(title).strong().size(14.0));
     ui.add_space(6.0);
-    let mut sort = None;
-    let footer = format!("{} rows", rows.len().saturating_sub(1));
+    let footer = crate::i18n::trf("{} rows", &[&rows.len().saturating_sub(1)]);
     egui::ScrollArea::vertical()
         .max_height(420.0)
         .show(ui, |ui| {
-            crate::reports::table(ui, "plugin_table", rows, &mut sort, &footer);
+            crate::reports::table_kept(ui, "plugin_table", rows, &footer);
         });
     ui.add_space(6.0);
     let mut close = false;

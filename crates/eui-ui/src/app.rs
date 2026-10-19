@@ -1825,6 +1825,10 @@ impl EpanetApp {
 
 impl eframe::App for EpanetApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        #[cfg(target_arch = "wasm32")]
+        if let Some(file) = io::take_launch_file() {
+            self.inbox.push(Ok(file));
+        }
         if let Some(p) = io::take_dropped(&self.inbox, ctx) {
             self.pending_path = Some(p);
         }

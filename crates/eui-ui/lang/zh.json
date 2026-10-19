@@ -509,5 +509,9 @@
   "; skipped {} shapes": "；跳过 {} 个图形",
   "{} lines": "{} 条线",
   "{} records": "{} 条记录",
-  "Drag to move the legend; right-click to edit it, double-click to hide it": "拖动以移动图例；右键单击编辑，双击隐藏"
+  "Drag to move the legend; right-click to edit it, double-click to hide it": "拖动以移动图例；右键单击编辑，双击隐藏",
+  "Click a column header to sort it": "单击列标题进行排序",
+  "{} time periods": "{} 个时段",
+  "{} rows": "{} 行",
+  "Insert": "插入"
 }

@@ -509,5 +509,9 @@
   "; skipped {} shapes": "· παραλείφθηκαν {} σχήματα",
   "{} lines": "{} γραμμές",
   "{} records": "{} εγγραφές",
-  "Drag to move the legend; right-click to edit it, double-click to hide it": "Σύρετε για να μετακινήσετε το υπόμνημα· δεξί κλικ για επεξεργασία, διπλό κλικ για απόκρυψη"
+  "Drag to move the legend; right-click to edit it, double-click to hide it": "Σύρετε για να μετακινήσετε το υπόμνημα· δεξί κλικ για επεξεργασία, διπλό κλικ για απόκρυψη",
+  "Click a column header to sort it": "Κάντε κλικ σε επικεφαλίδα στήλης για ταξινόμηση",
+  "{} time periods": "{} χρονικά διαστήματα",
+  "{} rows": "{} γραμμές",
+  "Insert": "Εισαγωγή"
 }
