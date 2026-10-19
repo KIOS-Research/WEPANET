@@ -496,6 +496,7 @@ pub fn curve(app: &mut EpanetApp, ui: &mut Ui) -> bool {
     if !c.points.is_empty() {
         let line = |k: usize| PlotPoints::from_iter(c.points.iter().map(|p| [p[0], p[k]]));
         Plot::new("ff_curve_plot")
+            .show_crosshair(false)
             .height(320.0)
             .legend(Legend::default())
             .x_axis_label(format!("Demand at {} ({flow_u})", c.node.trim()))

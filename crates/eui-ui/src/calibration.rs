@@ -366,6 +366,7 @@ fn series_page(app: &mut EpanetApp, ui: &mut Ui) {
                 .map(|m| [m.hours, m.value])
                 .collect();
             Plot::new("calib_ts")
+                .show_crosshair(false)
                 .legend(egui_plot::Legend::default())
                 .x_axis_label("Hour")
                 .allow_scroll(false)
@@ -423,6 +424,7 @@ fn correlation_page(app: &mut EpanetApp, ui: &mut Ui) {
     }
     let footer = 26.0;
     Plot::new("calib_corr")
+        .show_crosshair(false)
         .legend(egui_plot::Legend::default())
         .x_axis_label("Measured")
         .y_axis_label("Computed")

@@ -675,6 +675,7 @@ fn pattern_chart(ui: &mut Ui, id: &str, values: &[f64], size: egui::Vec2, step: 
         })
         .collect();
     Plot::new(id)
+        .show_crosshair(false)
         .width(size.x)
         .height(size.y)
         .x_axis_label(format!("Time (Time Period = {step} hrs)"))
@@ -1038,6 +1039,7 @@ fn curve_editor_body(app: &mut EpanetApp, ui: &mut Ui, panel: Option<f32>) -> bo
     let line: PlotPoints = curve_line(&e.kind, &pts).into_iter().collect();
     let chart = |ui: &mut Ui, size: egui::Vec2| {
         Plot::new("curve_editor_chart")
+            .show_crosshair(false)
             .width(size.x)
             .height(size.y)
             .x_axis_label(xt)

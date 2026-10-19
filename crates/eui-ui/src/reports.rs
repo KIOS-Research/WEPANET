@@ -1385,6 +1385,7 @@ fn base_plot<'a>(id: &str, app: &EpanetApp, time: TimeAxis, y_label: &str) -> Pl
             }),
     };
     Plot::new(id.to_string())
+        .show_crosshair(false)
         .custom_x_axes(vec![x_axis])
         .custom_y_axes(vec![y_axis_hint(y_label)])
         .x_grid_spacer(move |input| {
@@ -2775,6 +2776,34 @@ fn pf_selector(app: &mut EpanetApp, ui: &mut Ui) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// No graph draws a crosshair under the mouse.
+    #[test]
+    fn graphs_have_no_crosshair() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut plots = 0;
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|e| e != "rs") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&path).unwrap();
+            for (k, _) in src.match_indices("Plot::new(") {
+                // not this test's own text
+                if src[..k].ends_with('"') {
+                    continue;
+                }
+                plots += 1;
+                let next = &src[k..(k + 120).min(src.len())];
+                assert!(
+                    next.contains(".show_crosshair(false)"),
+                    "a Plot in {} shows a crosshair",
+                    path.display()
+                );
+            }
+        }
+        assert!(plots >= 6);
+    }
 
     /// EPANET-MSX species are columns of the Node and Link tables (bulk
     /// species only for nodes) and parameters of the Time Series Report.
