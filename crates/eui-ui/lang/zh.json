@@ -508,5 +508,6 @@
   "; skipped {} records": "；跳过 {} 条记录",
   "; skipped {} shapes": "；跳过 {} 个图形",
   "{} lines": "{} 条线",
-  "{} records": "{} 条记录"
+  "{} records": "{} 条记录",
+  "Drag to move the legend; right-click to edit it, double-click to hide it": "拖动以移动图例；右键单击编辑，双击隐藏"
 }

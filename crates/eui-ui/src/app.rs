@@ -252,6 +252,10 @@ pub struct Prefs {
     /// Legends drawn with a frame on the map.
     pub node_legend_framed: bool,
     pub link_legend_framed: bool,
+    /// Where the legends were dragged on the map: their top left corner as a
+    /// fraction of the map's width and height (none: the top left, stacked).
+    pub node_legend_pos: Option<[f32; 2]>,
+    pub link_legend_pos: Option<[f32; 2]>,
     /// Project Setup defaults for new objects and projects.
     pub setup: crate::setup::SetupDefaults,
     /// Loaded user plugins: (file name, Rhai source).
@@ -343,6 +347,8 @@ impl Default for Prefs {
             node_colors: crate::style::RAMP.map(rgb),
             link_colors: crate::style::RAMP.map(rgb),
             node_legend_framed: true,
+            node_legend_pos: None,
+            link_legend_pos: None,
             link_legend_framed: true,
             setup: Default::default(),
             user_plugins: Vec::new(),

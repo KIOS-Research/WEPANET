@@ -508,5 +508,6 @@
   "; skipped {} records": "; se omitieron {} registros",
   "; skipped {} shapes": "; se omitieron {} formas",
   "{} lines": "{} líneas",
-  "{} records": "{} registros"
+  "{} records": "{} registros",
+  "Drag to move the legend; right-click to edit it, double-click to hide it": "Arrastre para mover la leyenda; clic derecho para editarla, doble clic para ocultarla"
 }

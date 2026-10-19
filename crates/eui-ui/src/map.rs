@@ -1,8 +1,8 @@
 //! The network map: drawing, navigation and direct editing.
 
 use egui::{
-    Align2, Color32, CornerRadius, FontId, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui, Vec2,
-    pos2, vec2,
+    Align2, Color32, CornerRadius, CursorIcon, FontId, Pos2, Rect, Sense, Shape, Stroke,
+    StrokeKind, Ui, Vec2, pos2, vec2,
 };
 use eui_core::props::Element;
 use eui_core::{LinkKind, LinkVar, NodeKind};
@@ -912,8 +912,11 @@ fn map_text(
 }
 
 /// Legends drawn as EPANET-UI does: a white box with the theme name and units;
-/// node classes as dots, link classes as a vertical color bar.
-fn draw_legends(app: &EpanetApp, ui: &Ui, rect: Rect, node: Legend, link: Legend) {
+/// node classes as dots, link classes as a vertical color bar. They start at
+/// the top left, one under the other; dragged, each stays where it is let go
+/// (kept as a fraction of the map, inside it). A right click opens its
+/// Legend Editor and a double click hides it.
+fn draw_legends(app: &mut EpanetApp, ui: &mut Ui, rect: Rect, node: Legend, link: Legend) {
     let mut items: Vec<(String, Legend, bool)> = Vec::new();
     let nt = app.prefs.node_theme;
     if app.prefs.node_legend_visible
@@ -952,9 +955,57 @@ fn draw_legends(app: &EpanetApp, ui: &Ui, rect: Rect, node: Legend, link: Legend
     let row = 19.0;
     let ink = Color32::from_gray(30);
     let mut top = rect.top() + 10.0;
+    let mut edit = None;
     for (title, legend, is_node) in items {
-        let h = row * 6.0 + 12.0;
-        let frame = Rect::from_min_size(pos2(rect.left() + 10.0, top), vec2(150.0, h));
+        let size = vec2(150.0, row * 6.0 + 12.0);
+        let default = pos2(rect.left() + 10.0, top);
+        top += size.y + 8.0;
+        // a place in the map, the legend whole inside it
+        let inside = |min: Pos2| {
+            pos2(
+                min.x
+                    .clamp(rect.left(), (rect.right() - size.x).max(rect.left())),
+                min.y
+                    .clamp(rect.top(), (rect.bottom() - size.y).max(rect.top())),
+            )
+        };
+        let pos = if is_node {
+            &mut app.prefs.node_legend_pos
+        } else {
+            &mut app.prefs.link_legend_pos
+        };
+        let min = pos.map_or(default, |[fx, fy]| {
+            rect.min + vec2(fx * rect.width(), fy * rect.height())
+        });
+        let mut frame = Rect::from_min_size(inside(min), size);
+        let resp = ui.interact(
+            frame,
+            ui.id().with(("map_legend", is_node)),
+            Sense::click_and_drag(),
+        );
+        if resp.dragged() {
+            frame = Rect::from_min_size(inside(frame.min + resp.drag_delta()), size);
+            let at = frame.min - rect.min;
+            *pos = Some([at.x / rect.width().max(1.0), at.y / rect.height().max(1.0)]);
+        }
+        if resp.secondary_clicked() {
+            edit = Some(is_node);
+        }
+        if resp.double_clicked() {
+            if is_node {
+                app.prefs.node_legend_visible = false;
+            } else {
+                app.prefs.link_legend_visible = false;
+            }
+        }
+        resp.on_hover_cursor(if ui.input(|i| i.pointer.primary_down()) {
+            CursorIcon::Grabbing
+        } else {
+            CursorIcon::Grab
+        })
+        .on_hover_text(crate::i18n::tr(
+            "Drag to move the legend; right-click to edit it, double-click to hide it",
+        ));
         // Framed legends get a border (Legend Editor > Framed).
         let framed = if is_node {
             app.prefs.node_legend_framed
@@ -1037,7 +1088,9 @@ fn draw_legends(app: &EpanetApp, ui: &Ui, rect: Rect, node: Legend, link: Legend
             );
             y += row;
         }
-        top = frame.bottom() + 8.0;
+    }
+    if let Some(nodes) = edit {
+        crate::dialogs::open_legend_editor(app, nodes);
     }
 }
 
@@ -1083,6 +1136,119 @@ fn label_editor(app: &mut EpanetApp, ui: &mut Ui, rect: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use eframe::App as _;
+
+    /// The whole window for one frame with `events`: each text drawn and where.
+    fn frame(
+        app: &mut EpanetApp,
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+    ) -> Vec<(String, Rect)> {
+        let mut f = eframe::Frame::_new_kittest();
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1400.0, 900.0))),
+            events,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            app.logic(ui.ctx(), &mut f);
+            app.ui(ui, &mut f);
+        });
+        out.textures_delta.clear();
+        out.shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                Shape::Text(t) => Some((t.galley.text().to_string(), t.visual_bounding_rect())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn button(pos: Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        }
+    }
+
+    /// A map legend is dragged to a new place (not the map under it) and
+    /// stays inside the map; a right click opens its Legend Editor, a double
+    /// click hides it.
+    #[test]
+    fn legends_are_dragged() {
+        let (ctx, mut app) = crate::msx::tests::new_app();
+        app.load_example("Net1", eui_core::examples::NET1);
+        app.prefs.node_theme = crate::style::NodeTheme::Elevation;
+        app.prefs.node_legend_visible = true;
+        let title = |t: &[(String, Rect)]| {
+            t.iter()
+                .find(|(s, _)| s.starts_with("Elevation ("))
+                .map(|(_, r)| *r)
+                .expect("the node legend")
+        };
+        let mut t = Vec::new();
+        for _ in 0..4 {
+            t = frame(&mut app, &ctx, vec![]);
+        }
+        let before = title(&t);
+        let center = app.view.center;
+        let from = before.center();
+        let to = from + vec2(300.0, 200.0);
+        frame(&mut app, &ctx, vec![egui::Event::PointerMoved(from)]);
+        frame(&mut app, &ctx, vec![button(from, true)]);
+        for k in 1..=5 {
+            let p = from + (to - from) * (k as f32 / 5.0);
+            frame(&mut app, &ctx, vec![egui::Event::PointerMoved(p)]);
+        }
+        frame(&mut app, &ctx, vec![button(to, false)]);
+        let after = title(&frame(&mut app, &ctx, vec![]));
+
+        assert!(app.prefs.node_legend_pos.is_some());
+        assert!(
+            (after.min - before.min - vec2(300.0, 200.0)).length() < 3.0,
+            "{before:?} -> {after:?}"
+        );
+        assert_eq!(app.view.center, center, "the map did not pan");
+        // far past the map's edge: it stops at the edge
+        let from = after.center();
+        let to = from + vec2(3000.0, 3000.0);
+        frame(&mut app, &ctx, vec![egui::Event::PointerMoved(from)]);
+        frame(&mut app, &ctx, vec![button(from, true)]);
+        for k in 1..=5 {
+            let p = from + (to - from) * (k as f32 / 5.0);
+            frame(&mut app, &ctx, vec![egui::Event::PointerMoved(p)]);
+        }
+        frame(&mut app, &ctx, vec![button(to, false)]);
+        let edge = title(&frame(&mut app, &ctx, vec![]));
+        let map = app.export.map_rect.unwrap();
+        assert!(map.contains(edge.center()), "{edge:?} in {map:?}");
+        let [fx, fy] = app.prefs.node_legend_pos.unwrap();
+        assert!((0.0..=1.0).contains(&fx) && (0.0..=1.0).contains(&fy));
+        // a right click opens its Legend Editor
+        let p = edge.center();
+        let right = |pressed| egui::Event::PointerButton {
+            pos: p,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame(&mut app, &ctx, vec![egui::Event::PointerMoved(p)]);
+        frame(&mut app, &ctx, vec![right(true)]);
+        frame(&mut app, &ctx, vec![right(false)]);
+        assert_eq!(app.dialog, crate::app::Dialog::NodeLegend);
+        app.dialog = crate::app::Dialog::None;
+        // a double click hides it
+        frame(&mut app, &ctx, vec![egui::Event::PointerMoved(p)]);
+        for _ in 0..2 {
+            frame(&mut app, &ctx, vec![button(p, true)]);
+            frame(&mut app, &ctx, vec![button(p, false)]);
+        }
+        assert!(!app.prefs.node_legend_visible);
+        let t = frame(&mut app, &ctx, vec![]);
+        assert!(!t.iter().any(|(s, _)| s.starts_with("Elevation (")));
+    }
 
     /// Unticking Tanks/Reservoirs, Pumps or Valves hides only their symbols:
     /// the nodes stay (drawn and picked as plain nodes) and so do the links.

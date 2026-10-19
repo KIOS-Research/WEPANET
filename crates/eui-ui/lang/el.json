@@ -508,5 +508,6 @@
   "; skipped {} records": "· παραλείφθηκαν {} εγγραφές",
   "; skipped {} shapes": "· παραλείφθηκαν {} σχήματα",
   "{} lines": "{} γραμμές",
-  "{} records": "{} εγγραφές"
+  "{} records": "{} εγγραφές",
+  "Drag to move the legend; right-click to edit it, double-click to hide it": "Σύρετε για να μετακινήσετε το υπόμνημα· δεξί κλικ για επεξεργασία, διπλό κλικ για απόκρυψη"
 }
