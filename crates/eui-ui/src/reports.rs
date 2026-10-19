@@ -296,6 +296,11 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
     ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
         // Title bar: ☰ menu, title, close.
         let (bar, _) = ui.allocate_exact_size(vec2(rect.width(), 34.0), Sense::hover());
+        // what Copy and Save take a picture of when the report is a graph
+        app.export.report_rect = Some(Rect::from_min_max(
+            pos2(rect.left(), bar.bottom()),
+            rect.max,
+        ));
         ui.painter().rect_filled(bar, 0.0, pal.menu);
         ui.painter().text(
             bar.center(),
@@ -549,21 +554,44 @@ fn report_menu(app: &mut EpanetApp, ui: &mut Ui) {
     if own {
         ui.separator();
     }
+    // a graph is copied and saved as its picture (as EPANET-UI does), a
+    // table or a text report as text
+    if shows_graph(app) {
+        let ready = app.results.is_some();
+        let stem = title(app).replace(' ', "_");
+        if icons::menu_item(ui, Icon::Copy, "Copy to Clipboard", ready).clicked() {
+            crate::export::request_report(app, crate::export::ExportTarget::Clipboard, &stem);
+        }
+        if icons::menu_item(ui, Icon::Save, "Save to File", ready).clicked() {
+            crate::export::request_report(app, crate::export::ExportTarget::File, &stem);
+        }
+        return;
+    }
     let text = report_text(app);
     if icons::menu_item(ui, Icon::Copy, "Copy to Clipboard", text.is_some()).clicked()
         && let Some(t) = &text
     {
         ui.ctx().copy_text(t.clone());
-        app.status = "Report copied to the clipboard".into();
+        app.status = crate::i18n::tr("Report copied to the clipboard").into();
     }
     if icons::menu_item(ui, Icon::Save, "Save to File", text.is_some()).clicked()
         && let Some(t) = &text
     {
         let name = format!("{}.txt", title(app).replace(' ', "_"));
         match crate::io::save_report(t, &name, ui.ctx()) {
-            Ok(()) => app.status = format!("Saved {name}"),
+            Ok(()) => app.status = trf("Saved {}", &[&name]),
             Err(e) => app.status = format!("Save failed: {e}"),
         }
+    }
+}
+
+/// Whether the report shows a graph (rather than a table or text).
+fn shows_graph(app: &EpanetApp) -> bool {
+    match app.report_kind {
+        ReportKind::SystemFlow => !app.rpt.sf_data,
+        ReportKind::TimeSeries => !app.rpt.ts_table,
+        ReportKind::Percentiles | ReportKind::Profile => true,
+        _ => false,
     }
 }
 

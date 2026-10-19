@@ -513,5 +513,9 @@
   "Click a column header to sort it": "单击列标题进行排序",
   "{} time periods": "{} 个时段",
   "{} rows": "{} 行",
-  "Insert": "插入"
+  "Insert": "插入",
+  "Graph copied to the clipboard": "图表已复制到剪贴板",
+  "Report copied to the clipboard": "报告已复制到剪贴板",
+  "Map copied to the clipboard": "地图已复制到剪贴板",
+  "Saved {}": "已保存 {}"
 }

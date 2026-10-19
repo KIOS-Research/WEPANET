@@ -513,5 +513,9 @@
   "Click a column header to sort it": "Haga clic en un encabezado de columna para ordenar",
   "{} time periods": "{} periodos de tiempo",
   "{} rows": "{} filas",
-  "Insert": "Insertar"
+  "Insert": "Insertar",
+  "Graph copied to the clipboard": "Gráfico copiado al portapapeles",
+  "Report copied to the clipboard": "Informe copiado al portapapeles",
+  "Map copied to the clipboard": "Mapa copiado al portapapeles",
+  "Saved {}": "Guardado: {}"
 }

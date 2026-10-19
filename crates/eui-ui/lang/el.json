@@ -513,5 +513,9 @@
   "Click a column header to sort it": "Κάντε κλικ σε επικεφαλίδα στήλης για ταξινόμηση",
   "{} time periods": "{} χρονικά διαστήματα",
   "{} rows": "{} γραμμές",
-  "Insert": "Εισαγωγή"
+  "Insert": "Εισαγωγή",
+  "Graph copied to the clipboard": "Το γράφημα αντιγράφηκε στο πρόχειρο",
+  "Report copied to the clipboard": "Η αναφορά αντιγράφηκε στο πρόχειρο",
+  "Map copied to the clipboard": "Ο χάρτης αντιγράφηκε στο πρόχειρο",
+  "Saved {}": "Αποθηκεύτηκε: {}"
 }
