@@ -7,8 +7,8 @@
   <meta name="description" content="Open-source water distribution network modeling in your browser. Runs locally, no account needed.">
   
 <script type="module">
-import init, * as bindings from '/epanet-ui-web-32fb0cde6f8ed5be.js';
-const wasm = await init({ module_or_path: '/epanet-ui-web-32fb0cde6f8ed5be_bg.wasm' });
+import init, * as bindings from '/epanet-ui-web-141fb93369305df.js';
+const wasm = await init({ module_or_path: '/epanet-ui-web-141fb93369305df_bg.wasm' });
 
 
 window.wasmBindings = bindings;
@@ -27,6 +27,7 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
   <script src="engine/engine.js"></script>
   <script src="engine/python.js"></script>
   <script src="engine/recent.js"></script>
+  <script src="engine/launch.js"></script>
   <script>
     // the app sets euiUnsaved while leaving would lose changes (network or map layers)
     window.addEventListener('beforeunload', (e) => {
@@ -67,7 +68,7 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
     async
     src="https://gc.zgo.at/count.js">
   </script>
-<link rel="modulepreload" href="/epanet-ui-web-32fb0cde6f8ed5be.js" crossorigin="anonymous" integrity="sha384-35QjeJcyvBU5D3+0cC3JX9hl3lqEvUItiDOdpKuUK6L4eMHR9mygF+eGu2+KJ0EI"><link rel="preload" href="/epanet-ui-web-32fb0cde6f8ed5be_bg.wasm" crossorigin="anonymous" integrity="sha384-cYU+2ade1AecwIaKDTiCDisKgMElNcXvyAAkEtFZKF+uxpVL5T2Rc/IanNO6/84W" as="fetch" type="application/wasm"></head>
+<link rel="modulepreload" href="/epanet-ui-web-141fb93369305df.js" crossorigin="anonymous" integrity="sha384-3+pkVZnT2rV8TJZRauHqBzEeMNxUUMJPyk5HCrbyye2uBd7NzC4uVmYbl8UINVtz"><link rel="modulepreload" href="/snippets/eui-ui-3e6d3411aa7a95b7/inline0.js" crossorigin="anonymous" integrity="sha384-vENpzkqZbyB6gXe9nbNScDV32kLhQFsKEbAEu0acJDz4BM9DLPmZozi9d99C7Ozl"><link rel="preload" href="/epanet-ui-web-141fb93369305df_bg.wasm" crossorigin="anonymous" integrity="sha384-V9zT8ayJ/li+i4SEO7d2VGYQZeFmvU29TBKUkFz9KVXwWCgTHVGCuyw7bIrXarQb" as="fetch" type="application/wasm"></head>
 <body>
   <canvas id="epanet_ui_canvas"></canvas>
   <div id="loading"><img src="logo.png" alt=""><span>Loading WEPANET…</span></div>
