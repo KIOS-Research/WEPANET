@@ -5,14 +5,15 @@
 //! A shapefile is several files (.shp, .dbf, .prj); they can be chosen
 //! together or as one .zip archive.
 
-use egui::{Align2, Color32, FontId, Rect, RichText, Sense, Stroke, Ui, pos2, vec2};
+use egui::{RichText, Ui};
 use eui_core::{LinkKind, NodeKind};
 
 use crate::app::{Dialog, EpanetApp};
-use crate::icons::{self, Icon};
+use crate::i18n::{tr, trf};
 use crate::import::{BuildOptions, InLink, InNode, MapUnits};
 use crate::io::Inbox;
 use crate::shapefile::{Dbf, Shape, read_dbf, read_prj, read_shp};
+use crate::wizard::{self, FileAction, Mapping, Nav, ROW_H};
 
 /// The link attributes to map, as EPANET-UI's (ID … Roughness).
 const LINK_PROPS: [&str; 9] = [
@@ -39,7 +40,7 @@ const FLOW_UNITS: [&str; 11] = [
 ];
 
 /// Unit choices of an attribute ("" = as in the project).
-fn unit_choices(nodes: bool, k: usize) -> &'static [&'static str] {
+pub(crate) fn unit_choices(nodes: bool, k: usize) -> &'static [&'static str] {
     match (nodes, k) {
         (false, 6) | (true, 4) => &["", "FEET", "METERS"],
         (false, 7) | (false, 8) => &["", "INCHES", "MILLIMETERS"],
@@ -221,437 +222,27 @@ will have default values. Skip this page if no node data will be imported.";
 const PREVIEW_TEXT: &str = "A preview of the imported network layout is displayed below. Click \
 the Import button to begin importing data from the selected shapefiles into the project.";
 
-/// Size of the importer's pages.
-const PAGE: egui::Vec2 = vec2(600.0, 470.0);
-const ROW_H: f32 = 26.0;
-
-fn border(ui: &Ui) -> Stroke {
-    Stroke::new(
-        1.0,
-        Color32::from_gray(if ui.visuals().dark_mode { 90 } else { 160 }),
-    )
-}
-
-fn white(ui: &Ui) -> Color32 {
-    if ui.visuals().dark_mode {
-        ui.visuals().extreme_bg_color
-    } else {
-        Color32::WHITE
-    }
-}
-
-fn gray(ui: &Ui) -> Color32 {
-    if ui.visuals().dark_mode {
-        ui.visuals().faint_bg_color
-    } else {
-        Color32::from_gray(0xf0)
-    }
-}
-
-/// The page tabs, as the Windows tab control of EPANET-UI.
-fn tabs(ui: &mut Ui, s: &mut ShpImport) {
-    let names: &[&str] = if s.tab == 3 {
-        &["Links", "Nodes", "Options", "Preview"]
-    } else {
-        &["Links", "Nodes", "Options"]
-    };
-    let font = FontId::proportional(14.5);
-    let (row, _) = ui.allocate_exact_size(vec2(PAGE.x, 30.0), Sense::hover());
-    let mut x = row.left();
-    let mut selected_rect = None;
-    for (k, name) in names.iter().enumerate() {
-        let w = ui.fonts_mut(|f| {
-            f.layout_no_wrap(name.to_string(), font.clone(), Color32::WHITE)
-                .size()
-                .x
-        }) + 36.0;
-        let sel = s.tab == k;
-        let r = Rect::from_min_max(
-            pos2(x, row.top() + if sel { 0.0 } else { 3.0 }),
-            pos2(x + w, row.bottom() + if sel { 1.0 } else { 0.0 }),
-        );
-        let resp = ui.interact(r, ui.id().with(("shp_tab", k)), Sense::click());
-        let fill = if sel {
-            white(ui)
-        } else if resp.hovered() {
-            Color32::from_rgb(0xe5, 0xf1, 0xfb)
-        } else {
-            gray(ui)
-        };
-        ui.painter().rect_filled(r, 0.0, fill);
-        let b = border(ui);
-        ui.painter().vline(r.left(), r.y_range(), b);
-        ui.painter().vline(r.right(), r.y_range(), b);
-        ui.painter().hline(r.x_range(), r.top(), b);
-        ui.painter().text(
-            r.center(),
-            Align2::CENTER_CENTER,
-            *name,
-            font.clone(),
-            ui.visuals().text_color(),
-        );
-        if sel {
-            selected_rect = Some(r);
-        }
-        if resp.clicked() {
-            s.tab = k;
-        }
-        x += w;
-    }
-    // the page's top border, broken under the selected tab
-    let y = row.bottom();
-    let b = border(ui);
-    match selected_rect {
-        Some(r) => {
-            ui.painter().hline(row.left()..=r.left(), y, b);
-            ui.painter().hline(r.right()..=row.right(), y, b);
-        }
-        None => {
-            ui.painter().hline(row.x_range(), y, b);
-        }
-    }
-}
-
-/// The light yellow note at the top of a page.
-fn note(ui: &mut Ui, text: &str) {
-    let fill = if ui.visuals().dark_mode {
-        Color32::from_rgb(0x45, 0x42, 0x2a)
-    } else {
-        Color32::from_rgb(0xff, 0xff, 0xe1)
-    };
-    egui::Frame::NONE
-        .fill(fill)
-        .stroke(border(ui))
-        .inner_margin(egui::Margin::symmetric(6, 14))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.label(RichText::new(text).size(14.5));
-        });
-}
-
-/// A square button with an icon (or a cross).
-fn square_button(ui: &mut Ui, icon: Option<Icon>, tip: &str) -> bool {
-    let (r, resp) = ui.allocate_exact_size(vec2(36.0, 34.0), Sense::click());
-    let w = if resp.hovered() {
-        Color32::from_rgb(0xe5, 0xf1, 0xfb)
-    } else {
-        white(ui)
-    };
-    ui.painter().rect(
-        r,
-        3.0,
-        w,
-        Stroke::new(
-            1.0,
-            if resp.hovered() {
-                Color32::from_rgb(0x00, 0x78, 0xd7)
-            } else {
-                Color32::from_gray(190)
-            },
-        ),
-        egui::StrokeKind::Inside,
-    );
-    let fg = ui.visuals().text_color();
-    match icon {
-        Some(i) => icons::paint(ui.painter(), i, r.center(), 24.0, fg),
-        None => {
-            let c = r.center();
-            let d = 7.0;
-            let st = Stroke::new(1.6, fg);
-            ui.painter()
-                .line_segment([c + vec2(-d, -d), c + vec2(d, d)], st);
-            ui.painter()
-                .line_segment([c + vec2(-d, d), c + vec2(d, -d)], st);
-        }
-    }
-    resp.on_hover_text(tip).clicked()
-}
-
-/// A blue, underlined label that acts as a link.
-fn link_label(ui: &mut Ui, text: &str, enabled: bool) -> bool {
-    let color = if enabled {
-        Color32::from_rgb(0x00, 0x66, 0xcc)
-    } else {
-        ui.visuals().weak_text_color()
-    };
-    let resp = ui.add(
-        egui::Label::new(RichText::new(text).size(14.5).color(color).underline())
-            .sense(Sense::click()),
-    );
-    if enabled && resp.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-    enabled && resp.clicked()
-}
-
-/// The attribute grid: property, shapefile attribute, units; empty until a
-/// shapefile is chosen.
-#[allow(clippy::too_many_arguments)]
-fn mapping(
-    ui: &mut Ui,
-    id: &str,
-    nodes: bool,
-    title: &str,
-    props: &[&str],
-    dbf: Option<&Dbf>,
-    map: &mut [Option<usize>],
-    units: &mut [usize],
-    height: f32,
-) {
-    let width = ui.available_width();
-    let cols = [width * 0.34, width * 0.33, width * 0.33];
-    let (outer, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
-    let p = ui.painter().clone();
-    p.rect_filled(outer, 0.0, white(ui));
-    let b = border(ui);
-    let text = ui.visuals().text_color();
-    let font = FontId::proportional(14.5);
-    let xs = [
-        outer.left(),
-        outer.left() + cols[0],
-        outer.left() + cols[0] + cols[1],
-        outer.right(),
-    ];
-    let rows = props.len() + 1;
-    let bottom = outer.top() + ROW_H * rows as f32;
-    // fixed header row and first column
-    p.rect_filled(
-        Rect::from_min_max(outer.min, pos2(outer.right(), outer.top() + ROW_H)),
-        0.0,
-        gray(ui),
-    );
-    p.rect_filled(
-        Rect::from_min_max(outer.min, pos2(xs[1], bottom)),
-        0.0,
-        gray(ui),
-    );
-    for r in 1..=rows {
-        p.hline(xs[0]..=xs[3], outer.top() + ROW_H * r as f32, b);
-    }
-    for x in &xs[1..3] {
-        p.vline(*x, outer.top()..=bottom, b);
-    }
-    for (k, h) in [title, "Shapefile Attribute", "Units"].iter().enumerate() {
-        let r = Rect::from_x_y_ranges(xs[k]..=xs[k + 1], outer.top()..=outer.top() + ROW_H);
-        if k == 0 {
-            p.text(
-                r.left_center() + vec2(6.0, 0.0),
-                Align2::LEFT_CENTER,
-                *h,
-                font.clone(),
-                text,
-            );
-        } else {
-            p.text(r.center(), Align2::CENTER_CENTER, *h, font.clone(), text);
-        }
-    }
-    for (k, prop) in props.iter().enumerate() {
-        let y = outer.top() + ROW_H * (k + 1) as f32;
-        let cell = |c: usize| {
-            Rect::from_x_y_ranges(xs[c] + 1.0..=xs[c + 1] - 1.0, y + 1.0..=y + ROW_H - 1.0)
-        };
-        p.text(
-            cell(0).left_center() + vec2(5.0, 0.0),
-            Align2::LEFT_CENTER,
-            *prop,
-            font.clone(),
-            text,
-        );
-        let Some(dbf) = dbf else { continue };
-        let current = map[k]
-            .and_then(|f| dbf.fields.get(f))
-            .cloned()
-            .unwrap_or_default();
-        let r1 = cell(1);
-        ui.scope_builder(egui::UiBuilder::new().max_rect(r1), |ui| {
-            egui::ComboBox::from_id_salt((id, k))
-                .selected_text(current)
-                .width(r1.width() - 2.0)
-                .height(300.0)
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut map[k], None, "");
-                    for (f, name) in dbf.fields.iter().enumerate() {
-                        ui.selectable_value(&mut map[k], Some(f), name);
-                    }
-                });
-        });
-        let choices = unit_choices(nodes, k);
-        if !choices.is_empty() {
-            let r2 = cell(2);
-            ui.scope_builder(egui::UiBuilder::new().max_rect(r2), |ui| {
-                egui::ComboBox::from_id_salt((id, "u", k))
-                    .selected_text(choices[units[k].min(choices.len() - 1)])
-                    .width(r2.width() - 2.0)
-                    .show_ui(ui, |ui| {
-                        for (c, name) in choices.iter().enumerate() {
-                            ui.selectable_value(&mut units[k], c, *name);
-                        }
-                    });
-            });
-        }
-    }
-    p.rect_stroke(outer, 0.0, b, egui::StrokeKind::Inside);
-}
-
-/// The attribute table of a layer (EPANET-UI's "View Attribute Table").
-fn table(ui: &mut Ui, dbf: &Dbf, height: f32) {
-    let mut rows = vec![dbf.fields.clone()];
-    rows.extend(dbf.records.iter().take(1000).cloned());
-    let mut sort = None;
-    egui::ScrollArea::both()
-        .max_height(height)
-        .auto_shrink(false)
-        .show(ui, |ui| {
-            crate::reports::table(
-                ui,
-                "shp_table",
-                &rows,
-                &mut sort,
-                &format!("{} records", dbf.records.len()),
-            );
-        });
-}
-
-/// A drawing of the layers to import.
-fn preview(ui: &mut Ui, s: &ShpImport, height: f32) {
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
-    let p = ui.painter_at(rect);
-    p.rect(
-        rect,
-        0.0,
-        Color32::WHITE,
-        border(ui),
-        egui::StrokeKind::Inside,
-    );
-    let pts = || {
-        [s.links.as_ref(), s.nodes.as_ref()]
-            .into_iter()
-            .flatten()
-            .flat_map(|l| l.shapes.iter())
-            .flat_map(|sh| match sh {
-                Shape::Point(p) => vec![*p],
-                Shape::Line(v) => v.clone(),
-                Shape::Null => vec![],
-            })
-    };
-    let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
-    for [x, y] in pts() {
-        x0 = x0.min(x);
-        y0 = y0.min(y);
-        x1 = x1.max(x);
-        y1 = y1.max(y);
-    }
-    if x0 > x1 {
-        p.text(
-            rect.center(),
-            Align2::CENTER_CENTER,
-            "No shapefile was selected",
-            FontId::proportional(14.0),
-            Color32::from_gray(120),
-        );
-        return;
-    }
-    let inner = rect.shrink(12.0);
-    let sc = (inner.width() as f64 / (x1 - x0).max(1e-9))
-        .min(inner.height() as f64 / (y1 - y0).max(1e-9));
-    let c = inner.center();
-    let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
-    let at = |[x, y]: [f64; 2]| pos2(c.x + ((x - cx) * sc) as f32, c.y - ((y - cy) * sc) as f32);
-    for l in [s.links.as_ref(), s.nodes.as_ref()].into_iter().flatten() {
-        for sh in &l.shapes {
-            match sh {
-                Shape::Line(v) => {
-                    p.add(egui::Shape::line(
-                        v.iter().map(|&q| at(q)).collect(),
-                        Stroke::new(1.0, Color32::from_gray(60)),
-                    ));
-                }
-                Shape::Point(q) => {
-                    p.circle_filled(at(*q), 2.0, Color32::from_rgb(0x30, 0x60, 0xc0));
-                }
-                Shape::Null => {}
-            }
-        }
-    }
-}
-
-/// EPANET-UI's picture of two line ends merged within the snap tolerance.
-fn snap_picture(ui: &mut Ui) {
-    let (r, _) = ui.allocate_exact_size(vec2(240.0, 54.0), Sense::hover());
-    let p = ui.painter();
-    let y = r.center().y;
-    let x = |f: f32| r.left() + 12.0 + f;
-    let black = Stroke::new(2.0, Color32::BLACK);
-    p.hline(x(0.0)..=x(80.0), y, black);
-    p.hline(x(120.0)..=x(200.0), y, black);
-    // dashed ellipse around the two ends
-    let (cx, rx, ry) = (x(100.0), 40.0, 22.0);
-    let n = 48;
-    for k in (0..n).step_by(2) {
-        let a0 = k as f32 / n as f32 * std::f32::consts::TAU;
-        let a1 = (k + 1) as f32 / n as f32 * std::f32::consts::TAU;
-        p.line_segment(
-            [
-                pos2(cx + rx * a0.cos(), y + ry * a0.sin()),
-                pos2(cx + rx * a1.cos(), y + ry * a1.sin()),
-            ],
-            Stroke::new(1.0, Color32::from_gray(60)),
-        );
-    }
-    let dot = |cx: f32, c: Color32| {
-        p.circle(pos2(cx, y), 8.0, c, Stroke::new(1.0, Color32::BLACK));
-    };
-    dot(x(0.0), Color32::from_rgb(0xff, 0x00, 0xff));
-    dot(x(80.0), Color32::from_rgb(0x00, 0xff, 0x00));
-    dot(x(120.0), Color32::from_rgb(0x00, 0xff, 0x00));
-    dot(x(200.0), Color32::from_rgb(0x00, 0xff, 0xff));
-}
-
 /// The Links or Nodes page.
 fn layer_page(ui: &mut Ui, s: &mut ShpImport, nodes: bool) {
     let ctx = ui.ctx().clone();
-    note(ui, if nodes { NODES_TEXT } else { LINKS_TEXT });
+    wizard::note(ui, if nodes { NODES_TEXT } else { LINKS_TEXT });
     ui.add_space(14.0);
     egui::Frame::NONE
         .inner_margin(egui::Margin::symmetric(14, 0))
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                let (lr, _) = ui.allocate_exact_size(vec2(170.0, 34.0), Sense::hover());
-                ui.painter().text(
-                    lr.left_center() + vec2(0.0, 4.0),
-                    Align2::LEFT_CENTER,
-                    if nodes { "Nodes File:" } else { "Links File:" },
-                    FontId::proportional(14.5),
-                    ui.visuals().text_color(),
-                );
-                let layer = if nodes { &s.nodes } else { &s.links };
-                let name = layer.as_ref().map(|l| l.name.clone()).unwrap_or_default();
-                let w = ui.available_width() - 2.0 * 36.0 - 16.0;
-                let (fr, _) = ui.allocate_exact_size(vec2(w, 34.0), Sense::hover());
-                let fr = fr.shrink2(vec2(0.0, 4.0));
-                ui.painter().rect_filled(fr, 0.0, white(ui));
-                ui.painter().hline(
-                    fr.x_range(),
-                    fr.bottom(),
-                    Stroke::new(1.0, Color32::from_gray(120)),
-                );
-                ui.painter().text(
-                    fr.left_center() + vec2(4.0, 0.0),
-                    Align2::LEFT_CENTER,
-                    name,
-                    FontId::proportional(14.0),
-                    ui.visuals().text_color(),
-                );
-                if square_button(
-                    ui,
-                    Some(Icon::Open),
-                    "Select the .shp file (with its .dbf and .prj), or a .zip",
-                ) {
+            let layer = if nodes { &s.nodes } else { &s.links };
+            let name = layer.as_ref().map(|l| l.name.clone()).unwrap_or_default();
+            match wizard::file_row(
+                ui,
+                if nodes { "Nodes File:" } else { "Links File:" },
+                &name,
+                "Select the .shp file (with its .dbf and .prj), or a .zip",
+            ) {
+                FileAction::Open => {
                     let inbox = if nodes { &s.node_inbox } else { &s.link_inbox };
                     crate::io::open_files(inbox, &ctx, "Shapefile", &["shp", "dbf", "prj", "zip"]);
                 }
-                if square_button(ui, None, "Clear the file") {
+                FileAction::Clear => {
                     if nodes {
                         s.nodes = None;
                         s.node_map = [None; 6];
@@ -661,7 +252,8 @@ fn layer_page(ui: &mut Ui, s: &mut ShpImport, nodes: bool) {
                     }
                     s.table = None;
                 }
-            });
+                FileAction::None => {}
+            }
             ui.add_space(4.0);
             let layer = if nodes {
                 s.nodes.as_ref()
@@ -673,7 +265,7 @@ fn layer_page(ui: &mut Ui, s: &mut ShpImport, nodes: bool) {
             ui.horizontal(|ui| {
                 ui.add_space(ui.available_width() - 160.0);
                 if has_dbf
-                    && link_label(
+                    && wizard::link_label(
                         ui,
                         if showing {
                             "View Properties"
@@ -690,33 +282,47 @@ fn layer_page(ui: &mut Ui, s: &mut ShpImport, nodes: bool) {
             let height = (ui.available_height() - 10.0).max(ROW_H * 8.0);
             if showing {
                 if let Some(dbf) = layer.and_then(|l| l.dbf.as_ref()) {
-                    table(ui, dbf, height);
+                    wizard::records(ui, "shp_table", &dbf.fields, &dbf.records, height);
                 }
             } else if nodes {
-                let dbf = s.nodes.as_ref().and_then(|l| l.dbf.as_ref());
-                mapping(
+                let fields = s
+                    .nodes
+                    .as_ref()
+                    .and_then(|l| l.dbf.as_ref())
+                    .map(|d| &d.fields[..]);
+                wizard::mapping(
                     ui,
-                    "shp_nodes",
-                    true,
-                    "Node Property",
-                    &NODE_PROPS,
-                    dbf,
-                    &mut s.node_map,
-                    &mut s.node_units,
-                    ROW_H * 9.0,
+                    Mapping {
+                        id: "shp_nodes",
+                        title: "Node Property",
+                        column: "Shapefile Attribute",
+                        props: &NODE_PROPS,
+                        fields,
+                        map: &mut s.node_map,
+                        units: &mut s.node_units,
+                        choices: &|k| unit_choices(true, k),
+                        height: ROW_H * 9.0,
+                    },
                 );
             } else {
-                let dbf = s.links.as_ref().and_then(|l| l.dbf.as_ref());
-                mapping(
+                let fields = s
+                    .links
+                    .as_ref()
+                    .and_then(|l| l.dbf.as_ref())
+                    .map(|d| &d.fields[..]);
+                wizard::mapping(
                     ui,
-                    "shp_links",
-                    false,
-                    "Link Property",
-                    &LINK_PROPS,
-                    dbf,
-                    &mut s.link_map,
-                    &mut s.link_units,
-                    ROW_H * 12.5,
+                    Mapping {
+                        id: "shp_links",
+                        title: "Link Property",
+                        column: "Shapefile Attribute",
+                        props: &LINK_PROPS,
+                        fields,
+                        map: &mut s.link_map,
+                        units: &mut s.link_units,
+                        choices: &|k| unit_choices(false, k),
+                        height: ROW_H * 12.5,
+                    },
                 );
             }
         });
@@ -725,43 +331,23 @@ fn layer_page(ui: &mut Ui, s: &mut ShpImport, nodes: bool) {
 /// The Options page.
 fn options_page(ui: &mut Ui, s: &mut ShpImport) {
     ui.add_space(56.0);
-    let left = (ui.available_width() - 370.0).max(0.0) / 2.0;
-    let label_w = 200.0;
-    let row = |ui: &mut Ui, label: &str, h: f32, add: &mut dyn FnMut(&mut Ui)| {
-        ui.horizontal(|ui| {
-            ui.add_space(left);
-            let (r, _) = ui.allocate_exact_size(vec2(label_w, h), Sense::hover());
-            ui.painter().text(
-                r.left_center(),
-                Align2::LEFT_CENTER,
-                label,
-                FontId::proportional(14.5),
-                ui.visuals().text_color(),
-            );
-            add(ui);
-        });
-    };
-    let full = |ui: &mut Ui, add: &mut dyn FnMut(&mut Ui)| {
-        ui.horizontal(|ui| {
-            ui.add_space(left);
-            add(ui);
-        });
-    };
     ui.spacing_mut().item_spacing.y = 14.0;
-    full(ui, &mut |ui| {
-        ui.label(RichText::new("Provide values for the import options listed below:").size(14.5));
+    wizard::option_row(ui, "", 0.0, |ui| {
+        ui.label(
+            RichText::new(tr("Provide values for the import options listed below:")).size(14.5),
+        );
     });
     ui.add_space(4.0);
-    row(ui, "EPSG CRS Code\n(if known)", 40.0, &mut |ui| {
+    wizard::option_row(ui, "EPSG CRS Code\n(if known)", 40.0, |ui| {
         ui.add(egui::TextEdit::singleline(&mut s.epsg).desired_width(150.0));
     });
-    row(ui, "Coordinate Units", 30.0, &mut |ui| {
+    wizard::option_row(ui, "Coordinate Units", 30.0, |ui| {
         egui::ComboBox::from_id_salt("shp_units")
-            .selected_text(MapUnits::ALL[s.units].label())
+            .selected_text(tr(MapUnits::ALL[s.units].label()))
             .width(138.0)
             .show_ui(ui, |ui| {
                 for (k, u) in MapUnits::ALL.iter().enumerate() {
-                    ui.selectable_value(&mut s.units, k, u.label());
+                    ui.selectable_value(&mut s.units, k, tr(u.label()));
                 }
             });
     });
@@ -770,8 +356,8 @@ fn options_page(ui: &mut Ui, s: &mut ShpImport) {
         .as_ref()
         .and_then(|l| l.prj.clone())
         .or_else(|| s.nodes.as_ref().and_then(|l| l.prj.clone()));
-    full(ui, &mut |ui| {
-        if link_label(ui, "Read CRS code and units from .prj file", true) {
+    wizard::option_row(ui, "", 0.0, |ui| {
+        if wizard::link_label(ui, "Read CRS code and units from .prj file", true) {
             match &prj {
                 Some(p) => {
                     use_prj(s, p);
@@ -785,23 +371,23 @@ fn options_page(ui: &mut Ui, s: &mut ShpImport) {
             }
         }
     });
-    row(ui, "Node Snap Tolerance", 30.0, &mut |ui| {
+    wizard::option_row(ui, "Node Snap Tolerance", 30.0, |ui| {
         ui.add(
             egui::TextEdit::singleline(&mut s.snap)
                 .desired_width(150.0)
                 .horizontal_align(egui::Align::Max),
         );
     });
-    full(ui, &mut |ui| {
+    wizard::option_row(ui, "", 0.0, |ui| {
         ui.spacing_mut().item_spacing.x = 20.0;
         crate::widgets::radio_value(ui, &mut s.snap_feet, true, "Feet");
         crate::widgets::radio_value(ui, &mut s.snap_feet, false, "Meters");
     });
-    full(ui, &mut |ui| {
-        ui.label(RichText::new("Nodes within snap tolerance will be merged.").size(14.5));
+    wizard::option_row(ui, "", 0.0, |ui| {
+        ui.label(RichText::new(tr("Nodes within snap tolerance will be merged.")).size(14.5));
     });
-    full(ui, &mut |ui| snap_picture(ui));
-    full(ui, &mut |ui| {
+    wizard::option_row(ui, "", 0.0, wizard::snap_picture);
+    wizard::option_row(ui, "", 0.0, |ui| {
         crate::widgets::checkbox(ui, &mut s.compute_lengths, "Recompute Pipe Lengths");
     });
 }
@@ -844,73 +430,46 @@ pub fn dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
         }
     }
     ui.add_space(8.0);
-    tabs(ui, s);
-    // the page
-    let page = Rect::from_min_size(ui.cursor().min, PAGE);
-    ui.allocate_rect(page, Sense::hover());
-    ui.painter().rect_filled(page, 0.0, white(ui));
-    let b = border(ui);
-    ui.painter().vline(page.left(), page.y_range(), b);
-    ui.painter().vline(page.right(), page.y_range(), b);
-    ui.painter().hline(page.x_range(), page.bottom(), b);
-    let mut child = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(page.shrink2(vec2(1.0, 4.0)))
-            .layout(egui::Layout::top_down(egui::Align::Min)),
-    );
-    child.set_clip_rect(page);
-    match s.tab {
-        0 | 1 => layer_page(&mut child, s, s.tab == 1),
-        2 => options_page(&mut child, s),
+    let names: &[&str] = if s.tab == 3 {
+        &["Links", "Nodes", "Options", "Preview"]
+    } else {
+        &["Links", "Nodes", "Options"]
+    };
+    let before = s.tab;
+    wizard::tabs(ui, &mut s.tab, names);
+    wizard::page(ui, |ui| match s.tab {
+        0 | 1 => layer_page(ui, s, s.tab == 1),
+        2 => options_page(ui, s),
         _ => {
-            note(&mut child, PREVIEW_TEXT);
-            child.add_space(12.0);
+            wizard::note(ui, PREVIEW_TEXT);
+            ui.add_space(12.0);
             egui::Frame::NONE
                 .inner_margin(egui::Margin::symmetric(14, 0))
-                .show(&mut child, |ui| {
+                .show(ui, |ui| {
                     let h = ui.available_height() - 14.0;
-                    preview(ui, s, h);
+                    let mut lines = Vec::new();
+                    let mut points = Vec::new();
+                    for l in [s.links.as_ref(), s.nodes.as_ref()].into_iter().flatten() {
+                        for sh in &l.shapes {
+                            match sh {
+                                Shape::Line(v) => lines.push(&v[..]),
+                                Shape::Point(p) => points.push(*p),
+                                Shape::Null => {}
+                            }
+                        }
+                    }
+                    wizard::preview(ui, &lines, &points, "No shapefile was selected", h);
                 });
         }
-    }
-    if let Some(e) = &s.error {
-        ui.add_space(6.0);
-        ui.label(RichText::new(e).color(Color32::from_rgb(0xc0, 0x39, 0x2b)));
-    }
-    // Back / Next (Import on the preview page) / Cancel, at the bottom right
-    ui.add_space(20.0);
-    let mut close = false;
-    let mut import = false;
-    ui.horizontal(|ui| {
-        let (w, gap) = (100.0, 18.0);
-        ui.set_width(PAGE.x);
-        ui.add_space((PAGE.x - 3.0 * w - 2.0 * gap - 4.0).max(0.0));
-        ui.spacing_mut().item_spacing.x = gap;
-        if ui
-            .add_enabled(s.tab > 0, egui::Button::new("Back").min_size(vec2(w, 32.0)))
-            .clicked()
-        {
-            s.tab -= 1;
-        }
-        if s.tab == 3 {
-            import = ui
-                .add_enabled(
-                    s.links.is_some() || s.nodes.is_some(),
-                    egui::Button::new("Import").min_size(vec2(w, 32.0)),
-                )
-                .clicked();
-        } else if ui
-            .add(egui::Button::new("Next").min_size(vec2(w, 32.0)))
-            .clicked()
-        {
-            s.tab += 1;
-            s.table = None;
-        }
-        close = ui
-            .add(egui::Button::new("Cancel").min_size(vec2(w, 32.0)))
-            .clicked();
     });
-    if import {
+    wizard::error(ui, &s.error);
+    ui.add_space(20.0);
+    let can_import = s.links.is_some() || s.nodes.is_some();
+    let nav = wizard::buttons(ui, &mut s.tab, 3, can_import);
+    if s.tab != before {
+        s.table = None;
+    }
+    if nav == Nav::Import {
         match run(app) {
             Ok(msg) => {
                 app.status = msg.clone();
@@ -926,6 +485,7 @@ pub fn dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
             }
         }
     }
+    let close = nav == Nav::Cancel;
     if close {
         app.shp_import = None;
     }
@@ -933,7 +493,7 @@ pub fn dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
 }
 
 /// Scale factor of an attribute's units to the project's.
-fn link_ucf(k: usize, unit: &str, si: bool, dw: bool) -> f64 {
+pub(crate) fn link_ucf(k: usize, unit: &str, si: bool, dw: bool) -> f64 {
     match (k, unit, si) {
         (6, "METERS", false) => 1.0 / 0.3048,
         (6, "FEET", true) => 0.3048,
@@ -947,7 +507,7 @@ fn link_ucf(k: usize, unit: &str, si: bool, dw: bool) -> f64 {
     }
 }
 
-fn node_ucf(k: usize, unit: &str, si: bool, project_flow: &str) -> f64 {
+pub(crate) fn node_ucf(k: usize, unit: &str, si: bool, project_flow: &str) -> f64 {
     match (k, unit) {
         (4, "METERS") if !si => 1.0 / 0.3048,
         (4, "FEET") if si => 0.3048,
@@ -1111,24 +671,20 @@ fn run(app: &mut EpanetApp) -> Result<String, String> {
     }
     app.results = None;
     app.view.fit_pending = true;
-    Ok(format!(
-        "Imported {} nodes and {} links{}{}",
-        sum.nodes_added,
-        sum.links_added,
-        if sum.nodes_updated + sum.links_updated > 0 {
-            format!(
-                " (updated {} existing objects)",
-                sum.nodes_updated + sum.links_updated
-            )
-        } else {
-            String::new()
-        },
-        if sum.skipped > 0 {
-            format!("; skipped {} shapes", sum.skipped)
-        } else {
-            String::new()
-        }
-    ))
+    let mut msg = trf(
+        "Imported {} nodes and {} links",
+        &[&sum.nodes_added, &sum.links_added],
+    );
+    if sum.nodes_updated + sum.links_updated > 0 {
+        msg += &trf(
+            " (updated {} existing objects)",
+            &[&(sum.nodes_updated + sum.links_updated)],
+        );
+    }
+    if sum.skipped > 0 {
+        msg += &trf("; skipped {} shapes", &[&sum.skipped]);
+    }
+    Ok(msg)
 }
 
 #[cfg(test)]

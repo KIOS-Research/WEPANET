@@ -144,6 +144,8 @@ pub enum Dialog {
     Basemap,
     AddLayer,
     ImportShapefile,
+    ImportDxf,
+    ImportCsv,
     Georeference,
     BasemapAlign,
     Setup,
@@ -395,6 +397,8 @@ pub struct EpanetApp {
     pub(crate) ctx: egui::Context,
     pub(crate) document_id: u64,
     pending_document: Option<(Network, String, Option<PathBuf>)>,
+    /// The pending document is an import into a new project: its message.
+    pending_import: Option<String>,
     saving: Option<(u64, u64)>,
     replace_after_save: bool,
     pub(crate) net: Network,
@@ -480,6 +484,8 @@ pub struct EpanetApp {
     pub(crate) python: crate::python::PythonState,
     pub(crate) export: crate::export::ExportState,
     pub(crate) shp_import: Option<crate::import_shp::ShpImport>,
+    pub(crate) dxf_import: Option<crate::import_dxf::DxfImport>,
+    pub(crate) csv_import: Option<crate::import_csv::CsvImport>,
     pub(crate) setup_job: Option<crate::setup::SetupJob>,
     /// The project's EPANET-MSX input file.
     pub(crate) msx: crate::msx::MsxState,
@@ -519,6 +525,7 @@ impl EpanetApp {
             ctx: cc.egui_ctx.clone(),
             document_id: 0,
             pending_document: None,
+            pending_import: None,
             saving: None,
             replace_after_save: false,
             net: Network::new(),
@@ -584,6 +591,8 @@ impl EpanetApp {
             python: Default::default(),
             export: Default::default(),
             shp_import: None,
+            dxf_import: None,
+            csv_import: None,
             setup_edit: None,
             project: false,
             saved_layers: Vec::new(),
@@ -802,6 +811,58 @@ impl EpanetApp {
                 self.view.fit_pending = false;
                 self.status = "New project — use Project > Add to place nodes and links".into();
             }
+            if let Some(msg) = self.pending_import.take() {
+                // a new project made by an importer: unsaved, shown whole
+                self.dirty = true;
+                self.view.fit_pending = true;
+                self.status = msg;
+            }
+        }
+    }
+
+    /// The network an importer adds to: a copy of the project's (with an
+    /// undo step), or a new project's.
+    pub(crate) fn import_target(&mut self, add: bool) -> Network {
+        if add {
+            self.checkpoint();
+            self.net.clone()
+        } else {
+            let mut net = Network::new();
+            self.prefs.setup.apply_new_project_options(&mut net);
+            net
+        }
+    }
+
+    /// Puts an importer's network in place: as the project's, or as a new
+    /// project (after asking about unsaved changes).
+    pub(crate) fn place_import(
+        &mut self,
+        net: Network,
+        add: bool,
+        msg: String,
+    ) -> Result<(), String> {
+        if add {
+            self.net = net;
+            self.touch();
+            self.results = None;
+            self.view.fit_pending = true;
+        } else {
+            if self.pending_document.is_some() {
+                return Err("Resolve the pending project change first".into());
+            }
+            self.setup = self.prefs.setup.clone();
+            self.pending_import = Some(msg);
+            self.request_document(net, "Untitled", None);
+        }
+        Ok(())
+    }
+
+    /// Reports a finished import, unless the Unsaved Changes question is up.
+    pub(crate) fn finish_import(&mut self, msg: String) {
+        self.status = msg.clone();
+        if self.dialog != Dialog::ConfirmReplace {
+            self.plugins.message = msg;
+            self.dialog = Dialog::PluginMessage;
         }
     }
 
@@ -816,6 +877,7 @@ impl EpanetApp {
             1 => self.accept_document(),
             _ => {
                 self.pending_document = None;
+                self.pending_import = None;
                 self.pending_project = None;
                 self.msx.pending = None;
                 self.replace_after_save = false;

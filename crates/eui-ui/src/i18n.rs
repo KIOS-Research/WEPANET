@@ -79,6 +79,22 @@ pub fn tr(english: &str) -> &str {
     current().text(english)
 }
 
+/// `tr` for a text with values: each `{}` of the (translated) text takes
+/// the next value.
+pub fn trf(english: &str, values: &[&dyn std::fmt::Display]) -> String {
+    let mut out = String::new();
+    let mut rest = tr(english);
+    for v in values {
+        let Some((head, tail)) = rest.split_once("{}") else {
+            break;
+        };
+        out += head;
+        out += &v.to_string();
+        rest = tail;
+    }
+    out + rest
+}
+
 /// `tr` for widget text: translates plain text, leaves styled text alone.
 pub fn tr_widget(text: egui::WidgetText) -> egui::WidgetText {
     match text {
@@ -90,6 +106,21 @@ pub fn tr_widget(text: egui::WidgetText) -> egui::WidgetText {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn values_fill_the_translated_text() {
+        assert_eq!(
+            trf("Imported {} nodes and {} pipes", &[&3, &2]),
+            "Imported 3 nodes and 2 pipes"
+        );
+        let el = all().iter().find(|l| l.code == "el").unwrap();
+        assert!(
+            el.text("Imported {} nodes and {} pipes")
+                .matches("{}")
+                .count()
+                == 2
+        );
+    }
 
     #[test]
     fn language_files_parse() {

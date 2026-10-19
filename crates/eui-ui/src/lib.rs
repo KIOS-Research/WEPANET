@@ -11,6 +11,7 @@ mod catalog;
 mod data_view;
 mod dialogs;
 mod dock;
+mod dxf;
 mod explorer;
 mod export;
 mod fireflow;
@@ -22,6 +23,8 @@ mod i18n;
 mod icons;
 mod images;
 mod import;
+mod import_csv;
+mod import_dxf;
 mod import_shp;
 mod io;
 mod layers;
@@ -46,6 +49,7 @@ mod style;
 mod test_plugins;
 mod viewer;
 mod widgets;
+mod wizard;
 
 pub use app::EpanetApp;
 

@@ -164,7 +164,7 @@ fn set(net: &mut Network, e: Element, key: PropKey, v: impl ToString) {
     let _ = net.set_prop(e, key, &v.to_string());
 }
 
-fn fmt(v: f64) -> String {
+pub(crate) fn fmt(v: f64) -> String {
     let s = format!("{v:.4}");
     s.trim_end_matches('0').trim_end_matches('.').to_string()
 }

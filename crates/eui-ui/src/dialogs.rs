@@ -106,6 +106,8 @@ pub fn show(app: &mut EpanetApp, ctx: &egui::Context) {
         Dialog::Basemap => "Select a Basemap Source",
         Dialog::AddLayer => "Add a Map Layer",
         Dialog::ImportShapefile => "Shapefile Importer",
+        Dialog::ImportDxf => "DXF File Importer",
+        Dialog::ImportCsv => "CSV File Importer",
         Dialog::Georeference => "Map Georeference Tool",
         Dialog::BasemapAlign => "Map Alignment Tool",
         Dialog::Setup => "Project Setup",
@@ -140,6 +142,8 @@ pub fn show(app: &mut EpanetApp, ctx: &egui::Context) {
             | Dialog::Preferences
             | Dialog::MapSettings
             | Dialog::ImportShapefile
+            | Dialog::ImportDxf
+            | Dialog::ImportCsv
     );
     let style = ctx.style_of(ctx.theme());
     let dark = style.visuals.dark_mode;
@@ -229,6 +233,8 @@ pub fn show(app: &mut EpanetApp, ctx: &egui::Context) {
                     Dialog::Basemap => crate::basemap::dialog(app, ui),
                     Dialog::AddLayer => crate::layers::dialog(app, ui),
                     Dialog::ImportShapefile => crate::import_shp::dialog(app, ui),
+                    Dialog::ImportDxf => crate::import_dxf::dialog(app, ui),
+                    Dialog::ImportCsv => crate::import_csv::dialog(app, ui),
                     Dialog::Georeference => crate::basemap::georef_dialog(app, ui),
                     Dialog::BasemapAlign => crate::basemap::align_dialog(app, ui),
                     Dialog::Setup => crate::setup::dialog(app, ui),
@@ -2108,6 +2114,33 @@ mod tests {
         let ok = *find(&texts, "OK");
         assert!(window.contains_rect(sep) && window.contains_rect(ok));
         assert!(sep.bottom() < ok.top());
+    }
+
+    /// Every page of the DXF and CSV importers fits its window, buttons included.
+    #[test]
+    fn importer_pages_fit_their_windows() {
+        let (ctx, mut app) = crate::msx::tests::new_app();
+        let size = vec2(1400.0, 900.0);
+        for (title, pages) in [("DXF File Importer", 3), ("CSV File Importer", 3)] {
+            for page in 0..pages {
+                if title.starts_with("DXF") {
+                    crate::import_dxf::open(&mut app);
+                    crate::import_dxf::tests::set_tab(&mut app, page);
+                } else {
+                    crate::import_csv::open(&mut app);
+                    crate::import_csv::tests::set_tab(&mut app, page);
+                }
+                let mut texts = Vec::new();
+                for _ in 0..4 {
+                    texts = frame(&mut app, &ctx, size, Vec::new());
+                }
+                let window = window_rect(&ctx, title, false);
+                for t in ["Back", "Cancel"] {
+                    let r = *find(&texts, t);
+                    assert!(window.contains_rect(r), "{title} page {page}: {t} at {r:?}");
+                }
+            }
+        }
     }
 
     /// The rectangle of a dialog's window.

@@ -1162,13 +1162,13 @@ pub fn file_menu(app: &mut EpanetApp, ctx: &egui::Context) {
                     ),
                     (
                         "CAD DXF File",
-                        "Import from a CAD drawing (coming soon)",
-                        false,
+                        "Import pipes from the lines of a CAD drawing (.dxf)",
+                        true,
                     ),
                     (
                         "CSV Text File",
-                        "Import from CSV text files (coming soon)",
-                        false,
+                        "Import nodes and pipes from CSV text files",
+                        true,
                     ),
                 ];
                 for (k, (label, tip, enabled)) in sources.iter().enumerate() {
@@ -1199,7 +1199,11 @@ pub fn file_menu(app: &mut EpanetApp, ctx: &egui::Context) {
                         if *enabled { text } else { v.weak_text_color() },
                     );
                     if resp.on_hover_text(tr(tip)).clicked() && *enabled {
-                        crate::import_shp::open(app);
+                        match k {
+                            0 => crate::import_shp::open(app),
+                            1 => crate::import_dxf::open(app),
+                            _ => crate::import_csv::open(app),
+                        }
                         ctx.data_mut(|d| d.insert_temp(import_id, false));
                         close = true;
                     }
