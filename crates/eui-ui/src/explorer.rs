@@ -479,7 +479,7 @@ fn element_editor(app: &mut EpanetApp, ui: &mut Ui) {
                 }
             }
             Err(e) => {
-                app.prop_hint = format!("{name}: {e}");
+                app.prop_hint = format!("{}: {}", tr(name), tr(&e));
                 app.buffers.remove(name);
             }
         }
@@ -998,8 +998,17 @@ fn options_editor(app: &mut EpanetApp, ui: &mut Ui, cat: OptionCategory) {
         }
     });
     if let Some((section, key, v)) = commit {
-        app.checkpoint();
-        app.net.set_option(section, key, &v);
+        match app.net.check_option(section, key, &v) {
+            Ok(()) => {
+                app.checkpoint();
+                app.net.set_option(section, key, &v);
+            }
+            Err(e) => {
+                let name = specs.iter().find(|s| s.key == key).map_or(key, |s| s.name);
+                app.prop_hint = format!("{}: {}", tr(name), tr(&e));
+                app.buffers.remove(name);
+            }
+        }
     }
     if cat == OptionCategory::Times {
         ui.label(

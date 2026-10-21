@@ -6,6 +6,7 @@
 //! hides that: every property is read and written through a [`PropKey`].
 
 use crate::network::{LinkKind, Network, NodeKind, RawSection, tokenize_line};
+use crate::num;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PropKind {
@@ -233,6 +234,7 @@ impl Network {
     /// An empty value removes optional entries (tags, emitters, ...).
     pub fn set_prop(&mut self, e: Element, key: PropKey, value: &str) -> Result<(), String> {
         let value = value.trim();
+        self.check_prop(e, key, value)?;
         let id = self.element_id(e).to_string();
         match key {
             PropKey::Id => {
@@ -310,6 +312,93 @@ impl Network {
             }
         }
         Ok(())
+    }
+
+    /// Checks a new property value: numbers within the range EPANET accepts
+    /// and tank levels that stay consistent.
+    fn check_prop(&self, e: Element, key: PropKey, value: &str) -> Result<(), String> {
+        use PropKey::*;
+        let range = match e {
+            Element::Node(i) => match (self.nodes[i].kind, key) {
+                (NodeKind::Tank, Field(k)) if k <= 5 => Range::NonNegative,
+                (NodeKind::Tank, Keyed("MIXING", 2) | Keyed("QUALITY", 1)) => Range::NonNegative,
+                _ => Range::Any,
+            },
+            Element::Link(i) => match (self.links[i].kind, key) {
+                (LinkKind::Pipe, Field(k)) if k <= 2 => Range::Positive,
+                (LinkKind::Pipe, Field(3) | Keyed("LEAKAGE", _)) => Range::NonNegative,
+                (LinkKind::Pump, PumpParam("POWER" | "SPEED") | PumpEnergy("PRICE")) => {
+                    Range::NonNegative
+                }
+                (LinkKind::Valve, Field(0 | 3)) => Range::NonNegative,
+                // a GPV's setting is the ID of its head loss curve
+                (LinkKind::Valve, Field(2))
+                    if !self.links[i].field(1).eq_ignore_ascii_case("GPV") =>
+                {
+                    Range::NonNegative
+                }
+                _ => Range::Any,
+            },
+        };
+        // columns of the element's own INP line cannot be left empty
+        let required = matches!(key, Field(_)) && range != Range::Any;
+        if range == Range::Any || (value.is_empty() && !required) {
+            return Ok(());
+        }
+        let x = num::parse(value).ok_or_else(|| format!("\"{value}\" is not a valid number"))?;
+        range.check(x)?;
+        if let (Element::Node(i), Field(k @ 1..=3)) = (e, key)
+            && self.nodes[i].kind == NodeKind::Tank
+        {
+            let n = &self.nodes[i];
+            let level = |j: usize| if j == k { Some(x) } else { n.num(j) };
+            if let (Some(init), Some(min), Some(max)) = (level(1), level(2), level(3))
+                && !(min <= init && init <= max && min < max)
+            {
+                return Err("Inconsistent tank levels.".into());
+            }
+        }
+        Ok(())
+    }
+
+    /// Checks a new analysis option value (empty restores EPANET's default).
+    pub fn check_option(&self, section: &str, key: &str, value: &str) -> Result<(), String> {
+        let value = value.trim();
+        if value.is_empty() {
+            return Ok(());
+        }
+        if section == "TIMES" && key != "STATISTIC" {
+            return match crate::analysis::parse_time(value) {
+                Some(_) => Ok(()),
+                None => Err("Invalid time value.".into()),
+            };
+        }
+        let range = match key {
+            "TRIALS" | "ACCURACY" | "EMITTER EXPONENT" => Range::Positive,
+            "HEADERROR" | "FLOWCHANGE" | "CHECKFREQ" | "MAXCHECK" | "DAMPLIMIT"
+            | "DEMAND MULTIPLIER" | "REQUIRED PRESSURE" | "MINIMUM PRESSURE"
+            | "PRESSURE EXPONENT" | "GLOBAL EFFICIENCY" | "GLOBAL PRICE" | "DEMAND CHARGE" => {
+                Range::NonNegative
+            }
+            _ => return Ok(()),
+        };
+        let x = num::parse(value).ok_or_else(|| format!("\"{value}\" is not a valid number"))?;
+        range.check(x)?;
+        let pressure = |key: &str, default: f64| {
+            self.option("OPTIONS", key)
+                .and_then(|v| num::parse(&v))
+                .unwrap_or(default)
+        };
+        match key {
+            "GLOBAL EFFICIENCY" if x > 100.0 => Err("Value > 100 not allowed.".into()),
+            "REQUIRED PRESSURE" if x < pressure("MINIMUM PRESSURE", 0.0) => {
+                Err("Service pressure must be greater than minimum pressure.".into())
+            }
+            "MINIMUM PRESSURE" if x > pressure("REQUIRED PRESSURE", 0.1) => {
+                Err("Minimum pressure must be less than service pressure.".into())
+            }
+            _ => Ok(()),
+        }
     }
 
     // ----- raw section helpers -------------------------------------------
@@ -498,6 +587,24 @@ impl Network {
                 .map(|w| ((w[0][0] - w[1][0]).powi(2) + (w[0][1] - w[1][1]).powi(2)).sqrt())
                 .sum(),
         )
+    }
+}
+
+/// The values a numeric property may take.
+#[derive(Clone, Copy, PartialEq)]
+enum Range {
+    Any,
+    NonNegative,
+    Positive,
+}
+
+impl Range {
+    fn check(self, x: f64) -> Result<(), String> {
+        match self {
+            Range::NonNegative if x < 0.0 => Err("Value less than 0 not allowed.".into()),
+            Range::Positive if x <= 0.0 => Err("Value <= 0 not allowed.".into()),
+            _ => Ok(()),
+        }
     }
 }
 
@@ -853,6 +960,46 @@ mod tests {
         assert_eq!(
             quality_parts(&net),
             ("Trace".into(), "".into(), "".into(), "9".into())
+        );
+    }
+
+    #[test]
+    fn rejects_values_out_of_range() {
+        let mut net = Network::from_inp(examples::NET1).unwrap();
+        let pipe = Element::Link(net.link_index("10").unwrap());
+        let diam = PropKey::Field(1);
+        assert!(net.set_prop(pipe, diam, "0").is_err());
+        assert!(net.set_prop(pipe, diam, "").is_err());
+        assert!(net.set_prop(pipe, diam, "12.5").is_ok());
+        assert_eq!(net.get_prop(pipe, diam), "12.5");
+        assert!(net.set_prop(pipe, PropKey::Field(3), "-1").is_err());
+        // an empty leak area removes the entry
+        assert!(net.set_prop(pipe, PropKey::Keyed("LEAKAGE", 1), "").is_ok());
+
+        let tank = Element::Node(net.node_index("2").unwrap());
+        assert!(net.set_prop(tank, PropKey::Field(1), "200").is_err());
+        assert!(net.set_prop(tank, PropKey::Field(2), "130").is_err());
+        assert!(net.set_prop(tank, PropKey::Field(3), "110").is_err());
+        assert!(net.set_prop(tank, PropKey::Field(1), "140").is_ok());
+        assert!(net.set_prop(tank, PropKey::Field(4), "-5").is_err());
+
+        let pump = Element::Link(net.link_index("9").unwrap());
+        assert!(
+            net.set_prop(pump, PropKey::PumpEnergy("PRICE"), "-1")
+                .is_err()
+        );
+
+        assert!(net.check_option("OPTIONS", "TRIALS", "0").is_err());
+        assert!(net.check_option("OPTIONS", "HEADERROR", "0").is_ok());
+        assert!(
+            net.check_option("ENERGY", "GLOBAL EFFICIENCY", "120")
+                .is_err()
+        );
+        assert!(net.check_option("TIMES", "DURATION", "abc").is_err());
+        assert!(net.check_option("TIMES", "DURATION", "48").is_ok());
+        assert!(
+            net.check_option("OPTIONS", "MINIMUM PRESSURE", "5")
+                .is_err()
         );
     }
 }

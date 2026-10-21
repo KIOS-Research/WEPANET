@@ -7,8 +7,8 @@
   <meta name="description" content="Open-source water distribution network modeling in your browser. Runs locally, no account needed.">
   
 <script type="module">
-import init, * as bindings from '/epanet-ui-web-9c26425dc170a42.js';
-const wasm = await init({ module_or_path: '/epanet-ui-web-9c26425dc170a42_bg.wasm' });
+import init, * as bindings from '/epanet-ui-web-ea03cd528e68e005.js';
+const wasm = await init({ module_or_path: '/epanet-ui-web-ea03cd528e68e005_bg.wasm' });
 
 
 window.wasmBindings = bindings;
@@ -61,15 +61,26 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
     #loading { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
       justify-content: center; font: 15px system-ui, sans-serif; color: #55606e; gap: 14px; }
     #loading img { width: 64px; height: 64px; }
+    /* the development build (published under dev/) is marked by a red bar above the app */
+    #devbar { display: none; }
+    html.dev #devbar { display: flex; position: absolute; top: 0; left: 0; right: 0; height: 22px;
+      align-items: center; justify-content: center; gap: 6px; background: #c62828; color: #fff;
+      font: 600 12px system-ui, sans-serif; white-space: nowrap; overflow: hidden; }
+    html.dev #devbar a { color: #fff; }
+    html.dev canvas { top: 22px; height: calc(100% - 22px); }
   </style>
+  <script>
+    if (/\/dev\//.test(location.pathname)) document.documentElement.classList.add('dev');
+  </script>
   <!-- GoatCounter Analytics: page views only, no cookies (localhost visits are not counted) -->
   <script
     data-goatcounter="https://wepanet.goatcounter.com/count"
     async
     src="https://gc.zgo.at/count.js">
   </script>
-<link rel="modulepreload" href="/epanet-ui-web-9c26425dc170a42.js" crossorigin="anonymous" integrity="sha384-505KlDxYesdhIRgTHbuBwkjj7QMfq3I5yBZsz9wauN44d6WItfZ0ueIMcI9f1TTk"><link rel="modulepreload" href="/snippets/eui-ui-3e6d3411aa7a95b7/inline0.js" crossorigin="anonymous" integrity="sha384-vENpzkqZbyB6gXe9nbNScDV32kLhQFsKEbAEu0acJDz4BM9DLPmZozi9d99C7Ozl"><link rel="preload" href="/epanet-ui-web-9c26425dc170a42_bg.wasm" crossorigin="anonymous" integrity="sha384-VzAexfMulzUJkmgHApGcLNAJ5xMeJ6hgNU1lFTjLyGPG7ft8AEloh/6OzSFgK9ZT" as="fetch" type="application/wasm"></head>
+<link rel="modulepreload" href="/epanet-ui-web-ea03cd528e68e005.js" crossorigin="anonymous" integrity="sha384-azmx94xAYePSqaneL2vo0ChnChWEd5KttDGVPlOeQBrjNbhNpJa9aRmht3EewniP"><link rel="modulepreload" href="/snippets/eui-ui-3e6d3411aa7a95b7/inline0.js" crossorigin="anonymous" integrity="sha384-vENpzkqZbyB6gXe9nbNScDV32kLhQFsKEbAEu0acJDz4BM9DLPmZozi9d99C7Ozl"><link rel="preload" href="/epanet-ui-web-ea03cd528e68e005_bg.wasm" crossorigin="anonymous" integrity="sha384-SUfzE/GsMSMlaKV0Zq3183/Nfmb3Z3jZy39jJ0/JzXm0gMk0FqyY9BpcNlpVJxFV" as="fetch" type="application/wasm"></head>
 <body>
+  <div id="devbar">DEVELOPMENT VERSION: may be unstable. <a href="../">Open the stable version</a></div>
   <canvas id="epanet_ui_canvas"></canvas>
   <div id="loading"><img src="logo.png" alt=""><span>Loading WEPANET…</span></div>
 </body>

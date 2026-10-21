@@ -555,5 +555,12 @@
   "Head": "Φορτίο",
   "Chemical": "Χημική Ουσία",
   "Age": "Ηλικία",
-  "Trace": "Ιχνηλάτηση"
+  "Trace": "Ιχνηλάτηση",
+  "Value <= 0 not allowed.": "Δεν επιτρέπεται τιμή <= 0.",
+  "Value less than 0 not allowed.": "Δεν επιτρέπεται τιμή μικρότερη από 0.",
+  "Value > 100 not allowed.": "Δεν επιτρέπεται τιμή > 100.",
+  "Inconsistent tank levels.": "Ασυνεπείς στάθμες δεξαμενής.",
+  "Invalid time value.": "Μη έγκυρη τιμή χρόνου.",
+  "Service pressure must be greater than minimum pressure.": "Η πίεση εξυπηρέτησης πρέπει να είναι μεγαλύτερη από την ελάχιστη πίεση.",
+  "Minimum pressure must be less than service pressure.": "Η ελάχιστη πίεση πρέπει να είναι μικρότερη από την πίεση εξυπηρέτησης."
 }

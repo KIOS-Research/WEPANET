@@ -50,7 +50,17 @@
     #loading { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
       justify-content: center; font: 15px system-ui, sans-serif; color: #55606e; gap: 14px; }
     #loading img { width: 64px; height: 64px; }
+    /* the development build (published under dev/) is marked by a red bar above the app */
+    #devbar { display: none; }
+    html.dev #devbar { display: flex; position: absolute; top: 0; left: 0; right: 0; height: 22px;
+      align-items: center; justify-content: center; gap: 6px; background: #c62828; color: #fff;
+      font: 600 12px system-ui, sans-serif; white-space: nowrap; overflow: hidden; }
+    html.dev #devbar a { color: #fff; }
+    html.dev canvas { top: 22px; height: calc(100% - 22px); }
   </style>
+  <script>
+    if (/\/dev\//.test(location.pathname)) document.documentElement.classList.add('dev');
+  </script>
   <!-- GoatCounter Analytics: page views only, no cookies (localhost visits are not counted) -->
   <script
     data-goatcounter="https://wepanet.goatcounter.com/count"
@@ -59,6 +69,7 @@
   </script>
 </head>
 <body>
+  <div id="devbar">DEVELOPMENT VERSION: may be unstable. <a href="../">Open the stable version</a></div>
   <canvas id="epanet_ui_canvas"></canvas>
   <div id="loading"><img src="logo.png" alt=""><span>Loading WEPANET…</span></div>
 </body>

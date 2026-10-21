@@ -555,5 +555,12 @@
   "Head": "水头",
   "Chemical": "化学物质",
   "Age": "水龄",
-  "Trace": "示踪"
+  "Trace": "示踪",
+  "Value <= 0 not allowed.": "不允许值 <= 0。",
+  "Value less than 0 not allowed.": "不允许值小于 0。",
+  "Value > 100 not allowed.": "不允许值 > 100。",
+  "Inconsistent tank levels.": "水池水位不一致。",
+  "Invalid time value.": "无效的时间值。",
+  "Service pressure must be greater than minimum pressure.": "服务压力必须大于最低压力。",
+  "Minimum pressure must be less than service pressure.": "最低压力必须小于服务压力。"
 }

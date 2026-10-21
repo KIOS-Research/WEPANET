@@ -555,5 +555,12 @@
   "Head": "Altura Piezométrica",
   "Chemical": "Sustancia Química",
   "Age": "Edad",
-  "Trace": "Trazador"
+  "Trace": "Trazador",
+  "Value <= 0 not allowed.": "No se permite un valor <= 0.",
+  "Value less than 0 not allowed.": "No se permite un valor menor que 0.",
+  "Value > 100 not allowed.": "No se permite un valor > 100.",
+  "Inconsistent tank levels.": "Niveles del depósito incoherentes.",
+  "Invalid time value.": "Valor de tiempo no válido.",
+  "Service pressure must be greater than minimum pressure.": "La presión de servicio debe ser mayor que la presión mínima.",
+  "Minimum pressure must be less than service pressure.": "La presión mínima debe ser menor que la presión de servicio."
 }
