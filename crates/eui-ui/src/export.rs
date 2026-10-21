@@ -36,6 +36,13 @@ pub struct ExportState {
     requested: bool,
 }
 
+impl ExportState {
+    /// Whether a picture is being taken (controls drawn on it are left out).
+    pub fn busy(&self) -> bool {
+        self.pending.is_some()
+    }
+}
+
 /// Starts an export of the map.
 pub fn request(app: &mut EpanetApp, target: ExportTarget) {
     let ex = &mut app.export;

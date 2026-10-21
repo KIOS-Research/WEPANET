@@ -185,7 +185,7 @@ fn dist_to_segment(p: Pos2, a: Pos2, b: Pos2) -> f32 {
     (a + ab * t).distance(p)
 }
 
-fn hit_node(app: &EpanetApp, rect: Rect, p: Pos2) -> Option<usize> {
+pub(crate) fn hit_node(app: &EpanetApp, rect: Rect, p: Pos2) -> Option<usize> {
     let r = HIT_RADIUS.max(app.prefs.node_size + 4.0);
     app.net
         .nodes
@@ -453,6 +453,8 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
         }
     }
 
+    crate::fireflow::draw_group(app, &painter, rect, response.hover_pos());
+
     // ---- labels (only when they can be read) ----
     let font = FontId::proportional(app.prefs.label_font);
     let few = visible_nodes.len() <= 600 && zoomed_to(app.prefs.label_zoom);
@@ -574,6 +576,10 @@ fn handle_input(app: &mut EpanetApp, ui: &mut Ui, rect: Rect, response: &egui::R
     {
         return;
     }
+    // The fire flow Group Selector takes clicks on the map.
+    if crate::fireflow::map_input(app, rect, response) {
+        return;
+    }
     let pointer = response.interact_pointer_pos().or(response.hover_pos());
     let reshape_link = (app.tool == Tool::Reshape)
         .then(|| app.selected_link())
@@ -604,6 +610,7 @@ fn handle_input(app: &mut EpanetApp, ui: &mut Ui, rect: Rect, response: &egui::R
                 app.drag_vertex = Some(v);
             }
         } else if app.tool == Tool::Select
+            && !crate::fireflow::grouping(app)
             && let Some(i) = hit_node(app, rect, p)
         {
             app.checkpoint();
@@ -1310,5 +1317,69 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The fire flow Group Selector: a click on a junction toggles it, a
+    /// polygon drawn around the network adds every junction (not the tank or
+    /// the reservoir), and Accept hands them to the Fire Flow Selector.
+    #[test]
+    fn group_selector_picks_fire_flow_nodes_on_the_map() {
+        let (ctx, mut app) = crate::msx::tests::new_app();
+        app.load_example("Net1", eui_core::examples::NET1);
+        app.rpt.selector = crate::reports::Selector::FireFlow;
+        for _ in 0..3 {
+            frame(&mut app, &ctx, vec![]);
+        }
+        let click = |app: &mut EpanetApp, p: Pos2| {
+            frame(app, &ctx, vec![egui::Event::PointerMoved(p)]);
+            frame(app, &ctx, vec![button(p, true)]);
+            frame(app, &ctx, vec![button(p, false)])
+        };
+        let at = |app: &mut EpanetApp, text: &str| {
+            let t = frame(app, &ctx, vec![]);
+            t.iter()
+                .find(|(s, _)| s == text)
+                .map(|(_, r)| r.center())
+                .unwrap_or_else(|| panic!("{text}"))
+        };
+        let p = at(&mut app, "Select Nodes");
+        click(&mut app, p);
+        assert!(app.rpt.ff.group.is_some());
+        let map = app.export.map_rect.unwrap();
+        let node = |app: &EpanetApp, id: &str| {
+            let i = app.net.node_index(id).unwrap();
+            app.view.to_screen(map, app.net.nodes[i].pos.unwrap())
+        };
+        let p = node(&app, "22");
+        click(&mut app, p);
+        click(&mut app, p);
+        let p = node(&app, "22");
+        click(&mut app, p);
+        let p = node(&app, "9");
+        click(&mut app, p);
+        let p = at(&mut app, "Accept");
+        click(&mut app, p);
+        assert!(app.rpt.ff.group.is_none());
+        assert_eq!(app.rpt.ff.nodes, ["22"]);
+
+        let p = at(&mut app, "Select Nodes");
+        click(&mut app, p);
+        let p = at(&mut app, "Select a polygon region");
+        click(&mut app, p);
+        let m = map.shrink(5.0);
+        for c in [
+            m.left_top(),
+            m.right_top(),
+            m.right_bottom(),
+            m.left_bottom(),
+        ] {
+            click(&mut app, c);
+        }
+        click(&mut app, m.left_top());
+        let p = at(&mut app, "Accept");
+        click(&mut app, p);
+        let mut ids = app.rpt.ff.nodes.clone();
+        ids.sort();
+        assert_eq!(ids, ["10", "11", "12", "13", "21", "22", "23", "31", "32"]);
     }
 }

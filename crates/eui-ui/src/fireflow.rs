@@ -7,13 +7,17 @@
 //! from the UI loop, so the analysis works the same on the desktop and in the
 //! browser.
 
-use egui::{Color32, FontId, RichText, Stroke, Ui};
+use std::collections::BTreeSet;
+
+use egui::{Color32, FontId, Pos2, Rect, RichText, Stroke, Ui};
 use eui_core::analysis::{self, FLOW_UCF, PRESSURE_UCF};
+use eui_core::props::{Element, PropKey};
 use eui_core::{Network, NodeKind, NodeVar, SimResults};
 use eui_engine::RunHandle;
 
-use crate::app::{EpanetApp, ReportKind, ViewMode};
-use crate::reports::Rows;
+use crate::app::{EpanetApp, ReportKind, Tool, ViewMode};
+use crate::i18n::{tr, trf};
+use crate::reports::{Rows, Selector};
 
 /// Which nodes must stay above the target pressure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,10 +70,26 @@ pub struct FireFlowState {
     pub nodes: Vec<String>,
     pub zone: Zone,
     pub tab: u8,
+    /// The Map tab's zoom (1 = the whole network) and its center (world
+    /// coordinates; none: the network's center).
+    pub map_zoom: f64,
+    pub map_center: Option<[f64; 2]>,
     pub results: Vec<FfResult>,
     pub log: Vec<String>,
+    /// The Group Selector, while the fire flow nodes are picked on the map.
+    pub group: Option<GroupSel>,
     design: Option<Design>,
     job: Option<Job>,
+}
+
+/// EPANET-UI's Group Selector: junctions toggled on the map, or picked by
+/// Tag or by a polygon drawn on the map.
+#[derive(Default)]
+pub struct GroupSel {
+    nodes: BTreeSet<usize>,
+    tag: String,
+    /// The corners (world coordinates) of the polygon being drawn.
+    polygon: Option<Vec<[f64; 2]>>,
 }
 
 impl Default for FireFlowState {
@@ -81,8 +101,11 @@ impl Default for FireFlowState {
             nodes: Vec::new(),
             zone: Zone::Individual,
             tab: 0,
+            map_zoom: 1.0,
+            map_center: None,
             results: Vec::new(),
             log: Vec::new(),
+            group: None,
             design: None,
             job: None,
         }
@@ -138,7 +161,12 @@ fn fire_units(net: &Network) -> (&'static str, &'static str, usize, usize) {
 }
 
 pub fn selector(app: &mut EpanetApp, ui: &mut Ui) {
+    if app.rpt.ff.group.is_some() {
+        group_selector(app, ui);
+        return;
+    }
     let (qu, pu, ..) = fire_units(&app.net);
+    let mut open_group = false;
     let running = app.rpt.ff.job.is_some();
     let ff = &mut app.rpt.ff;
     if ff.target_flow.is_empty() {
@@ -171,60 +199,8 @@ pub fn selector(app: &mut EpanetApp, ui: &mut Ui) {
             });
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            let b = ui.button("Select Nodes");
-            ui.label(format!("{} selected", ff.nodes.len()));
-            egui::Popup::menu(&b).show(|ui| {
-                if ui.button("All junctions").clicked() {
-                    ff.nodes = app
-                        .net
-                        .nodes
-                        .iter()
-                        .filter(|n| n.kind == NodeKind::Junction)
-                        .map(|n| n.id.clone())
-                        .collect();
-                }
-                let query: Vec<String> = if app.query.active && app.query.nodes {
-                    app.query
-                        .hits
-                        .iter()
-                        .filter(|&&i| app.net.nodes[i].kind == NodeKind::Junction)
-                        .map(|&i| app.net.nodes[i].id.clone())
-                        .collect()
-                } else {
-                    Vec::new()
-                };
-                if ui
-                    .add_enabled(
-                        !query.is_empty(),
-                        egui::Button::new("Junctions found by Map Query"),
-                    )
-                    .clicked()
-                {
-                    ff.nodes = query;
-                }
-                let sel = match app.selection {
-                    Some(eui_core::props::Element::Node(i))
-                        if app.net.nodes[i].kind == NodeKind::Junction =>
-                    {
-                        Some(app.net.nodes[i].id.clone())
-                    }
-                    _ => None,
-                };
-                if ui
-                    .add_enabled(
-                        sel.is_some(),
-                        egui::Button::new("Add the selected junction"),
-                    )
-                    .clicked()
-                    && let Some(id) = sel
-                    && !ff.nodes.contains(&id)
-                {
-                    ff.nodes.push(id);
-                }
-                if ui.button("Clear").clicked() {
-                    ff.nodes.clear();
-                }
-            });
+            open_group = ui.button(tr("Select Nodes")).clicked();
+            ui.label(trf("{} selected", &[&ff.nodes.len()]));
         });
         ui.add_space(8.0);
         egui::Frame::group(ui.style()).show(ui, |ui| {
@@ -234,6 +210,22 @@ pub fn selector(app: &mut EpanetApp, ui: &mut Ui) {
             }
         });
     });
+    if open_group {
+        let nodes = app
+            .rpt
+            .ff
+            .nodes
+            .iter()
+            .filter_map(|id| app.net.node_index(id))
+            .collect();
+        app.rpt.ff.group = Some(GroupSel {
+            nodes,
+            ..Default::default()
+        });
+        app.set_tool(Tool::Select);
+        app.view_mode = ViewMode::Map;
+        return;
+    }
     ui.add_space(8.0);
     ui.horizontal(|ui| {
         if ui.button("Help").clicked() {
@@ -261,6 +253,228 @@ pub fn selector(app: &mut EpanetApp, ui: &mut Ui) {
             )),
         );
     }
+}
+
+/// The Group Selector panel, in place of the Fire Flow Selector's settings.
+fn group_selector(app: &mut EpanetApp, ui: &mut Ui) {
+    let net = &app.net;
+    let Some(g) = app.rpt.ff.group.as_mut() else {
+        return;
+    };
+    let junctions = || {
+        net.nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.kind == NodeKind::Junction)
+            .map(|(i, _)| i)
+    };
+    let w = ui.available_width();
+    let wide = |ui: &mut Ui, text: &str| {
+        ui.add_sized([w, 26.0], egui::Button::new(tr(text)))
+            .clicked()
+    };
+    ui.label(tr(
+        "Click nodes on the map to toggle their selection on or off.",
+    ));
+    ui.add_space(10.0);
+    if wide(ui, "Select nodes with Tag") {
+        let tag = g.tag.trim();
+        if tag.is_empty() {
+            app.status = tr("Enter the Tag of the nodes to select").into();
+        } else {
+            let before = g.nodes.len();
+            g.nodes.extend(junctions().filter(|&i| {
+                net.get_prop(Element::Node(i), PropKey::Tag)
+                    .trim()
+                    .eq_ignore_ascii_case(tag)
+            }));
+            app.status = trf(
+                "{} nodes added with Tag {}",
+                &[&(g.nodes.len() - before), &tag],
+            );
+        }
+    }
+    ui.add(egui::TextEdit::singleline(&mut g.tag).desired_width(w));
+    ui.add_space(10.0);
+    let drawing = g.polygon.is_some();
+    let label = if drawing {
+        "Cancel the polygon"
+    } else {
+        "Select a polygon region"
+    };
+    if wide(ui, label) {
+        g.polygon = if drawing { None } else { Some(Vec::new()) };
+    }
+    if g.polygon.is_some() {
+        ui.label(
+            RichText::new(
+                tr("Click the corners of the region on the map; right-click, or click the first corner, to close it."),
+            )
+            .small(),
+        );
+    }
+    ui.add_space(10.0);
+    if wide(ui, "Select all nodes") {
+        g.nodes.extend(junctions());
+    }
+    ui.add_space(10.0);
+    if wide(ui, "Deselect all nodes") {
+        g.nodes.clear();
+    }
+    ui.add_space(10.0);
+    ui.label(trf("{} nodes selected", &[&g.nodes.len()]));
+    ui.add_space(10.0);
+    let (mut cancel, mut accept) = (false, false);
+    ui.columns(2, |cols| {
+        cancel = cols[0].button(tr("Cancel")).clicked();
+        cols[1].with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+            accept = ui.button(tr("Accept")).clicked();
+        });
+    });
+    if accept {
+        app.rpt.ff.nodes = g.nodes.iter().map(|&i| net.nodes[i].id.clone()).collect();
+    }
+    if accept || cancel {
+        app.rpt.ff.group = None;
+    }
+}
+
+/// The Group Selector is open (on top of the Fire Flow Selector).
+pub fn grouping(app: &EpanetApp) -> bool {
+    app.rpt.selector == Selector::FireFlow && app.rpt.ff.group.is_some()
+}
+
+/// Esc: drops the polygon being drawn, or else cancels the Group Selector.
+/// False when the Group Selector isn't open.
+pub fn cancel_group(app: &mut EpanetApp) -> bool {
+    let Some(g) = app.rpt.ff.group.as_mut() else {
+        return false;
+    };
+    if g.polygon.take().is_none() {
+        app.rpt.ff.group = None;
+    }
+    true
+}
+
+/// Clicks on the map while the Group Selector is open: a click toggles a
+/// junction, or adds a corner to the polygon being drawn, which a right-click
+/// or a click on its first corner closes. True when the click was taken.
+pub fn map_input(app: &mut EpanetApp, rect: Rect, response: &egui::Response) -> bool {
+    if !grouping(app) {
+        return false;
+    }
+    let hit = response
+        .interact_pointer_pos()
+        .and_then(|p| crate::map::hit_node(app, rect, p));
+    let view = &app.view;
+    let net = &app.net;
+    let Some(g) = app.rpt.ff.group.as_mut() else {
+        return false;
+    };
+    if let Some(poly) = &mut g.polygon {
+        if response.hovered() {
+            response.ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
+        }
+        let Some(p) = response.interact_pointer_pos() else {
+            return false;
+        };
+        let near_first = poly
+            .first()
+            .is_some_and(|&f| view.to_screen(rect, f).distance(p) < 8.0);
+        if poly.len() >= 3 && (response.secondary_clicked() || (response.clicked() && near_first)) {
+            let before = g.nodes.len();
+            g.nodes
+                .extend(net.nodes.iter().enumerate().filter_map(|(i, n)| {
+                    (n.kind == NodeKind::Junction && n.pos.is_some_and(|w| inside(poly, w)))
+                        .then_some(i)
+                }));
+            app.status = trf(
+                "{} nodes added from the region",
+                &[&(g.nodes.len() - before)],
+            );
+            g.polygon = None;
+            return true;
+        }
+        if response.clicked() {
+            poly.push(view.to_world(rect, p));
+            return true;
+        }
+        return response.secondary_clicked();
+    }
+    if !response.clicked() {
+        return false;
+    }
+    match hit {
+        Some(i) if net.nodes[i].kind == NodeKind::Junction => {
+            if !g.nodes.remove(&i) {
+                g.nodes.insert(i);
+            }
+        }
+        Some(_) => app.status = tr("Only junctions can be fire flow nodes").into(),
+        None => {}
+    }
+    true
+}
+
+/// Marks the Group Selector's nodes on the map, and the polygon being drawn.
+pub fn draw_group(app: &EpanetApp, painter: &egui::Painter, rect: Rect, hover: Option<Pos2>) {
+    if !grouping(app) {
+        return;
+    }
+    let Some(g) = &app.rpt.ff.group else { return };
+    let r = app.prefs.node_size + 2.0;
+    for &i in &g.nodes {
+        if let Some(w) = app.net.nodes.get(i).and_then(|n| n.pos) {
+            let s = app.view.to_screen(rect, w);
+            if rect.expand(10.0).contains(s) {
+                painter.circle(
+                    s,
+                    r,
+                    crate::style::SELECTED,
+                    Stroke::new(1.0, Color32::BLACK),
+                );
+            }
+        }
+    }
+    if let Some(poly) = &g.polygon {
+        let stroke = Stroke::new(1.5, crate::style::ACCENT);
+        let mut pts: Vec<Pos2> = poly.iter().map(|&w| app.view.to_screen(rect, w)).collect();
+        for &s in &pts {
+            painter.rect_filled(
+                Rect::from_center_size(s, egui::vec2(6.0, 6.0)),
+                0.0,
+                stroke.color,
+            );
+        }
+        if let Some(h) = hover
+            && !pts.is_empty()
+        {
+            pts.push(h);
+        }
+        if pts.len() >= 3 {
+            painter.add(egui::Shape::dashed_line(
+                &[pts[pts.len() - 1], pts[0]],
+                stroke,
+                6.0,
+                4.0,
+            ));
+        }
+        painter.add(egui::Shape::line(pts, stroke));
+    }
+}
+
+/// Is a point inside a polygon (even-odd rule)?
+fn inside(poly: &[[f64; 2]], [x, y]: [f64; 2]) -> bool {
+    let mut odd = false;
+    let mut j = poly.len() - 1;
+    for i in 0..poly.len() {
+        let ([xi, yi], [xj, yj]) = (poly[i], poly[j]);
+        if (yi > y) != (yj > y) && x < xi + (y - yi) / (yj - yi) * (xj - xi) {
+            odd = !odd;
+        }
+        j = i;
+    }
+    odd
 }
 
 fn start(app: &mut EpanetApp, ctx: &egui::Context) {
@@ -319,6 +533,8 @@ fn start(app: &mut EpanetApp, ctx: &egui::Context) {
     ff.design = Some(design);
     ff.job = Some(job);
     ff.tab = 0;
+    ff.map_zoom = 1.0;
+    ff.map_center = None;
     app.report_kind = ReportKind::FireFlow;
     app.view_mode = ViewMode::Report;
     app.status = "Computing fire flows…".into();
@@ -652,6 +868,241 @@ pub fn text(app: &EpanetApp) -> Option<String> {
     Some(s)
 }
 
+/// The report's Map tab.
+const MAP_TAB: u8 = 2;
+
+/// Whether the report shows its map (copied and saved as a picture).
+pub fn shows_map(app: &EpanetApp) -> bool {
+    app.rpt.ff.design.is_some() && app.rpt.ff.tab == MAP_TAB
+}
+
+/// EPANET-UI's colors for the percent of the target flow available:
+/// below 25, 25-50, 50-75, 75-100, and 100 or more.
+const PERCENT_COLORS: [Color32; 5] = [
+    Color32::from_rgb(0xff, 0x00, 0x00),
+    Color32::from_rgb(0xff, 0xff, 0x00),
+    Color32::from_rgb(0x00, 0xff, 0x00),
+    Color32::from_rgb(0x00, 0xff, 0xff),
+    Color32::from_rgb(0x00, 0x00, 0xff),
+];
+
+/// The color class of a node's available flow (as EPANET-UI rounds it).
+fn percent_class(r: &FfResult) -> usize {
+    let pct = r.available_q / r.target_q.max(1e-9) * 100.0 + 0.5;
+    [25.0, 50.0, 75.0, 100.0]
+        .iter()
+        .filter(|b| pct >= **b)
+        .count()
+}
+
+/// The Map tab (EPANET-UI's fire flow map): the network's links, and each
+/// node analyzed colored by the percent of the target flow it can supply.
+/// Dragged it pans, the wheel and the buttons zoom.
+fn fire_map(app: &mut EpanetApp, ui: &mut Ui) {
+    use egui::{Align2, Pos2, Rect, Sense, pos2, vec2};
+    let (qu, pu, ..) = fire_units(&app.net);
+    let (rect, resp) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
+    // Copy and Save take this picture
+    app.export.report_rect = Some(rect);
+    let panel = Rect::from_min_max(rect.min, pos2(rect.left() + 150.0, rect.bottom()));
+    let map = Rect::from_min_max(pos2(panel.right(), rect.top()), rect.max);
+    let painter = ui.painter_at(map);
+    painter.rect_filled(map, 0.0, Color32::WHITE);
+    app.refresh_geometry();
+    let Some(b) = app.geom.bounds else {
+        return;
+    };
+    let ff = &mut app.rpt.ff;
+    let inner = map.shrink(20.0);
+    let fit = (inner.width() as f64 / (b[2] - b[0]).max(1e-9))
+        .min(inner.height() as f64 / (b[3] - b[1]).max(1e-9));
+    let scale = fit * ff.map_zoom;
+    let mut center = ff
+        .map_center
+        .unwrap_or([(b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0]);
+    if resp.dragged() {
+        let d = resp.drag_delta();
+        center[0] -= d.x as f64 / scale;
+        center[1] += d.y as f64 / scale;
+        ff.map_center = Some(center);
+    }
+    let zoom_at = |factor: f64, ff: &mut FireFlowState| {
+        ff.map_zoom = (ff.map_zoom * factor).clamp(0.5, 200.0);
+    };
+    if resp.hovered() {
+        let wheel = ui.input(|i| i.smooth_scroll_delta.y);
+        if wheel != 0.0 {
+            zoom_at((wheel as f64 / 200.0).exp(), ff);
+        }
+    }
+    let c = map.center();
+    let at = |[x, y]: [f64; 2]| -> Pos2 {
+        pos2(
+            c.x + ((x - center[0]) * scale) as f32,
+            c.y - ((y - center[1]) * scale) as f32,
+        )
+    };
+    // the links, plain
+    let link = Stroke::new(1.0, Color32::from_gray(130));
+    for (i, l) in app.net.links.iter().enumerate() {
+        let Some((a, z)) = app.geom.ends.get(i).copied().flatten() else {
+            continue;
+        };
+        let (Some(pa), Some(pz)) = (app.net.nodes[a].pos, app.net.nodes[z].pos) else {
+            continue;
+        };
+        let mut pts = vec![at(pa)];
+        pts.extend(l.vertices.iter().map(|&v| at(v)));
+        pts.push(at(pz));
+        painter.add(egui::Shape::line(pts, link));
+    }
+    // the nodes analyzed
+    let hover = resp.hover_pos();
+    let mut tip = None;
+    for r in &ff.results {
+        let Some(p) = app
+            .net
+            .node_index(&r.node)
+            .and_then(|i| app.net.nodes[i].pos)
+        else {
+            continue;
+        };
+        let s = at(p);
+        if !map.expand(6.0).contains(s) {
+            continue;
+        }
+        painter.circle(
+            s,
+            4.5,
+            PERCENT_COLORS[percent_class(r)],
+            Stroke::new(1.0, Color32::BLACK),
+        );
+        if hover.is_some_and(|h| h.distance(s) <= 7.0) {
+            tip = Some(format!(
+                "{}: {:.0} {qu} ({:.0} %)",
+                r.node,
+                r.available_q,
+                r.available_q / r.target_q.max(1e-9) * 100.0
+            ));
+        }
+    }
+    if let Some(t) = tip {
+        resp.clone().on_hover_text(t);
+    }
+    // the legend: a panel left of the map, the colors from red (top) to
+    // blue with the percents between them, then the targets
+    let painter = ui.painter_at(rect);
+    let ink = Color32::from_gray(20);
+    let font = FontId::proportional(14.0);
+    painter.rect_filled(panel, 0.0, Color32::from_gray(0xf3));
+    painter.vline(
+        panel.right(),
+        panel.y_range(),
+        Stroke::new(1.0, Color32::from_gray(160)),
+    );
+    let x = panel.left() + 14.0;
+    let mut y = panel.top() + 18.0;
+    for line in crate::i18n::tr("Percent of Target Flow")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .chunks(2)
+    {
+        painter.text(
+            pos2(x, y),
+            Align2::LEFT_TOP,
+            line.join(" "),
+            font.clone(),
+            ink,
+        );
+        y += 18.0;
+    }
+    y += 26.0;
+    let step = 38.0;
+    for (k, color) in PERCENT_COLORS.iter().enumerate() {
+        let cy = y + step * k as f32;
+        painter.circle(
+            pos2(x + 14.0, cy),
+            11.0,
+            *color,
+            Stroke::new(1.0, Color32::BLACK),
+        );
+        if let Some(b) = ["25", "50", "75", "100"].get(k) {
+            painter.text(
+                pos2(x + 78.0, cy + step / 2.0),
+                Align2::RIGHT_CENTER,
+                b,
+                font.clone(),
+                ink,
+            );
+        }
+    }
+    if let Some(d) = &ff.design {
+        y += step * 4.0 + 36.0;
+        for t in [
+            crate::i18n::tr("Targets:").to_string(),
+            format!("{:.0} {qu}", d.flow),
+            format!("{:.0} {pu}", d.pressure),
+        ] {
+            painter.text(pos2(x, y), Align2::LEFT_TOP, t, font.clone(), ink);
+            y += 22.0;
+        }
+    }
+    // zoom buttons, left out of a picture being taken
+    if app.export.busy() {
+        return;
+    }
+    let ff = &mut app.rpt.ff;
+    let mut x = rect.right() - 10.0;
+    for (tip, k) in [("Full Extent", 2), ("Zoom Out", 1), ("Zoom In", 0)] {
+        let r = Rect::from_min_size(pos2(x - 28.0, rect.top() + 10.0), vec2(28.0, 28.0));
+        x -= 32.0;
+        let b = ui.interact(r, ui.id().with(("ff_zoom", k)), Sense::click());
+        painter.rect(
+            r,
+            3.0,
+            if b.hovered() {
+                Color32::from_rgb(0xe5, 0xf1, 0xfb)
+            } else {
+                Color32::WHITE
+            },
+            Stroke::new(1.0, Color32::from_gray(150)),
+            egui::StrokeKind::Inside,
+        );
+        if k == 2 {
+            // four corners: the whole network
+            let s = Stroke::new(1.5, ink);
+            let q = r.shrink(8.0);
+            for (cx, cy, dx, dy) in [
+                (q.left(), q.top(), 1.0, 1.0),
+                (q.right(), q.top(), -1.0, 1.0),
+                (q.left(), q.bottom(), 1.0, -1.0),
+                (q.right(), q.bottom(), -1.0, -1.0),
+            ] {
+                painter.line_segment([pos2(cx, cy), pos2(cx + 5.0 * dx, cy)], s);
+                painter.line_segment([pos2(cx, cy), pos2(cx, cy + 5.0 * dy)], s);
+            }
+        } else {
+            // + or −, drawn
+            let s = Stroke::new(2.0, ink);
+            let m = r.center();
+            painter.line_segment([m - vec2(6.0, 0.0), m + vec2(6.0, 0.0)], s);
+            if k == 0 {
+                painter.line_segment([m - vec2(0.0, 6.0), m + vec2(0.0, 6.0)], s);
+            }
+        }
+        if b.on_hover_text(crate::i18n::tr(tip)).clicked() {
+            match k {
+                0 => zoom_at(1.5, ff),
+                1 => zoom_at(1.0 / 1.5, ff),
+                _ => {
+                    ff.map_zoom = 1.0;
+                    ff.map_center = None;
+                }
+            }
+        }
+    }
+}
+
 pub fn report(app: &mut EpanetApp, ui: &mut Ui) {
     if app.rpt.ff.design.is_none() {
         ui.add_space(20.0);
@@ -666,9 +1117,15 @@ pub fn report(app: &mut EpanetApp, ui: &mut Ui) {
     let mut tab = app.rpt.ff.tab;
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
-        for (k, n) in ["Summary", "Details", "Error Log"].iter().enumerate() {
+        for (k, n) in ["Summary", "Details", "Map", "Error Log"]
+            .iter()
+            .enumerate()
+        {
             if ui
-                .add(egui::Button::new(RichText::new(*n).size(13.5)).selected(tab as usize == k))
+                .add(
+                    egui::Button::new(RichText::new(crate::i18n::tr(n)).size(13.5))
+                        .selected(tab as usize == k),
+                )
                 .clicked()
             {
                 tab = k as u8;
@@ -707,6 +1164,7 @@ pub fn report(app: &mut EpanetApp, ui: &mut Ui) {
                     crate::reports::table(ui, "ff_table", &rows, &mut sort, &footer);
                     app.rpt.sort_ff = sort;
                 }
+                MAP_TAB => fire_map(app, ui),
                 _ => {
                     let log = if app.rpt.ff.log.is_empty() {
                         "No errors were reported.".to_string()
@@ -717,4 +1175,94 @@ pub fn report(app: &mut EpanetApp, ui: &mut Ui) {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The Map tab draws the nodes analyzed in their percent-of-target
+    /// colors with the legend and targets; its buttons zoom; Copy then takes
+    /// the map's picture.
+    #[test]
+    fn map_tab_shows_the_nodes_analyzed() {
+        let (ctx, mut app) = crate::msx::tests::new_app();
+        app.load_example("Net1", eui_core::examples::NET1);
+        let ff = &mut app.rpt.ff;
+        ff.design = Some(Design {
+            flow: 500.0,
+            pressure: 20.0,
+            hour: 0,
+            zone: Zone::Individual,
+            nodes: 2,
+        });
+        let result = |node: &str, q: f64| FfResult {
+            node: node.into(),
+            static_p: 50.0,
+            target_q: 500.0,
+            residual_p: 20.0,
+            available_q: q,
+            critical_p: 20.0,
+            critical_node: node.into(),
+        };
+        ff.results = vec![result("10", 650.0), result("22", 100.0)];
+        ff.tab = MAP_TAB;
+        app.report_kind = ReportKind::FireFlow;
+        assert!(shows_map(&app));
+        let frame = |app: &mut EpanetApp, events: Vec<egui::Event>| {
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(900.0, 700.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| report(app, ui),
+            );
+            out.textures_delta.clear();
+            out.shapes
+        };
+        let mut shapes = Vec::new();
+        for _ in 0..3 {
+            shapes = frame(&mut app, vec![]);
+        }
+        let fills: Vec<Color32> = shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Circle(s) => Some(s.fill),
+                _ => None,
+            })
+            .collect();
+        assert!(fills.contains(&PERCENT_COLORS[4]), "{fills:?}");
+        assert!(fills.contains(&PERCENT_COLORS[0]), "{fills:?}");
+        let texts: Vec<String> = shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                _ => None,
+            })
+            .collect();
+        assert!(texts.iter().any(|t| t == "Targets:"), "{texts:?}");
+        assert!(texts.iter().any(|t| t.starts_with("500 ")), "{texts:?}");
+        // Zoom In (the right button but two)
+        let map = app.export.report_rect.unwrap();
+        let zoom_in = egui::pos2(map.right() - 10.0 - 64.0 - 14.0, map.top() + 24.0);
+        let button = |pressed| egui::Event::PointerButton {
+            pos: zoom_in,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame(&mut app, vec![egui::Event::PointerMoved(zoom_in)]);
+        frame(&mut app, vec![button(true)]);
+        frame(&mut app, vec![button(false)]);
+        assert!(
+            (app.rpt.ff.map_zoom - 1.5).abs() < 1e-9,
+            "{}",
+            app.rpt.ff.map_zoom
+        );
+        assert_eq!(percent_class(&result("x", 374.0)), 3, "74.8 % rounds to 75");
+    }
 }

@@ -591,6 +591,7 @@ fn shows_graph(app: &EpanetApp) -> bool {
         ReportKind::SystemFlow => !app.rpt.sf_data,
         ReportKind::TimeSeries => !app.rpt.ts_table,
         ReportKind::Percentiles | ReportKind::Profile => true,
+        ReportKind::FireFlow => crate::fireflow::shows_map(app),
         _ => false,
     }
 }
@@ -691,8 +692,10 @@ pub fn table(ui: &mut Ui, id: &str, rows: &Rows, sort: &mut Option<(usize, bool)
         .auto_shrink([false, true])
         .show(ui, |ui| {
             ui.set_width(total_w);
-            // heading
-            let (hr, _) = ui.allocate_exact_size(vec2(total_w, 50.0), Sense::hover());
+            // heading, tall enough for its longest heading's lines
+            let lines = head.iter().map(|h| h.lines().count()).max().unwrap_or(1);
+            let head_h = (17.0 * lines as f32 + 14.0).max(50.0);
+            let (hr, _) = ui.allocate_exact_size(vec2(total_w, head_h), Sense::hover());
             for (c, heading) in head.iter().enumerate() {
                 let r =
                     Rect::from_min_size(hr.min + vec2(col_x(c), 0.0), vec2(col_w(c), hr.height()));
@@ -2228,6 +2231,7 @@ pub fn selector(app: &mut EpanetApp, ui: &mut Ui) {
         Selector::TimeSeries => "Time Series Selector",
         Selector::Percentiles => "Percentiles Plot Selector",
         Selector::Profile => "Profile Plot Selector",
+        Selector::FireFlow if app.rpt.ff.group.is_some() => "Group Selector",
         Selector::FireFlow => "Fire Flow Selector",
     };
     let pal = app.palette();
@@ -2236,7 +2240,7 @@ pub fn selector(app: &mut EpanetApp, ui: &mut Ui) {
     ui.painter().text(
         bar.center(),
         Align2::CENTER_CENTER,
-        title,
+        crate::i18n::tr(title),
         crate::fonts::bold(14.0),
         Color32::WHITE,
     );
@@ -2414,7 +2418,7 @@ fn ts_for_selection(app: &EpanetApp) -> Option<TsSeries> {
 pub fn close_selector(app: &mut EpanetApp) {
     if app.rpt.selector == Selector::TimeSeries {
         ts_cancel(app);
-    } else {
+    } else if !(app.rpt.selector == Selector::FireFlow && crate::fireflow::cancel_group(app)) {
         app.rpt.selector = Selector::None;
     }
 }
