@@ -540,5 +540,20 @@
   "Enter the Tag of the nodes to select": "Introduzca la Etiqueta de los nudos a seleccionar",
   "{} nodes added with Tag {}": "Se añadieron {} nudos con Etiqueta {}",
   "{} nodes added from the region": "Se añadieron {} nudos de la región",
-  "Only junctions can be fire flow nodes": "Solo los nudos de conexión pueden ser nudos de caudal contra incendios"
+  "Only junctions can be fire flow nodes": "Solo los nudos de conexión pueden ser nudos de caudal contra incendios",
+  "Set Filters": "Definir Filtros",
+  "Select Columns": "Seleccionar Columnas",
+  "Select Rows With:": "Seleccionar Filas con:",
+  "Below": "Menor que",
+  "Equal To": "Igual a",
+  "Above": "Mayor que",
+  "Filtered: {} items": "Filtrados: {} elementos",
+  "Unfiltered: {} items": "Sin filtrar: {} elementos",
+  "Enter a value for the filter": "Introduzca un valor para el filtro",
+  "{} is not a valid number": "{} no es un número válido",
+  "Type": "Tipo",
+  "Head": "Altura Piezométrica",
+  "Chemical": "Sustancia Química",
+  "Age": "Edad",
+  "Trace": "Trazador"
 }

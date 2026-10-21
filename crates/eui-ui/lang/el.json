@@ -540,5 +540,20 @@
   "Enter the Tag of the nodes to select": "Δώστε την Ετικέτα των κόμβων που θα επιλεγούν",
   "{} nodes added with Tag {}": "Προστέθηκαν {} κόμβοι με Ετικέτα {}",
   "{} nodes added from the region": "Προστέθηκαν {} κόμβοι από την περιοχή",
-  "Only junctions can be fire flow nodes": "Μόνο οι κόμβοι σύνδεσης μπορούν να είναι κόμβοι παροχής πυρόσβεσης"
+  "Only junctions can be fire flow nodes": "Μόνο οι κόμβοι σύνδεσης μπορούν να είναι κόμβοι παροχής πυρόσβεσης",
+  "Set Filters": "Ορισμός Φίλτρων",
+  "Select Columns": "Επιλογή Στηλών",
+  "Select Rows With:": "Επιλογή Γραμμών με:",
+  "Below": "Κάτω από",
+  "Equal To": "Ίσο με",
+  "Above": "Πάνω από",
+  "Filtered: {} items": "Φιλτραρισμένα: {} στοιχεία",
+  "Unfiltered: {} items": "Χωρίς φίλτρο: {} στοιχεία",
+  "Enter a value for the filter": "Δώστε μια τιμή για το φίλτρο",
+  "{} is not a valid number": "Το {} δεν είναι έγκυρος αριθμός",
+  "Type": "Τύπος",
+  "Head": "Φορτίο",
+  "Chemical": "Χημική Ουσία",
+  "Age": "Ηλικία",
+  "Trace": "Ιχνηλάτηση"
 }

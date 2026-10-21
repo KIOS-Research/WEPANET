@@ -13,6 +13,7 @@ use eui_core::{LinkKind, LinkVar, NodeKind, NodeVar, SimResults};
 use crate::app::{EpanetApp, ReportKind, ViewMode};
 use crate::i18n::trf;
 use crate::icons::{self, Icon};
+use crate::style::{LinkTheme, NodeTheme};
 
 /// The selector panel shown above the Map Viewer, if any.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -112,6 +113,8 @@ pub struct ReportState {
     pub sort_links: Option<(usize, bool)>,
     pub sort_pumps: Option<(usize, bool)>,
     pub sort_ff: Option<(usize, bool)>,
+    pub node_filter: crate::filters::TableFilter,
+    pub link_filter: crate::filters::TableFilter,
     pub sf_data: bool,
     pub energy_tab: u8,
     pub calib: crate::calibration::CalibState,
@@ -145,6 +148,8 @@ impl Default for ReportState {
             sort_links: None,
             sort_pumps: None,
             sort_ff: None,
+            node_filter: crate::filters::TableFilter::hiding(&NODE_HIDDEN),
+            link_filter: crate::filters::TableFilter::hiding(&LINK_HIDDEN),
             sf_data: false,
             energy_tab: 0,
             calib: Default::default(),
@@ -549,6 +554,18 @@ fn report_menu(app: &mut EpanetApp, ui: &mut Ui) {
                 r.selector = Selector::FireFlow;
             }
         }
+        ReportKind::NodeTable | ReportKind::LinkTable => {
+            let filter = if app.report_kind == ReportKind::NodeTable {
+                &mut r.node_filter
+            } else {
+                &mut r.link_filter
+            };
+            if icons::menu_item(ui, Icon::Filter, "Set Filters", app.results.is_some()).clicked() {
+                filter.open();
+            }
+            // EPANET-UI's table menu has no line under Set Filters
+            own = false;
+        }
         _ => own = false,
     }
     if own {
@@ -606,8 +623,8 @@ fn report_text(app: &EpanetApp) -> Option<String> {
         ReportKind::SystemFlow => res.map(|r| tsv(&sysflow_rows(app, r))),
         ReportKind::TimeSeries => res.map(|r| tsv(&ts_rows(app, r))),
         ReportKind::Percentiles => res.map(|_| tsv(&pc_rows(app))),
-        ReportKind::NodeTable => res.map(|r| tsv(&node_rows(app, r))),
-        ReportKind::LinkTable => res.map(|r| tsv(&link_rows(app, r))),
+        ReportKind::NodeTable => res.map(|r| tsv(&app.rpt.node_filter.apply(&node_rows(app, r)))),
+        ReportKind::LinkTable => res.map(|r| tsv(&app.rpt.link_filter.apply(&link_rows(app, r)))),
         ReportKind::Calibration => crate::calibration::text(app),
         ReportKind::FireFlow => crate::fireflow::text(app),
         ReportKind::Profile => None,
@@ -856,22 +873,49 @@ fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     }
 }
 
-fn node_columns(res: &SimResults) -> Vec<NodeVar> {
-    NODE_VARS
-        .into_iter()
-        .filter(|v| *v != NodeVar::Quality || res.quality_flag != 0)
+/// The Node Results table's columns after Type, as in EPANET-UI: every
+/// node map theme (Quality only with quality results).
+fn node_columns(res: &SimResults) -> Vec<NodeTheme> {
+    NodeTheme::ALL[1..]
+        .iter()
+        .copied()
+        .filter(|t| *t != NodeTheme::Quality || res.quality_flag != 0)
         .collect()
 }
 
+/// A column heading: the name, then its units (if any) on the next line.
+fn heading(name: String, units: String) -> String {
+    if units.is_empty() {
+        name
+    } else {
+        format!("{name}\n{units}")
+    }
+}
+
+/// The columns the Node Results table starts with hidden (EPANET-UI's
+/// design and pressure dependent demand parameters).
+pub const NODE_HIDDEN: [&str; 5] = [
+    "Elevation",
+    "Base Demand",
+    "Demand Deficit",
+    "Emitter Flow",
+    "Leakage",
+];
+
+/// The columns the Link Results table starts with hidden (design data and
+/// the setting).
+pub const LINK_HIDDEN: [&str; 4] = ["Diameter", "Length", "Roughness", "Setting"];
+
 fn node_rows(app: &EpanetApp, res: &SimResults) -> Rows {
-    let vars = node_columns(res);
+    let themes = node_columns(res);
     let mut head = vec!["Node".to_string(), "Type".to_string()];
-    for v in &vars {
-        let name = match v {
-            NodeVar::Head => "Head".to_string(),
-            v => node_var_label(*v, Some(res)),
+    for &t in &themes {
+        let name = match t {
+            NodeTheme::Head => "Head".to_string(),
+            NodeTheme::Quality => node_var_label(NodeVar::Quality, Some(res)),
+            t => t.label().to_string(),
         };
-        head.push(format!("{name}\n{}", res.node_units(*v)));
+        head.push(heading(name, app.node_theme_units(t)));
     }
     // EPANET-MSX bulk species
     let species = crate::msx::result_species(Some(res), true);
@@ -887,8 +931,11 @@ fn node_rows(app: &EpanetApp, res: &SimResults) -> Rows {
             continue;
         };
         let mut row = vec![n.id.clone(), n.kind.label().to_string()];
-        for v in &vars {
-            row.push(fmt2(res.node_slice(app.period, *v)[r] as f64));
+        for &t in &themes {
+            row.push(
+                app.node_theme_value_of(t, i)
+                    .map_or_else(String::new, |v| fmt2(v as f64)),
+            );
         }
         for &s in &species {
             row.push(
@@ -915,28 +962,34 @@ fn link_status(s: f32) -> &'static str {
     }
 }
 
+/// The Link Results table's columns after Type, as in EPANET-UI: every
+/// link map theme (Quality only with quality results), then Status and
+/// Setting.
+fn link_columns(res: &SimResults) -> Vec<LinkTheme> {
+    LinkTheme::ALL[1..]
+        .iter()
+        .copied()
+        .filter(|t| *t != LinkTheme::Quality || res.quality_flag != 0)
+        .collect()
+}
+
 fn link_rows(app: &EpanetApp, res: &SimResults) -> Rows {
-    let mut vars = vec![LinkVar::Flow, LinkVar::Velocity, LinkVar::Headloss];
-    if res.quality_flag != 0 {
-        vars.push(LinkVar::Quality);
-    }
+    let themes = link_columns(res);
     let mut head = vec!["Link".to_string(), "Type".to_string()];
-    for v in &vars {
-        let name = match v {
-            LinkVar::Headloss => "Head Loss".to_string(),
-            v => link_var_label(*v, Some(res)),
+    for &t in &themes {
+        let name = match t {
+            LinkTheme::Quality => link_var_label(LinkVar::Quality, Some(res)),
+            t => t.label().to_string(),
         };
-        head.push(format!("{name}\n{}", res.link_units(*v)));
+        head.push(heading(name, app.link_theme_units(t)));
     }
     head.push("Status".into());
+    head.push("Setting".into());
     let species = crate::msx::result_species(Some(res), false);
     let msx = res.msx.as_ref();
     for &s in &species {
         if let Some((id, units)) = crate::msx::species_label(Some(res), s) {
-            head.push(format!(
-                "{id}
-{units}"
-            ));
+            head.push(format!("{id}\n{units}"));
         }
     }
     let mut rows = vec![head];
@@ -945,10 +998,14 @@ fn link_rows(app: &EpanetApp, res: &SimResults) -> Rows {
             continue;
         };
         let mut row = vec![l.id.clone(), l.kind.label().to_string()];
-        for v in &vars {
-            row.push(fmt2(res.link_slice(app.period, *v)[r] as f64));
+        for &t in &themes {
+            row.push(
+                app.link_theme_value_of(t, i)
+                    .map_or_else(String::new, |v| fmt2(v as f64)),
+            );
         }
         row.push(link_status(res.link_slice(app.period, LinkVar::Status)[r]).into());
+        row.push(fmt2(res.link_slice(app.period, LinkVar::Setting)[r] as f64));
         for &s in &species {
             row.push(
                 msx.and_then(|m| m.link(app.period, s, r))
@@ -968,19 +1025,55 @@ fn link_rows(app: &EpanetApp, res: &SimResults) -> Rows {
 fn node_table(app: &mut EpanetApp, ui: &mut Ui) {
     let res = app.results.as_ref().unwrap();
     let rows = node_rows(app, res);
-    let footer = format!("Unfiltered: {} items", rows.len() - 1);
-    let mut sort = app.rpt.sort_nodes;
-    table(ui, "node_table", &rows, &mut sort, &footer);
-    app.rpt.sort_nodes = sort;
+    let r = &mut app.rpt;
+    filtered_table(
+        ui,
+        "node_table",
+        &rows,
+        &mut r.node_filter,
+        &mut r.sort_nodes,
+        &mut app.status,
+    );
 }
 
 fn link_table(app: &mut EpanetApp, ui: &mut Ui) {
     let res = app.results.as_ref().unwrap();
     let rows = link_rows(app, res);
-    let footer = format!("Unfiltered: {} items", rows.len() - 1);
-    let mut sort = app.rpt.sort_links;
-    table(ui, "link_table", &rows, &mut sort, &footer);
-    app.rpt.sort_links = sort;
+    let r = &mut app.rpt;
+    filtered_table(
+        ui,
+        "link_table",
+        &rows,
+        &mut r.link_filter,
+        &mut r.sort_links,
+        &mut app.status,
+    );
+}
+
+/// A Node or Link Results table with its filters applied, or its Set
+/// Filters page while that is open.
+fn filtered_table(
+    ui: &mut Ui,
+    id: &str,
+    rows: &Rows,
+    filter: &mut crate::filters::TableFilter,
+    sort: &mut Option<(usize, bool)>,
+    status: &mut String,
+) {
+    if filter.is_open() {
+        if filter.page(ui, &rows[0], status) {
+            *sort = None;
+        }
+        return;
+    }
+    let rows = filter.apply(rows);
+    let n = rows.len() - 1;
+    let footer = if filter.active() {
+        trf("Filtered: {} items", &[&n])
+    } else {
+        trf("Unfiltered: {} items", &[&n])
+    };
+    table(ui, id, &rows, sort, &footer);
 }
 
 // ----- status, energy, pumping ------------------------------------------------------------
@@ -2987,7 +3080,7 @@ mod tests {
             .map(|h| h.split('\n').next().unwrap())
             .collect();
         assert!(
-            head.ends_with(&["Status", "AS3", "AS5", "AStot", "AS5s", "NH2CL"]),
+            head.ends_with(&["Status", "Setting", "AS3", "AS5", "AStot", "AS5s", "NH2CL"]),
             "{head:?}"
         );
         assert_eq!(nodes[0].last().unwrap(), "NH2CL\nMG/L");

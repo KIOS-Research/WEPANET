@@ -77,6 +77,8 @@ pub enum Icon {
     Layers,
     Identify,
     Menu,
+    /// A funnel: the results tables' Set Filters.
+    Filter,
 }
 
 /// An image list taken from EPANET-UI: square BGRA images stored one after another.
@@ -196,9 +198,13 @@ fn image_of(icon: Icon) -> Option<(&'static Sheet, usize)> {
         Icon::Menu => m(35),
         Icon::Percentiles => m(36),
         Icon::FireFlow => m(40),
-        Icon::Undo | Icon::Redo | Icon::Pencil | Icon::Python | Icon::Layers | Icon::Identify => {
-            None
-        }
+        Icon::Undo
+        | Icon::Redo
+        | Icon::Pencil
+        | Icon::Python
+        | Icon::Layers
+        | Icon::Identify
+        | Icon::Filter => None,
     }
 }
 
@@ -318,6 +324,21 @@ pub fn paint(p: &Painter, icon: Icon, c: Pos2, size: f32, fg: Color32) {
                     s,
                 ));
             }
+        }
+        Icon::Filter => {
+            // a funnel: a wide mouth narrowing to a spout
+            let pts = [
+                (-0.8, -0.8),
+                (0.8, -0.8),
+                (0.15, 0.05),
+                (0.15, 0.85),
+                (-0.15, 0.6),
+                (-0.15, 0.05),
+            ];
+            p.add(Shape::closed_line(
+                pts.iter().map(|&(x, y)| at(x, y)).collect(),
+                s,
+            ));
         }
         _ => {
             // Pencil.

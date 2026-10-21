@@ -540,5 +540,20 @@
   "Enter the Tag of the nodes to select": "请输入要选择的节点的标签",
   "{} nodes added with Tag {}": "已添加 {} 个节点，标签为 {}",
   "{} nodes added from the region": "已从区域添加 {} 个节点",
-  "Only junctions can be fire flow nodes": "只有连接节点可以作为消防流量节点"
+  "Only junctions can be fire flow nodes": "只有连接节点可以作为消防流量节点",
+  "Set Filters": "设置筛选",
+  "Select Columns": "选择列",
+  "Select Rows With:": "选择满足以下条件的行：",
+  "Below": "低于",
+  "Equal To": "等于",
+  "Above": "高于",
+  "Filtered: {} items": "已筛选：{} 项",
+  "Unfiltered: {} items": "未筛选：{} 项",
+  "Enter a value for the filter": "请输入筛选值",
+  "{} is not a valid number": "{} 不是有效的数字",
+  "Type": "类型",
+  "Head": "水头",
+  "Chemical": "化学物质",
+  "Age": "水龄",
+  "Trace": "示踪"
 }

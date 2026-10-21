@@ -14,6 +14,7 @@ mod dock;
 mod dxf;
 mod explorer;
 mod export;
+mod filters;
 mod fireflow;
 mod fonts;
 mod forms;
