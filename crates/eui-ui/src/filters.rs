@@ -364,7 +364,9 @@ impl Page {
                 p.value = c.value.clone();
             }
             ui.add_space(GAP);
-            ui.vertical(|ui| {
+            // a column as wide as the buttons: their text is centered
+            let column = egui::Layout::top_down(egui::Align::Center);
+            ui.allocate_ui_with_layout(vec2(BUTTON_W, LIST_H), column, |ui| {
                 if ui
                     .add_enabled(p.conditions.len() < MAX_CONDITIONS, button("Add"))
                     .clicked()
@@ -533,7 +535,10 @@ mod tests {
         assert!((ty.left() - status_box.left()).abs() < 1.0, "{texts:?}");
         assert!(rows_title.left() > ty.right(), "{texts:?}");
         assert!(rows_title.height() < 1.5 * cols.height(), "on one line");
-        assert!(at("Add").left() > at("Below").right(), "Add beside the list");
+        assert!(
+            at("Add").left() > at("Below").right(),
+            "Add beside the list"
+        );
         assert!(at("Accept").top() > at("Delete").bottom(), "{texts:?}");
         assert!(at("Cancel").left() > at("Accept").right(), "{texts:?}");
     }
