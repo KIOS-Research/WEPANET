@@ -361,10 +361,24 @@ fn prop_units(app: &EpanetApp, name: &str) -> String {
 fn element_editor(app: &mut EpanetApp, ui: &mut Ui) {
     let menu = app.palette().menu;
     let want_nodes = app.explorer == ExplorerItem::Nodes;
-    let sel = match (app.selection, want_nodes) {
-        (Some(Element::Node(i)), true) if i < app.net.nodes.len() => Element::Node(i),
-        (Some(Element::Link(i)), false) if i < app.net.links.len() => Element::Link(i),
-        _ => {
+    let of_kind = |e: Option<Element>| match (e, want_nodes) {
+        (Some(Element::Node(i)), true) if i < app.net.nodes.len() => Some(Element::Node(i)),
+        (Some(Element::Link(i)), false) if i < app.net.links.len() => Some(Element::Link(i)),
+        _ => None,
+    };
+    // the selection; with none, what was shown last (as EPANET-UI keeps it),
+    // else the first
+    let first = if want_nodes {
+        (!app.net.nodes.is_empty()).then_some(Element::Node(0))
+    } else {
+        (!app.net.links.is_empty()).then_some(Element::Link(0))
+    };
+    let sel = match of_kind(app.selection)
+        .or_else(|| of_kind(app.editor_shown))
+        .or(first)
+    {
+        Some(e) => e,
+        None => {
             item_header(
                 ui,
                 menu,
@@ -387,6 +401,7 @@ fn element_editor(app: &mut EpanetApp, ui: &mut Ui) {
             return;
         }
     };
+    app.editor_shown = Some(sel);
     let (title, count, idx) = match sel {
         Element::Node(i) => (
             format!("{} {}", app.net.nodes[i].kind.label(), app.net.nodes[i].id),
@@ -1148,6 +1163,36 @@ mod tests {
                 .collect();
         }
         texts
+    }
+
+    /// A click on an empty part of the map unselects, but the Property Editor
+    /// keeps showing the link (or node) it showed; "The project has no
+    /// links." only when it has none.
+    #[test]
+    fn unselecting_keeps_the_property_editor() {
+        let ctx = egui::Context::default();
+        let mut app = EpanetApp::new(&eframe::CreationContext::_new_kittest(ctx.clone()));
+        app.load_example("Net1", eui_core::examples::NET1);
+        for (e, title, none) in [
+            (
+                Element::Link(app.net.link_index("12").unwrap()),
+                "Pipe 12",
+                "  The project has no links.",
+            ),
+            (
+                Element::Node(app.net.node_index("22").unwrap()),
+                "Junction 22",
+                "  The project has no nodes.",
+            ),
+        ] {
+            app.select(Some(e));
+            assert!(texts(&mut app, &ctx).iter().any(|s| s == title));
+            // what the map does on a click where nothing is
+            app.select(None);
+            let t = texts(&mut app, &ctx);
+            assert!(t.iter().any(|s| s == title), "{title} gone: {t:?}");
+            assert!(!t.iter().any(|s| s == none), "{t:?}");
+        }
     }
 
     /// With EPANET-MSX on, a node shows the species' initial concentrations

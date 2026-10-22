@@ -453,6 +453,9 @@ pub struct EpanetApp {
     pub(crate) view_mode: ViewMode,
     pub(crate) report_kind: ReportKind,
     pub(crate) selection: Option<Selection>,
+    /// The element the Property Editor shows: the selection, or the last
+    /// one selected (a click on an empty part of the map only unselects).
+    pub(crate) editor_shown: Option<Element>,
     pub(crate) tool: Tool,
     pub(crate) link_start: Option<usize>,
     /// A map label being typed: its position and text so far.
@@ -571,6 +574,7 @@ impl EpanetApp {
             view_mode: ViewMode::Map,
             report_kind: ReportKind::Status,
             selection: None,
+            editor_shown: None,
             tool: Tool::Select,
             link_start: None,
             label_edit: None,
@@ -702,6 +706,7 @@ impl EpanetApp {
         self.report.clear();
         self.run_error = None;
         self.selection = None;
+        self.editor_shown = None;
         self.link_start = None;
         self.drag_node = None;
         self.drag_vertex = None;
@@ -1202,6 +1207,7 @@ impl EpanetApp {
             }
         }
         self.selection = None;
+        self.editor_shown = None;
         self.buffer_owner = None;
     }
 
