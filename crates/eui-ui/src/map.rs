@@ -1171,6 +1171,51 @@ mod tests {
             .collect()
     }
 
+    /// A project opens on elevations and diameters in intervals that fit its
+    /// values, so links drawn in proportion to their value differ in width.
+    #[test]
+    fn link_widths_follow_the_values() {
+        use crate::style::{LinkTheme, NodeTheme};
+        let (ctx, mut app) = crate::msx::tests::new_app();
+        app.prefs.link_theme = LinkTheme::Length;
+        app.load_example("Net1", eui_core::examples::NET1);
+        assert_eq!(app.prefs.node_theme, NodeTheme::Elevation);
+        assert_eq!(app.prefs.link_theme, LinkTheme::Diameter);
+        app.prefs.link_proportional = true;
+        let mut f = eframe::Frame::_new_kittest();
+        let mut widths = Vec::new();
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1400.0, 900.0))),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                app.logic(ui.ctx(), &mut f);
+                app.ui(ui, &mut f);
+            });
+            out.textures_delta.clear();
+            widths = out
+                .shapes
+                .iter()
+                .filter_map(|c| match &c.shape {
+                    Shape::Path(p) if !p.closed => Some(p.stroke.width),
+                    _ => None,
+                })
+                .collect();
+        }
+        widths.sort_by(f32::total_cmp);
+        widths.dedup();
+        assert!(widths.len() >= 3, "{widths:?}");
+        // the diameters spread over the legend's classes
+        let legend = app.link_legend();
+        let mut classes: Vec<usize> = (0..app.net.links.len())
+            .filter_map(|i| app.link_theme_value(i).map(|v| legend.class(v)))
+            .collect();
+        classes.sort();
+        classes.dedup();
+        assert!(classes.len() >= 3, "{classes:?}");
+    }
+
     fn button(pos: Pos2, pressed: bool) -> egui::Event {
         egui::Event::PointerButton {
             pos,

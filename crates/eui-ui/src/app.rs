@@ -731,14 +731,34 @@ impl EpanetApp {
         self.msx.enabled = self.net.msx.is_some();
         self.msx.edit = None;
         crate::msx::forget_legends(self);
-        if self.net.msx.is_none() {
-            use crate::style::{LinkTheme, NodeTheme};
-            if matches!(self.prefs.node_theme, NodeTheme::Msx(_)) {
-                self.prefs.node_theme = NodeTheme::Elevation;
-            }
-            if matches!(self.prefs.link_theme, LinkTheme::Msx(_)) {
-                self.prefs.link_theme = LinkTheme::Diameter;
-            }
+        self.init_map_themes();
+    }
+
+    /// As EPANET-UI on opening a project: the map shows elevations and
+    /// diameters, in intervals that spread the network's values over the
+    /// legend's colors (and sizes, when proportional to value).
+    fn init_map_themes(&mut self) {
+        use crate::style::{LinkTheme, NodeTheme, fitted_breaks};
+        self.prefs.node_theme = NodeTheme::Elevation;
+        self.prefs.link_theme = LinkTheme::Diameter;
+        // tanks and reservoirs left out, as EPANET-UI does
+        let elevations: Vec<f32> = (0..self.net.nodes.len())
+            .filter(|&i| self.net.nodes[i].kind == NodeKind::Junction)
+            .filter_map(|i| self.node_theme_value_of(NodeTheme::Elevation, i))
+            .collect();
+        if let Some(b) = fitted_breaks(&elevations) {
+            self.prefs
+                .node_legends
+                .insert(NodeTheme::Elevation, Legend::new(b));
+        }
+        let diameters: Vec<f32> = (0..self.net.links.len())
+            .filter_map(|i| self.link_theme_value_of(LinkTheme::Diameter, i))
+            .map(f32::abs)
+            .collect();
+        if let Some(b) = fitted_breaks(&diameters) {
+            self.prefs
+                .link_legends
+                .insert(LinkTheme::Diameter, Legend::new(b));
         }
     }
 

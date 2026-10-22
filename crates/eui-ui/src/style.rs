@@ -294,6 +294,18 @@ pub struct Legend {
     pub colors: [Color32; 5],
 }
 
+/// Legend breaks that spread `values` over the five classes, as EPANET-UI
+/// sets them for a project's first themes (`SetInitialThemeIntervals`).
+/// None without values.
+pub fn fitted_breaks(values: &[f32]) -> Option<[f32; 4]> {
+    let lo = values.iter().copied().fold(f32::INFINITY, f32::min) as f64;
+    let hi = values.iter().copied().fold(f32::NEG_INFINITY, f32::max) as f64;
+    if lo > hi {
+        return None;
+    }
+    Some(interval_scale(lo, hi))
+}
+
 fn default_colors() -> [Color32; 5] {
     RAMP
 }
