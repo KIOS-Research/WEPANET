@@ -556,6 +556,7 @@
   "Chemical": "Sustancia Química",
   "Age": "Edad",
   "Trace": "Trazador",
+  "Water Age": "Edad del Agua",
   "Value <= 0 not allowed.": "No se permite un valor <= 0.",
   "Value less than 0 not allowed.": "No se permite un valor menor que 0.",
   "Value > 100 not allowed.": "No se permite un valor > 100.",

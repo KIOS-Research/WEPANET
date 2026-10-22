@@ -168,7 +168,7 @@ pub fn quality_label(res: &SimResults) -> String {
     match res.quality_flag {
         1 if !res.chem_name.is_empty() => res.chem_name.clone(),
         1 => "Chemical".into(),
-        2 => "Age".into(),
+        2 => "Water Age".into(),
         3 => "Trace".into(),
         _ => "Quality".into(),
     }

@@ -1601,7 +1601,22 @@ impl EpanetApp {
             NodeTheme::Msx(s) => {
                 crate::msx::theme_name(self, s as usize).unwrap_or_else(|| t.label().into())
             }
+            NodeTheme::Quality => self.quality_name(),
             t => t.label().into(),
+        }
+    }
+
+    /// The water quality's name: the chemical's, Water Age, or Trace and
+    /// the source node, from the Quality options.
+    pub(crate) fn quality_name(&self) -> String {
+        let (model, chem, _, trace) = eui_core::props::quality_parts(&self.net);
+        match model.as_str() {
+            "Chemical" => chem,
+            "Age" => "Water Age".into(),
+            "Trace" => format!("{} {trace}", crate::i18n::tr("Trace"))
+                .trim_end()
+                .into(),
+            _ => "Quality".into(),
         }
     }
 
@@ -1610,6 +1625,7 @@ impl EpanetApp {
             LinkTheme::Msx(s) => {
                 crate::msx::theme_name(self, s as usize).unwrap_or_else(|| t.label().into())
             }
+            LinkTheme::Quality => self.quality_name(),
             t => t.label().into(),
         }
     }
@@ -1935,6 +1951,21 @@ mod document_tests {
         assert_eq!(b.project_crs().as_deref(), Some("EPSG:2100"));
         assert_eq!(crate::basemap::crs_def(&b).as_deref(), Some("EPSG:2100"));
         assert!(!b.dirty);
+    }
+
+    /// The Quality theme is named after what the analysis computes.
+    #[test]
+    fn the_quality_theme_is_named_after_the_constituent() {
+        let mut a = app();
+        a.load_example("Net1", eui_core::examples::NET1);
+        assert_eq!(a.node_theme_name(NodeTheme::Quality), "Chlorine");
+        assert_eq!(a.link_theme_name(LinkTheme::Quality), "Chlorine");
+        eui_core::props::set_quality_parts(&mut a.net, "Age", "", "", "");
+        assert_eq!(a.node_theme_name(NodeTheme::Quality), "Water Age");
+        eui_core::props::set_quality_parts(&mut a.net, "Trace", "", "", "9");
+        assert_eq!(a.link_theme_name(LinkTheme::Quality), "Trace 9");
+        eui_core::props::set_quality_parts(&mut a.net, "None", "", "", "");
+        assert_eq!(a.node_theme_name(NodeTheme::Quality), "Quality");
     }
 
     #[test]

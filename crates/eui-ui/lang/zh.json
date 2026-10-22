@@ -556,6 +556,7 @@
   "Chemical": "化学物质",
   "Age": "水龄",
   "Trace": "示踪",
+  "Water Age": "水龄",
   "Value <= 0 not allowed.": "不允许值 <= 0。",
   "Value less than 0 not allowed.": "不允许值小于 0。",
   "Value > 100 not allowed.": "不允许值 > 100。",
