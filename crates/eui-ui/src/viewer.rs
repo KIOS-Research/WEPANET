@@ -205,7 +205,25 @@ fn contents(app: &mut EpanetApp, ui: &mut Ui) {
                 let p = app.period;
                 ui.spacing_mut().slider_width = ui.available_width() - 10.0;
                 let mut v = p as f64;
-                crate::widgets::slider(ui, true, &mut v, 0.0..=(n - 1) as f64, false, Some(1.0));
+                let r = crate::widgets::slider(
+                    ui,
+                    true,
+                    &mut v,
+                    0.0..=(n - 1) as f64,
+                    false,
+                    Some(1.0),
+                );
+                // the arrow keys step through the periods also while no
+                // other control has the keyboard
+                if !r.has_focus() && ui.memory(|m| m.focused().is_none()) {
+                    use crate::widgets::SliderMove;
+                    v = match crate::widgets::slider_keys(ui) {
+                        SliderMove::None => v,
+                        SliderMove::Start => 0.0,
+                        SliderMove::End => (n - 1) as f64,
+                        SliderMove::Steps(k) => (v + k as f64).clamp(0.0, (n - 1) as f64),
+                    };
+                }
                 app.period = v.round() as usize;
             }
             ui.add_space(4.0);

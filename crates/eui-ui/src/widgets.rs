@@ -237,6 +237,36 @@ pub fn slider(
             resp.mark_changed();
         }
     }
+    // the arrow keys move a slider that was clicked, a step at a time
+    if enabled && (resp.clicked() || resp.drag_started()) {
+        resp.request_focus();
+    }
+    if enabled && resp.has_focus() {
+        ui.memory_mut(|m| {
+            m.set_focus_lock_filter(
+                resp.id,
+                egui::EventFilter {
+                    horizontal_arrows: true,
+                    vertical_arrows: true,
+                    ..Default::default()
+                },
+            )
+        });
+        let v = match slider_keys(ui) {
+            SliderMove::None => *value,
+            SliderMove::Start => lo,
+            SliderMove::End => hi,
+            SliderMove::Steps(k) => match step {
+                Some(s) => *value + k as f64 * s,
+                None => from_t((to_t(*value) + k as f64 * 0.02).clamp(0.0, 1.0)),
+            }
+            .clamp(lo, hi),
+        };
+        if v != *value {
+            *value = v;
+            resp.mark_changed();
+        }
+    }
     let p = ui.painter();
     p.rect_filled(
         rail,
@@ -253,5 +283,103 @@ pub fn slider(
         ACCENT
     };
     p.rect_filled(thumb, 2.0, fill);
+    if enabled && resp.has_focus() {
+        p.rect_stroke(
+            thumb.expand(2.0),
+            3.0,
+            ui.visuals().selection.stroke,
+            egui::StrokeKind::Outside,
+        );
+    }
     resp
+}
+
+/// How the keys pressed this frame move a slider.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum SliderMove {
+    None,
+    Start,
+    End,
+    Steps(i32),
+}
+
+/// Right/Up a step forward, Left/Down a step back, Home and End to the ends.
+pub fn slider_keys(ui: &Ui) -> SliderMove {
+    ui.input(|i| {
+        if i.key_pressed(egui::Key::Home) {
+            return SliderMove::Start;
+        }
+        if i.key_pressed(egui::Key::End) {
+            return SliderMove::End;
+        }
+        let n = |k| i.num_presses(k) as i32;
+        match n(egui::Key::ArrowRight) + n(egui::Key::ArrowUp)
+            - n(egui::Key::ArrowLeft)
+            - n(egui::Key::ArrowDown)
+        {
+            0 => SliderMove::None,
+            k => SliderMove::Steps(k),
+        }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A clicked slider takes the keyboard: the arrow keys move it a step
+    /// at a time, Home and End to its ends.
+    #[test]
+    fn the_arrow_keys_move_a_clicked_slider() {
+        let ctx = egui::Context::default();
+        let mut v = 3.0;
+        let frame = |events: Vec<egui::Event>, v: &mut f64| {
+            let mut rect = egui::Rect::NOTHING;
+            let input = egui::RawInput {
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                rect = slider(ui, true, v, 0.0..=10.0, false, Some(1.0)).rect;
+            });
+            out.textures_delta.clear();
+            rect
+        };
+        let key = |key| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        };
+        let click = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        // not yet clicked: the keys do nothing
+        let rect = frame(vec![key(egui::Key::ArrowRight)], &mut v);
+        assert_eq!(v, 3.0);
+        // click on the thumb
+        let thumb = egui::pos2(
+            rect.left() + 4.5 + (rect.width() - 9.0) * 0.3,
+            rect.center().y,
+        );
+        frame(vec![egui::Event::PointerMoved(thumb)], &mut v);
+        frame(vec![click(thumb, true)], &mut v);
+        frame(vec![click(thumb, false)], &mut v);
+        assert_eq!(v, 3.0);
+        frame(vec![key(egui::Key::ArrowRight)], &mut v);
+        frame(vec![key(egui::Key::ArrowRight)], &mut v);
+        assert_eq!(v, 5.0);
+        frame(vec![key(egui::Key::ArrowLeft)], &mut v);
+        assert_eq!(v, 4.0);
+        frame(vec![key(egui::Key::End)], &mut v);
+        assert_eq!(v, 10.0);
+        frame(vec![key(egui::Key::ArrowUp)], &mut v);
+        assert_eq!(v, 10.0);
+        frame(vec![key(egui::Key::Home)], &mut v);
+        assert_eq!(v, 0.0);
+    }
 }
