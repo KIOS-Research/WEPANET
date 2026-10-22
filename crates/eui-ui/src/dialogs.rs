@@ -1,13 +1,13 @@
-//! Dialog windows: Welcome Page, Project Summary, Object Locater, Map Query,
-//! Map Display Settings, legend editors, Units, Error Codes, About, Run Status,
-//! Program Preferences and Confirm Deletion.
+//! Dialog windows: Welcome Page, Project Summary, Map Display Settings, legend
+//! editors, Units, Error Codes, About, Run Status, Program Preferences and
+//! Confirm Deletion.
 
 use egui::{Align2, Color32, FontId, Rect, RichText, Sense, Stroke, Ui, pos2, vec2};
 use eui_core::props::Element;
 use eui_core::{LinkKind, NodeKind};
 
 use crate::app::{Dialog, EpanetApp};
-use crate::style::{Legend, LinkTheme, NodeTheme};
+use crate::style::Legend;
 
 pub fn show(app: &mut EpanetApp, ctx: &egui::Context) {
     crate::basemap::project_crs_window(app, ctx);
@@ -93,8 +93,6 @@ pub fn show(app: &mut EpanetApp, ctx: &egui::Context) {
         Dialog::None => return,
         Dialog::Welcome => "Welcome Page",
         Dialog::Summary => "Project Summary",
-        Dialog::Locate => "Object Locater",
-        Dialog::Query => "Map Query",
         Dialog::MapSettings => "Map Display Settings",
         Dialog::NodeLegend => "Legend Editor",
         Dialog::LinkLegend => "Legend Editor",
@@ -218,8 +216,6 @@ pub fn show(app: &mut EpanetApp, ctx: &egui::Context) {
                 let mut content = |ui: &mut Ui| match dialog {
                     Dialog::Welcome => welcome(app, ui),
                     Dialog::Summary => summary(app, ui),
-                    Dialog::Locate => locate(app, ui),
-                    Dialog::Query => query(app, ui),
                     Dialog::MapSettings => map_settings(app, ui),
                     Dialog::NodeLegend => legend_editor(app, ui, true),
                     Dialog::LinkLegend => legend_editor(app, ui, false),
@@ -912,172 +908,6 @@ fn summary(app: &EpanetApp, ui: &mut Ui) -> bool {
                 );
             });
         });
-    false
-}
-fn locate(app: &mut EpanetApp, ui: &mut Ui) -> bool {
-    let mut close = false;
-    ui.horizontal(|ui| {
-        ui.label("Find");
-        crate::widgets::radio_value(ui, &mut app.locate_nodes, true, "Node");
-        crate::widgets::radio_value(ui, &mut app.locate_nodes, false, "Link");
-    });
-    ui.horizontal(|ui| {
-        ui.label("Named");
-        let r = ui.text_edit_singleline(&mut app.locate_text);
-        let go = ui.button("Find").clicked()
-            || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-        if go {
-            let id = app.locate_text.trim().to_string();
-            let found = if app.locate_nodes {
-                app.net.node_index(&id).map(Element::Node)
-            } else {
-                app.net.link_index(&id).map(Element::Link)
-            };
-            match found {
-                Some(sel) => {
-                    app.select(Some(sel));
-                    let pos = match sel {
-                        Element::Node(i) => app.net.nodes[i].pos,
-                        Element::Link(i) => {
-                            app.net.link_ends(&app.net.links[i]).and_then(|(a, b)| {
-                                let (pa, pb) = (app.net.nodes[a].pos?, app.net.nodes[b].pos?);
-                                Some([(pa[0] + pb[0]) / 2.0, (pa[1] + pb[1]) / 2.0])
-                            })
-                        }
-                    };
-                    if let Some(p) = pos {
-                        app.view.center = p;
-                    }
-                    app.view_mode = crate::app::ViewMode::Map;
-                    app.status = format!("Located {id}");
-                    close = true;
-                }
-                None => {
-                    app.status = format!(
-                        "{} \"{id}\" not found",
-                        if app.locate_nodes { "Node" } else { "Link" }
-                    )
-                }
-            }
-        }
-    });
-    if let Some(Element::Node(i)) = app.selection {
-        let id = app.net.nodes[i].id.clone();
-        let adj: Vec<String> = app
-            .net
-            .links
-            .iter()
-            .filter(|l| l.from == id || l.to == id)
-            .map(|l| l.id.clone())
-            .collect();
-        ui.separator();
-        ui.label(RichText::new(format!("Adjacent Links of node {id}")).strong());
-        ui.label(adj.join(", "));
-    }
-    close
-}
-
-fn query(app: &mut EpanetApp, ui: &mut Ui) -> bool {
-    // every theme but None, with the EPANET-MSX species
-    let node_themes: Vec<(NodeTheme, String)> = app
-        .node_themes()
-        .into_iter()
-        .skip(1)
-        .map(|t| (t, app.node_theme_name(t)))
-        .collect();
-    let link_themes: Vec<(LinkTheme, String)> = app
-        .link_themes()
-        .into_iter()
-        .skip(1)
-        .map(|t| (t, app.link_theme_name(t)))
-        .collect();
-    fn name_of<T: PartialEq>(all: &[(T, String)], t: T) -> String {
-        all.iter()
-            .find(|(k, _)| *k == t)
-            .map_or_else(String::new, |(_, n)| n.clone())
-    }
-    let q = &mut app.query;
-    ui.horizontal(|ui| {
-        ui.label("Find");
-        crate::widgets::radio_value(ui, &mut q.nodes, true, "Nodes");
-        crate::widgets::radio_value(ui, &mut q.nodes, false, "Links");
-    });
-    ui.horizontal(|ui| {
-        ui.label("with");
-        if q.nodes {
-            let t = q.node_theme.unwrap_or(NodeTheme::Pressure);
-            egui::ComboBox::from_id_salt("q_node")
-                .selected_text(name_of(&node_themes, t))
-                .show_ui(ui, |ui| {
-                    for (th, name) in node_themes.iter().cloned() {
-                        if ui.selectable_label(t == th, name).clicked() {
-                            q.node_theme = Some(th);
-                        }
-                    }
-                });
-        } else {
-            let t = q.link_theme.unwrap_or(LinkTheme::Flow);
-            egui::ComboBox::from_id_salt("q_link")
-                .selected_text(name_of(&link_themes, t))
-                .show_ui(ui, |ui| {
-                    for (th, name) in link_themes.iter().cloned() {
-                        if ui.selectable_label(t == th, name).clicked() {
-                            q.link_theme = Some(th);
-                        }
-                    }
-                });
-        }
-        egui::ComboBox::from_id_salt("q_op")
-            .selected_text(["Below", "Equal To", "Above"][q.op])
-            .width(80.0)
-            .show_ui(ui, |ui| {
-                for (k, s) in ["Below", "Equal To", "Above"].iter().enumerate() {
-                    ui.selectable_value(&mut q.op, k, *s);
-                }
-            });
-        ui.add(egui::TextEdit::singleline(&mut q.value).desired_width(70.0));
-    });
-    let mut run = false;
-    let mut clear = false;
-    ui.horizontal(|ui| {
-        run = ui.button("Find").clicked();
-        clear = ui.button("Clear").clicked();
-    });
-    if clear {
-        app.query.active = false;
-        app.query.hits.clear();
-    }
-    if run {
-        match eui_core::num::parse(&app.query.value) {
-            None => app.status = "Enter a numeric value to search for".into(),
-            Some(target) => {
-                let target = target as f32;
-                let op = app.query.op;
-                let test = |v: f32| match op {
-                    0 => v < target,
-                    1 => (v - target).abs() <= 1e-6 * target.abs().max(1.0),
-                    _ => v > target,
-                };
-                let hits: Vec<usize> = if app.query.nodes {
-                    let t = app.query.node_theme.unwrap_or(NodeTheme::Pressure);
-                    (0..app.net.nodes.len())
-                        .filter(|&i| app.node_theme_value_of(t, i).is_some_and(test))
-                        .collect()
-                } else {
-                    let t = app.query.link_theme.unwrap_or(LinkTheme::Flow);
-                    (0..app.net.links.len())
-                        .filter(|&i| app.link_theme_value_of(t, i).is_some_and(test))
-                        .collect()
-                };
-                app.query.hits = hits;
-                app.query.active = true;
-            }
-        }
-    }
-    if app.query.active {
-        ui.label(RichText::new(format!("{} items found", app.query.hits.len())).strong());
-        ui.label(RichText::new("Matching items are highlighted on the map.").weak());
-    }
     false
 }
 

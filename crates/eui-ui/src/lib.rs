@@ -29,6 +29,7 @@ mod import_dxf;
 mod import_shp;
 mod io;
 mod layers;
+mod locater;
 mod map;
 mod menu;
 mod msx;

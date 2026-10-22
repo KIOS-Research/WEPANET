@@ -130,8 +130,6 @@ pub enum Dialog {
     None,
     Welcome,
     Summary,
-    Locate,
-    Query,
     MapSettings,
     NodeLegend,
     LinkLegend,
@@ -394,6 +392,8 @@ pub(crate) const MAX_RECENT: usize = 8;
 /// What the Map Query found.
 #[derive(Clone, Debug, Default)]
 pub struct QueryState {
+    /// Shown at the top of the Map Viewer.
+    pub open: bool,
     pub nodes: bool,
     pub node_theme: Option<NodeTheme>,
     pub link_theme: Option<LinkTheme>,
@@ -472,8 +472,7 @@ pub struct EpanetApp {
     pub(crate) status: String,
     pub(crate) dialog: Dialog,
     pub(crate) backstage: bool,
-    pub(crate) locate_text: String,
-    pub(crate) locate_nodes: bool,
+    pub(crate) locate: crate::locater::LocateState,
     pub(crate) query: QueryState,
     pub(crate) legend_edit: crate::dialogs::LegendEdit,
     pub(crate) cursor: Option<[f64; 2]>,
@@ -587,8 +586,7 @@ impl EpanetApp {
             status: String::new(),
             dialog,
             backstage: false,
-            locate_text: String::new(),
-            locate_nodes: true,
+            locate: Default::default(),
             query: QueryState {
                 nodes: true,
                 ..Default::default()

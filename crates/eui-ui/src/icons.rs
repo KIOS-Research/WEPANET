@@ -358,6 +358,33 @@ pub fn paint(p: &Painter, icon: Icon, c: Pos2, size: f32, fg: Color32) {
     }
 }
 
+/// A button with an icon before its text.
+pub fn icon_button(ui: &mut egui::Ui, icon: Icon, label: &str) -> egui::Response {
+    let label = crate::i18n::tr(label);
+    let font = egui::FontId::proportional(13.0);
+    // drawn in the button's text colour
+    let galley = ui.fonts_mut(|f| f.layout_no_wrap(label.to_string(), font, Color32::PLACEHOLDER));
+    let (rect, resp) =
+        ui.allocate_exact_size(vec2(galley.size().x + 40.0, 28.0), egui::Sense::click());
+    let style = ui.style().interact(&resp);
+    let p = ui.painter();
+    p.rect(
+        rect,
+        3.0,
+        style.weak_bg_fill,
+        style.bg_stroke,
+        egui::StrokeKind::Inside,
+    );
+    let fg = style.text_color();
+    paint(p, icon, pos2(rect.left() + 16.0, rect.center().y), 18.0, fg);
+    p.galley(
+        pos2(rect.left() + 30.0, rect.center().y - galley.size().y / 2.0),
+        galley,
+        fg,
+    );
+    resp
+}
+
 pub fn menu_item(ui: &mut egui::Ui, icon: Icon, label: &str, enabled: bool) -> egui::Response {
     item(ui, label, enabled, |p, c, fg| paint(p, icon, c, 20.0, fg))
 }

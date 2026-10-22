@@ -759,6 +759,15 @@ pub(crate) fn pane(app: &mut EpanetApp, ui: &mut Ui) {
                 .inner_margin(egui::Margin::symmetric(10, 8))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
+                    if crate::icons::icon_button(ui, crate::icons::Icon::Add, "Add Layer")
+                        .on_hover_text(crate::i18n::tr(
+                            "Add a layer from a WMS or an ArcGIS REST map service",
+                        ))
+                        .clicked()
+                    {
+                        open_add(app);
+                    }
+                    ui.add_space(8.0);
                     let layers = &app.prefs.map_layers;
                     if layers.is_empty() {
                         ui.label(
@@ -2126,6 +2135,42 @@ mod tests {
         let bare = caps(Service::Wms, "https://maps.example.org/wms", "");
         assert_eq!(suggested_group(&bare), "maps.example.org");
         assert_eq!(pretty("WaterNetworks-2024_v2"), "Water Networks 2024 v2");
+    }
+
+    /// The panel's Add Layer button opens the Add Layer window.
+    #[test]
+    fn the_panel_adds_layers() {
+        let ctx = egui::Context::default();
+        let mut app = EpanetApp::new(&eframe::CreationContext::_new_kittest(ctx.clone()));
+        let run = |app: &mut EpanetApp, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(320.0, 600.0))),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| pane(app, ui));
+            out.textures_delta.clear();
+            out.shapes.iter().find_map(|c| match &c.shape {
+                Shape::Text(t) if t.galley.text() == "Add Layer" => {
+                    // in the button's text colour, not white on the light button
+                    let glyph = t.galley.rows[0].visuals.mesh.vertices[0].color;
+                    assert_ne!(glyph, Color32::WHITE);
+                    Some(t.visual_bounding_rect())
+                }
+                _ => None,
+            })
+        };
+        let at = run(&mut app, vec![]).expect("Add Layer drawn").center();
+        let click = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        run(&mut app, vec![egui::Event::PointerMoved(at)]);
+        run(&mut app, vec![click(true)]);
+        run(&mut app, vec![click(false)]);
+        assert_eq!(app.dialog, crate::app::Dialog::AddLayer);
     }
 
     /// A layer and a group are renamed in the panel: double-click, type, Enter.

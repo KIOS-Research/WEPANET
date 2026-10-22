@@ -348,6 +348,218 @@ fn tool_hint(app: &EpanetApp, ui: &mut Ui) {
         });
 }
 
+/// Shows the Map Query panel, empty, for the theme the map shows.
+pub(crate) fn open_query(app: &mut EpanetApp) {
+    let q = &mut app.query;
+    q.open = true;
+    q.value.clear();
+    q.active = false;
+    q.hits.clear();
+    q.node_theme = None;
+    q.link_theme = None;
+    app.prefs.docks.activate(crate::dock::Pane::Query);
+}
+
+pub(crate) fn close_query(app: &mut EpanetApp) {
+    app.query.open = false;
+    app.query.active = false;
+    app.query.hits.clear();
+}
+
+/// The Map Query panel, as EPANET-UI's `mapquery` frame: Find
+/// (Nodes or Links) with a theme, below / equal to / above a value. Search
+/// (or Enter) highlights the items that match and shows their theme on the map.
+pub(crate) fn query_pane(app: &mut EpanetApp, ui: &mut Ui) {
+    use crate::i18n::{tr, trf};
+    let pal = app.palette();
+    // every theme but None, with the EPANET-MSX species
+    let node_themes: Vec<(NodeTheme, String)> = app
+        .node_themes()
+        .into_iter()
+        .skip(1)
+        .map(|t| (t, app.node_theme_name(t)))
+        .collect();
+    let link_themes: Vec<(LinkTheme, String)> = app
+        .link_themes()
+        .into_iter()
+        .skip(1)
+        .map(|t| (t, app.link_theme_name(t)))
+        .collect();
+    fn name_of<T: PartialEq>(all: &[(T, String)], t: T) -> String {
+        all.iter()
+            .find(|(k, _)| *k == t)
+            .map_or_else(String::new, |(_, n)| n.clone())
+    }
+    let mut run = false;
+    // EPANET-UI's frame is 239 wide: labels at 16, fields from 64 to 193;
+    // here the same proportions of the panel's width
+    let k = ui.available_width() / 239.0;
+    egui::Frame::NONE
+        .fill(pal.form)
+        .inner_margin(egui::Margin {
+            left: (16.0 * k) as i8,
+            right: 0,
+            top: 10,
+            bottom: 4,
+        })
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            // the theme shown on the map, until another is chosen
+            let (map_node, map_link) = (app.prefs.node_theme, app.prefs.link_theme);
+            let q = &mut app.query;
+            let node_theme =
+                *q.node_theme
+                    .get_or_insert(if node_themes.iter().any(|(t, _)| *t == map_node) {
+                        map_node
+                    } else {
+                        NodeTheme::Pressure
+                    });
+            let link_theme =
+                *q.link_theme
+                    .get_or_insert(if link_themes.iter().any(|(t, _)| *t == map_link) {
+                        map_link
+                    } else {
+                        LinkTheme::Flow
+                    });
+            let (label_w, field_w, half_w) = (48.0 * k, 129.0 * k, 80.0 * k);
+            let label = |ui: &mut Ui, text: &str| {
+                ui.allocate_ui_with_layout(
+                    vec2(label_w, ui.spacing().interact_size.y),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.set_min_width(label_w);
+                        ui.label(tr(text))
+                    },
+                );
+            };
+            ui.spacing_mut().item_spacing = vec2(0.0, 16.0);
+            ui.horizontal(|ui| {
+                label(ui, "Find");
+                egui::ComboBox::from_id_salt("q_find")
+                    .selected_text(tr(if q.nodes { "Nodes" } else { "Links" }))
+                    .width(field_w)
+                    .show_ui(ui, |ui| {
+                        for (nodes, text) in [(true, "Nodes"), (false, "Links")] {
+                            if ui.selectable_value(&mut q.nodes, nodes, tr(text)).changed() {
+                                q.active = false;
+                            }
+                        }
+                    });
+            });
+            ui.horizontal(|ui| {
+                label(ui, "with");
+                if q.nodes {
+                    egui::ComboBox::from_id_salt("q_node")
+                        .selected_text(tr(&name_of(&node_themes, node_theme)))
+                        .width(field_w)
+                        .show_ui(ui, |ui| {
+                            for (th, name) in node_themes.iter().cloned() {
+                                if ui.selectable_label(node_theme == th, tr(&name)).clicked() {
+                                    q.node_theme = Some(th);
+                                    q.active = false;
+                                }
+                            }
+                        });
+                } else {
+                    egui::ComboBox::from_id_salt("q_link")
+                        .selected_text(tr(&name_of(&link_themes, link_theme)))
+                        .width(field_w)
+                        .show_ui(ui, |ui| {
+                            for (th, name) in link_themes.iter().cloned() {
+                                if ui.selectable_label(link_theme == th, tr(&name)).clicked() {
+                                    q.link_theme = Some(th);
+                                    q.active = false;
+                                }
+                            }
+                        });
+                }
+            });
+            let ops = ["below", "equal to", "above"];
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_id_salt("q_op")
+                    .selected_text(tr(ops[q.op]))
+                    .width(half_w)
+                    .show_ui(ui, |ui| {
+                        for (n, s) in ops.iter().enumerate() {
+                            if ui.selectable_value(&mut q.op, n, tr(s)).changed() {
+                                q.active = false;
+                            }
+                        }
+                    });
+                ui.add_space(label_w + field_w - 2.0 * half_w);
+                let r = ui.add(egui::TextEdit::singleline(&mut q.value).desired_width(half_w));
+                // Enter searches
+                run = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if r.changed() {
+                    q.active = false;
+                }
+            });
+            // Search (as Enter does), then what it found
+            ui.horizontal(|ui| {
+                if ui
+                    .add(egui::Button::new(tr("Search")).min_size(vec2(half_w, 0.0)))
+                    .on_hover_text(tr(
+                        "Highlight the items that match (or press Enter in the value box)",
+                    ))
+                    .clicked()
+                {
+                    run = true;
+                }
+                if q.active {
+                    ui.add_space(label_w + field_w - 2.0 * half_w);
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(trf("{} items found.", &[&q.hits.len()]))
+                                .font(crate::fonts::bold(13.0))
+                                .color(Color32::from_rgb(0xe0, 0x10, 0x10)),
+                        )
+                        .wrap(),
+                    );
+                }
+            });
+        });
+    if run {
+        run_query(app);
+    }
+}
+
+/// Finds the items whose theme value meets the query, and shows that theme
+/// on the map.
+fn run_query(app: &mut EpanetApp) {
+    let Some(target) = eui_core::num::parse(&app.query.value) else {
+        app.status = crate::i18n::tr("Enter a numeric value to search for").into();
+        return;
+    };
+    let target = target as f32;
+    let op = app.query.op;
+    let test = |v: f32| match op {
+        0 => v < target,
+        1 => (v - target).abs() <= 1e-6 * target.abs().max(1.0),
+        _ => v > target,
+    };
+    app.query.hits = if app.query.nodes {
+        let t = app.query.node_theme.unwrap_or(NodeTheme::Pressure);
+        app.prefs.node_theme = t;
+        // tanks and reservoirs have no demand: zero, as EPANET reports it
+        let value = |i: usize| match app.node_theme_value_of(t, i) {
+            None if t == NodeTheme::BaseDemand => Some(0.0),
+            v => v,
+        };
+        (0..app.net.nodes.len())
+            .filter(|&i| value(i).is_some_and(test))
+            .collect()
+    } else {
+        let t = app.query.link_theme.unwrap_or(LinkTheme::Flow);
+        app.prefs.link_theme = t;
+        // flows in either direction
+        let size = |v: f32| if t == LinkTheme::Flow { v.abs() } else { v };
+        (0..app.net.links.len())
+            .filter(|&i| app.link_theme_value_of(t, i).map(size).is_some_and(test))
+            .collect()
+    };
+    app.query.active = true;
+}
+
 /// The Overview Map (EPANET-UI's `overviewmapframe`): the whole network in
 /// gray with a red frame around the part the map shows; clicking or dragging
 /// in it moves the map there.

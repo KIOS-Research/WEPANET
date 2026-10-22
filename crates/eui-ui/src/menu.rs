@@ -551,7 +551,7 @@ fn map_toolbar(app: &mut EpanetApp, ui: &mut Ui) {
     )
     .clicked()
     {
-        app.dialog = Dialog::Query;
+        crate::viewer::open_query(app);
     }
     separator(ui);
     if tool_button(
@@ -673,7 +673,7 @@ fn project_toolbar(app: &mut EpanetApp, ui: &mut Ui) {
         app.request_delete();
     }
     if tool_button(ui, Icon::Locate, "Locate", true, false, "Find an object").clicked() {
-        app.dialog = Dialog::Locate;
+        crate::locater::open(app);
     }
     separator(ui);
     if tool_button(

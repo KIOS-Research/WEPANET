@@ -20,15 +20,19 @@ pub enum Pane {
     PropertyEditor,
     Layers,
     Identify,
+    Query,
+    Locate,
 }
 
 impl Pane {
-    const ALL: [Pane; 5] = [
+    const ALL: [Pane; 7] = [
         Pane::MapViewer,
         Pane::ProjectExplorer,
         Pane::PropertyEditor,
         Pane::Layers,
         Pane::Identify,
+        Pane::Query,
+        Pane::Locate,
     ];
 
     fn title(self) -> &'static str {
@@ -38,12 +42,14 @@ impl Pane {
             Pane::PropertyEditor => "Property Editor",
             Pane::Layers => "Map Layers",
             Pane::Identify => "Identify Results",
+            Pane::Query => "Map Query",
+            Pane::Locate => "Object Locater",
         }
     }
 
     fn width(self) -> f32 {
         match self {
-            Pane::MapViewer | Pane::Layers => 250.0,
+            Pane::MapViewer | Pane::Layers | Pane::Query | Pane::Locate => 250.0,
             Pane::ProjectExplorer | Pane::PropertyEditor | Pane::Identify => 300.0,
         }
     }
@@ -54,12 +60,14 @@ impl Pane {
             Pane::ProjectExplorer | Pane::Identify => 428.0,
             Pane::MapViewer => 560.0,
             Pane::PropertyEditor | Pane::Layers => 300.0,
+            Pane::Query => 170.0,
+            Pane::Locate => 320.0,
         }
     }
 
     fn fill(self, app: &EpanetApp, ui: &Ui) -> Color32 {
         match self {
-            Pane::MapViewer | Pane::Layers => app.palette().form,
+            Pane::MapViewer | Pane::Layers | Pane::Query | Pane::Locate => app.palette().form,
             // the tree sits on white, as in EPANET-UI
             Pane::ProjectExplorer if ui.visuals().dark_mode => ui.visuals().extreme_bg_color,
             Pane::ProjectExplorer => Color32::WHITE,
@@ -73,18 +81,23 @@ impl Pane {
             Pane::ProjectExplorer | Pane::PropertyEditor => app.prefs.show_explorer,
             Pane::Layers => !app.prefs.hide_layers,
             Pane::Identify => app.prefs.show_explorer && !app.prefs.hide_identify,
+            Pane::Query => app.query.open,
+            Pane::Locate => app.locate.open,
         }
     }
 
     /// Whether its title bar (or tab) has a cross that closes it.
     fn closable(self) -> bool {
-        self == Pane::Identify
+        matches!(self, Pane::Identify | Pane::Query | Pane::Locate)
     }
 
-    /// Closes it (the Identify tool opens it again).
+    /// Closes it (the Identify tool, Query or Locate opens it again).
     fn close(self, app: &mut EpanetApp) {
-        if self == Pane::Identify {
-            app.prefs.hide_identify = true;
+        match self {
+            Pane::Identify => app.prefs.hide_identify = true,
+            Pane::Query => crate::viewer::close_query(app),
+            Pane::Locate => crate::locater::close(app),
+            _ => {}
         }
     }
 
@@ -95,6 +108,8 @@ impl Pane {
             Pane::PropertyEditor => crate::explorer::editor_pane(app, ui),
             Pane::Layers => crate::layers::pane(app, ui),
             Pane::Identify => crate::layers::identify_pane(app, ui),
+            Pane::Query => crate::viewer::query_pane(app, ui),
+            Pane::Locate => crate::locater::pane(app, ui),
         }
     }
 }
@@ -126,10 +141,15 @@ pub struct Layout {
 }
 
 impl Default for Layout {
-    /// As in EPANET-UI, with the Map Layers a tab beside the Map Viewer.
+    /// As in EPANET-UI, with the Map Layers a tab beside the Map Viewer
+    /// and the Object Locater and Map Query (when open) above them.
     fn default() -> Self {
         Layout {
-            left: vec![Group::of(&[Pane::MapViewer, Pane::Layers])],
+            left: vec![
+                Group::of(&[Pane::Locate]),
+                Group::of(&[Pane::Query]),
+                Group::of(&[Pane::MapViewer, Pane::Layers]),
+            ],
             right: vec![
                 Group::of(&[Pane::ProjectExplorer, Pane::Identify]),
                 Group::of(&[Pane::PropertyEditor]),
@@ -212,6 +232,7 @@ impl Layout {
                     self.put(p, Place::With(Pane::ProjectExplorer));
                     self.activate(Pane::ProjectExplorer);
                 }
+                Pane::Query | Pane::Locate => self.put(p, Place::Left(true)),
                 Pane::MapViewer | Pane::Layers => self.put(p, Place::Left(false)),
                 _ => self.put(p, Place::Right(false)),
             }
@@ -513,22 +534,32 @@ fn header(
 
 /// The cross at the right of a title bar or tab that closes its panel.
 fn cross(ui: &mut Ui, bar: Rect, pane: Pane) -> bool {
+    // a black cross on a white square, as EPANET-UI's close buttons
     let r = Rect::from_center_size(
-        egui::pos2(bar.right() - 14.0, bar.center().y),
-        vec2(18.0, 18.0),
+        egui::pos2(bar.right() - 15.0, bar.center().y),
+        vec2(22.0, 22.0),
     );
     let resp = ui.interact(r, Id::new("dock_close").with(pane), Sense::click());
-    if resp.hovered() {
-        ui.painter()
-            .rect_filled(r, 3.0, Color32::from_white_alpha(70));
-    }
-    ui.painter().text(
-        r.center(),
-        Align2::CENTER_CENTER,
-        "×",
-        egui::FontId::proportional(16.0),
-        Color32::WHITE,
+    let fill = if resp.hovered() {
+        Color32::from_rgb(0xe5, 0xf1, 0xfb)
+    } else {
+        Color32::WHITE
+    };
+    ui.painter().rect(
+        r,
+        2.0,
+        fill,
+        egui::Stroke::new(1.0, Color32::from_gray(120)),
+        egui::StrokeKind::Inside,
     );
+    // two strokes, centred on the square (a glyph sits off its centre)
+    let c = r.center();
+    let d = 5.5;
+    let s = egui::Stroke::new(1.6, Color32::BLACK);
+    ui.painter()
+        .line_segment([c + vec2(-d, -d), c + vec2(d, d)], s);
+    ui.painter()
+        .line_segment([c + vec2(-d, d), c + vec2(d, -d)], s);
     resp.on_hover_text(crate::i18n::tr("Close")).clicked()
 }
 
@@ -712,6 +743,7 @@ fn show_target(ctx: &egui::Context, p: Pos2, floating: bool, pane: Pane, bars: &
 mod tests {
     use super::*;
     use eframe::App as _;
+    use eui_core::props::Element;
 
     /// The whole window, run for a frame with `events`: each text drawn and where.
     fn frame(
@@ -747,6 +779,14 @@ mod tests {
             .find(|t| t.0 == s)
             .unwrap_or_else(|| panic!("no {s:?}"))
             .1
+    }
+
+    /// The middle of a panel's close button, as last drawn.
+    fn cross_of(ctx: &egui::Context, pane: Pane) -> Pos2 {
+        ctx.read_response(Id::new("dock_close").with(pane))
+            .expect("a close button")
+            .rect
+            .center()
     }
 
     /// Drags the title bar called `title` to `to`, over a few frames.
@@ -826,7 +866,7 @@ mod tests {
         frame(&mut app, &ctx, vec![egui::Event::PointerMoved(tab)]);
         frame(&mut app, &ctx, vec![click(tab, true)]);
         frame(&mut app, &ctx, vec![click(tab, false)]);
-        assert_eq!(app.prefs.docks.left[0].active, Pane::Layers);
+        assert_eq!(app.prefs.docks.left[2].active, Pane::Layers);
         let t = frame(&mut app, &ctx, vec![]);
         assert!(
             !t.iter().any(|(s, _)| s == "Themes"),
@@ -857,8 +897,8 @@ mod tests {
     #[test]
     fn identify_results_close() {
         let (mut app, ctx) = app();
-        let t = frame(&mut app, &ctx, vec![]);
-        let cross = at(&t, "×").center();
+        frame(&mut app, &ctx, vec![]);
+        let cross = cross_of(&ctx, Pane::Identify);
         let click = |pressed| egui::Event::PointerButton {
             pos: cross,
             button: egui::PointerButton::Primary,
@@ -894,6 +934,8 @@ mod tests {
         assert_eq!(
             left,
             [
+                vec![Pane::Locate],
+                vec![Pane::Query],
                 vec![Pane::MapViewer, Pane::Layers],
                 vec![Pane::ProjectExplorer]
             ]
@@ -907,14 +949,14 @@ mod tests {
         let onto = at(&frame(&mut app, &ctx, vec![]), "Project Explorer").center();
         drag(&mut app, &ctx, "Property Editor", onto);
         let (left, _) = sides(&app.prefs.docks);
-        assert_eq!(left[1], [Pane::ProjectExplorer, Pane::PropertyEditor]);
-        assert_eq!(app.prefs.docks.left[1].active, Pane::PropertyEditor);
+        assert_eq!(left[3], [Pane::ProjectExplorer, Pane::PropertyEditor]);
+        assert_eq!(app.prefs.docks.left[3].active, Pane::PropertyEditor);
         assert!(app.prefs.docks.floating.is_empty());
         // and out again, to the top of the right edge
         drag(&mut app, &ctx, "Property Editor", egui::pos2(1380.0, 200.0));
         let (left, right) = sides(&app.prefs.docks);
         assert_eq!(right, [vec![Pane::PropertyEditor], vec![Pane::Identify]]);
-        assert_eq!(left[1], [Pane::ProjectExplorer]);
+        assert_eq!(left[3], [Pane::ProjectExplorer]);
         assert!(
             at(&frame(&mut app, &ctx, vec![]), "Property Editor")
                 .center()
@@ -929,6 +971,196 @@ mod tests {
         assert_eq!(app.prefs.docks.right, before.right);
     }
 
+    /// The Map Query opens above the Map Viewer: Enter in its value field
+    /// searches and shows the theme on the map; it moves like the other
+    /// panels, and its cross closes it.
+    #[test]
+    fn the_map_query_is_a_panel() {
+        let (mut app, ctx) = app();
+        assert!(
+            !frame(&mut app, &ctx, vec![])
+                .iter()
+                .any(|(s, _)| s == "Map Query")
+        );
+        crate::viewer::open_query(&mut app);
+        app.query.nodes = true;
+        app.query.node_theme = Some(crate::style::NodeTheme::Elevation);
+        frame(&mut app, &ctx, vec![]);
+        let t = frame(&mut app, &ctx, vec![]);
+        let (title, viewer) = (at(&t, "Map Query"), at(&t, "Map Viewer"));
+        assert!(title.center().x < 400.0 && title.bottom() < viewer.top());
+        let (find, with, below) = (at(&t, "Find"), at(&t, "with"), at(&t, "below"));
+        assert!(find.top() > title.bottom() && with.top() > find.bottom());
+        let elevation = at(&t, "Elevation");
+        assert!(elevation.left() > with.right() && below.top() > elevation.bottom());
+        // the value field: right of the condition, as far as the drop-downs
+        let field = egui::pos2(elevation.left() + 70.0, below.center().y);
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame(&mut app, &ctx, vec![egui::Event::PointerMoved(field)]);
+        frame(&mut app, &ctx, vec![button(field, true)]);
+        frame(&mut app, &ctx, vec![button(field, false)]);
+        let key = |key| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        };
+        frame(&mut app, &ctx, vec![egui::Event::Text("800".into())]);
+        assert_eq!(app.query.value, "800");
+        assert!(!app.query.active);
+        frame(&mut app, &ctx, vec![key(egui::Key::Enter)]);
+        assert!(app.query.active);
+        assert_eq!(app.prefs.node_theme, crate::style::NodeTheme::Elevation);
+        let below_800 = (0..app.net.nodes.len())
+            .filter(|&i| {
+                app.node_theme_value_of(crate::style::NodeTheme::Elevation, i)
+                    .is_some_and(|v| v < 800.0)
+            })
+            .count();
+        assert!(below_800 > 0);
+        assert_eq!(app.query.hits.len(), below_800);
+        at(
+            &frame(&mut app, &ctx, vec![]),
+            &format!("{below_800} items found."),
+        );
+        // the Search button does the same, for another value
+        app.query.value = "700".into();
+        app.query.active = false;
+        let search = at(&frame(&mut app, &ctx, vec![]), "Search").center();
+        frame(&mut app, &ctx, vec![egui::Event::PointerMoved(search)]);
+        frame(&mut app, &ctx, vec![button(search, true)]);
+        frame(&mut app, &ctx, vec![button(search, false)]);
+        assert!(app.query.active);
+        let below_700 = (0..app.net.nodes.len())
+            .filter(|&i| {
+                app.node_theme_value_of(crate::style::NodeTheme::Elevation, i)
+                    .is_some_and(|v| v < 700.0)
+            })
+            .count();
+        assert_ne!(below_700, below_800);
+        assert_eq!(app.query.hits.len(), below_700);
+        // base demand: the tank and the reservoir count, with none
+        app.query.node_theme = Some(crate::style::NodeTheme::BaseDemand);
+        app.query.value = "12".into();
+        app.query.active = false;
+        frame(&mut app, &ctx, vec![]);
+        frame(&mut app, &ctx, vec![button(search, true)]);
+        frame(&mut app, &ctx, vec![button(search, false)]);
+        let ids: Vec<&str> = app
+            .query
+            .hits
+            .iter()
+            .map(|&i| app.net.nodes[i].id.as_str())
+            .collect();
+        assert_eq!(ids.len(), 3, "{ids:?}");
+        assert!(ids.contains(&"9") && ids.contains(&"2"), "{ids:?}");
+        // let go in the middle: a window of its own
+        drag(&mut app, &ctx, "Map Query", egui::pos2(700.0, 300.0));
+        assert_eq!(app.prefs.docks.floating, [Pane::Query]);
+        let t = frame(&mut app, &ctx, vec![]);
+        assert!((at(&t, "Map Query").center().y - 300.0).abs() < 40.0);
+        at(&t, "Find");
+        // the cross closes it, and the map shows no more hits
+        let cross = cross_of(&ctx, Pane::Query);
+        frame(&mut app, &ctx, vec![egui::Event::PointerMoved(cross)]);
+        frame(&mut app, &ctx, vec![button(cross, true)]);
+        frame(&mut app, &ctx, vec![button(cross, false)]);
+        assert!(!app.query.open && !app.query.active);
+        assert!(
+            !frame(&mut app, &ctx, vec![])
+                .iter()
+                .any(|(s, _)| s == "Map Query")
+        );
+    }
+
+    /// The Object Locater opens above the Map Viewer: a name and Enter select
+    /// that node and list its links; "all Pumps" lists the pumps, and a click
+    /// on one selects it.
+    #[test]
+    fn the_object_locater_is_a_panel() {
+        let (mut app, ctx) = app();
+        crate::locater::open(&mut app);
+        frame(&mut app, &ctx, vec![]);
+        let t = frame(&mut app, &ctx, vec![]);
+        let (title, viewer) = (at(&t, "Object Locater"), at(&t, "Map Viewer"));
+        assert!(title.center().x < 400.0 && title.bottom() < viewer.top());
+        let (named, node) = (at(&t, "Named"), at(&t, "a Node"));
+        at(&t, "Adjacent Links");
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        let click = |app: &mut EpanetApp, pos| {
+            frame(app, &ctx, vec![egui::Event::PointerMoved(pos)]);
+            frame(app, &ctx, vec![button(pos, true)]);
+            frame(app, &ctx, vec![button(pos, false)]);
+        };
+        // the name field, beside "Named"
+        click(&mut app, egui::pos2(node.left() + 20.0, named.center().y));
+        let enter = egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        };
+        // no node 1: said in the panel, until the name changes
+        let missing = "There is no such object in the project.";
+        frame(&mut app, &ctx, vec![egui::Event::Text("1".into())]);
+        frame(&mut app, &ctx, vec![enter.clone()]);
+        assert_eq!(app.selection, None);
+        at(&frame(&mut app, &ctx, vec![]), missing);
+        frame(&mut app, &ctx, vec![egui::Event::Text("0".into())]);
+        assert!(
+            !frame(&mut app, &ctx, vec![])
+                .iter()
+                .any(|(s, _)| s == missing)
+        );
+        frame(&mut app, &ctx, vec![enter]);
+        let n10 = app.net.node_index("10").unwrap();
+        assert_eq!(app.selection, Some(Element::Node(n10)));
+        let ids = |app: &EpanetApp| -> Vec<String> {
+            app.locate
+                .items
+                .iter()
+                .map(|e| match *e {
+                    Element::Node(i) => app.net.nodes[i].id.clone(),
+                    Element::Link(i) => app.net.links[i].id.clone(),
+                })
+                .collect()
+        };
+        let mut links = ids(&app);
+        links.sort();
+        assert_eq!(links, ["10", "9"]);
+        // all Pumps, from the drop-down
+        click(&mut app, node.center());
+        let pumps = at(&frame(&mut app, &ctx, vec![]), "all Pumps").center();
+        click(&mut app, pumps);
+        assert_eq!(ids(&app), ["9"]);
+        let t = frame(&mut app, &ctx, vec![]);
+        at(&t, "Pump Links");
+        assert!(!t.iter().any(|(s, _)| s == "Named"));
+        let nine = t
+            .iter()
+            .filter(|(s, r)| s == "9" && r.center().x < 400.0)
+            .map(|(_, r)| r.center())
+            .next()
+            .expect("the pump listed");
+        // on the left of the list, as in EPANET-UI
+        assert!(nine.x < title.center().x - 40.0, "{nine:?}");
+        click(&mut app, nine);
+        let pump = app.net.link_index("9").unwrap();
+        assert_eq!(app.selection, Some(Element::Link(pump)));
+    }
+
     #[test]
     fn layouts_are_repaired_and_changed() {
         let mut l = Layout {
@@ -938,9 +1170,17 @@ mod tests {
         };
         l.repair();
         let (left, right) = sides(&l);
-        // the Map Layers joins the Map Viewer as a tab
-        assert_eq!(left, [vec![Pane::MapViewer, Pane::Layers]]);
-        assert_eq!(l.left[0].active, Pane::MapViewer);
+        // the Map Layers joins the Map Viewer as a tab, the Object Locater
+        // and the Map Query go above
+        assert_eq!(
+            left,
+            [
+                vec![Pane::Locate],
+                vec![Pane::Query],
+                vec![Pane::MapViewer, Pane::Layers]
+            ]
+        );
+        assert_eq!(l.left[2].active, Pane::MapViewer);
         // the Identify Results joins the Project Explorer as a tab
         assert_eq!(right, [vec![Pane::ProjectExplorer, Pane::Identify]]);
         l.put(Pane::Identify, Place::Floating);
