@@ -110,7 +110,7 @@ impl LinkKind {
         let v: &[&str] = match self {
             LinkKind::Pipe => &["1000", "12", "100", "0", "Open"],
             LinkKind::Pump => &["POWER 10"],
-            LinkKind::Valve => &["12", "PRV", "0", "0"],
+            LinkKind::Valve => &["12", "TCV", "0", "0"],
         };
         v.iter().map(|s| s.to_string()).collect()
     }
@@ -1015,6 +1015,21 @@ fn write_record(out: &mut String, head: &[&str], fields: &[String], comment: &st
 mod tests {
     use super::*;
     use crate::examples;
+
+    /// A new valve is a fully open throttle control valve (TCV), as EPANET-UI
+    /// adds them, and is written so to the INP file.
+    #[test]
+    fn new_valves_are_tcvs() {
+        let mut net = Network::from_inp(examples::NET1).unwrap();
+        let (a, b) = (net.node_index("10").unwrap(), net.node_index("11").unwrap());
+        let v = net.add_link(LinkKind::Valve, a, b);
+        assert_eq!(net.links[v].field(1), "TCV");
+        assert_eq!(net.links[v].num(2), Some(0.0));
+        let id = net.links[v].id.clone();
+        let back = Network::from_inp(&net.to_inp()).unwrap();
+        let w = back.link_index(&id).unwrap();
+        assert_eq!(back.links[w].field(1), "TCV");
+    }
 
     /// The coordinate reference system goes in and out of the INP file in a
     /// comment at the head of [COORDINATES].
