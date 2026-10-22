@@ -276,6 +276,9 @@ pub struct Prefs {
     pub plugin_files: std::collections::BTreeMap<String, Vec<(String, Vec<u8>)>>,
     /// The `metadata.txt` of each installed plugin that has one, by plugin name.
     pub plugin_meta: std::collections::BTreeMap<String, crate::plugin_meta::Metadata>,
+    /// Time periods shown per second while animating. Saved under a new
+    /// name so that the earlier, faster default is not read back.
+    #[serde(rename = "animation_speed")]
     pub animate_fps: f32,
     pub auto_length: bool,
     // Program Preferences
@@ -359,7 +362,7 @@ impl Default for Prefs {
             plugin_icons: Default::default(),
             plugin_files: Default::default(),
             plugin_meta: Default::default(),
-            animate_fps: 4.0,
+            animate_fps: 1.0,
             auto_length: false,
             blink_marker: true,
             map_hints: true,
