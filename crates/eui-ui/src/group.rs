@@ -581,84 +581,105 @@ fn choice(ui: &mut Ui, id: &str, index: &mut usize, choices: &[&str], width: f32
     });
 }
 
+/// EPANET-UI's Group Editor: an optional filter and an edit action, each on
+/// two rows of a box, then Make Changes, and Back and Close.
 fn editor_ui(app: &mut EpanetApp, ui: &mut Ui) {
     let Some(g) = app.group.as_mut() else { return };
     let list = params(g.nodes());
     let names: Vec<&str> = list.iter().map(|(n, _)| *n).collect();
-    let w = ui.available_width();
-    ui.label(trf(
-        if g.nodes() {
-            "{} nodes selected"
-        } else {
-            "{} links selected"
-        },
-        &[&g.selected.len()],
-    ));
-    ui.add_space(6.0);
-    ui.group(|ui| {
-        ui.set_width(w - 12.0);
-        ui.label(RichText::new(tr("Optional Filter")).strong());
-        crate::widgets::checkbox(ui, &mut g.filter_on, "Only those with");
-        let on = g.filter_on;
+    // A row of two columns, about two fifths and the rest of the width
+    // there is (measured inside the box, so the panel never has to widen);
+    // each column gets its width.
+    let row = |ui: &mut Ui, a: &mut dyn FnMut(&mut Ui, f32), b: &mut dyn FnMut(&mut Ui, f32)| {
         ui.horizontal(|ui| {
-            choice(
-                ui,
-                "group_filter_param",
-                &mut g.filter_param,
-                &names,
-                110.0,
-                on,
-            );
-            // a Tag or a pattern is only ever equal to the value
-            if textual(list[g.filter_param].1) {
-                g.filter_relation = 0;
-            }
-            let rel = on && !textual(list[g.filter_param].1);
-            choice(
-                ui,
-                "group_filter_rel",
-                &mut g.filter_relation,
-                &RELATIONS,
-                80.0,
-                rel,
-            );
+            let gap = ui.spacing().item_spacing.x;
+            let avail = ui.available_width();
+            let left = ((avail - gap) * 0.42).floor() - 1.0;
+            let right = (avail - gap - left).floor() - 2.0;
+            let column = egui::Layout::left_to_right(egui::Align::Center);
+            ui.allocate_ui_with_layout(vec2(left, 26.0), column, |ui| a(ui, left));
+            ui.allocate_ui_with_layout(vec2(right, 26.0), column, |ui| b(ui, right));
         });
-        ui.add_enabled(
-            on,
-            egui::TextEdit::singleline(&mut g.filter_value).desired_width(w - 24.0),
+    };
+    let text = |ui: &mut Ui, value: &mut String, width: f32, enabled: bool| {
+        ui.add_enabled_ui(enabled, |ui| {
+            ui.add_sized([width, 24.0], egui::TextEdit::singleline(value));
+        });
+    };
+    crate::viewer::group_box(ui, "Optional Filter", |ui| {
+        let on = g.filter_on;
+        // a Tag or a pattern is only ever equal to the value
+        if textual(list[g.filter_param].1) {
+            g.filter_relation = 0;
+        }
+        let rel = on && !textual(list[g.filter_param].1);
+        row(
+            ui,
+            &mut |ui, _| {
+                crate::widgets::checkbox(ui, &mut g.filter_on, "with");
+            },
+            &mut |ui, w| choice(ui, "group_filter_param", &mut g.filter_param, &names, w, on),
+        );
+        ui.add_space(6.0);
+        row(
+            ui,
+            &mut |ui, w| {
+                choice(
+                    ui,
+                    "group_filter_rel",
+                    &mut g.filter_relation,
+                    &RELATIONS,
+                    w,
+                    rel,
+                )
+            },
+            &mut |ui, w| text(ui, &mut g.filter_value, w, on),
         );
     });
+    crate::viewer::group_box(ui, "Edit Action", |ui| {
+        // a Tag or a pattern is only ever replaced
+        let fixed = textual(list[g.param].1);
+        if fixed {
+            g.action = 0;
+        }
+        row(
+            ui,
+            &mut |ui, w| choice(ui, "group_action", &mut g.action, &ACTIONS, w, !fixed),
+            &mut |ui, w| choice(ui, "group_param", &mut g.param, &names, w, true),
+        );
+        ui.add_space(6.0);
+        let with = if g.action == 0 { "with" } else { "by" };
+        row(
+            ui,
+            &mut |ui, _| {
+                ui.add_space(12.0);
+                ui.label(tr(with));
+            },
+            &mut |ui, w| text(ui, &mut g.value, w, true),
+        );
+    });
+    let button = |ui: &mut Ui, text: &str, width: f32| {
+        ui.add_sized([width, 28.0], egui::Button::new(tr(text)))
+            .clicked()
+    };
+    let w = ui.available_width();
+    let apply = ui
+        .vertical_centered(|ui| button(ui, "Make Changes", (w * 0.55).floor()))
+        .inner;
     ui.add_space(6.0);
-    ui.group(|ui| {
-        ui.set_width(w - 12.0);
-        ui.label(RichText::new(tr("Edit Action")).strong());
-        ui.horizontal(|ui| {
-            // a Tag or a pattern is only ever replaced
-            if textual(list[g.param].1) {
-                g.action = 0;
-            }
-            let fixed = textual(list[g.param].1);
-            choice(ui, "group_action", &mut g.action, &ACTIONS, 80.0, !fixed);
-            choice(ui, "group_param", &mut g.param, &names, 110.0, true);
-        });
-        ui.horizontal(|ui| {
-            ui.label(tr(if g.action == 0 { "with" } else { "by" }));
-            ui.add(egui::TextEdit::singleline(&mut g.value).desired_width(w - 60.0));
-        });
+    let (mut back, mut close) = (false, false);
+    // Back at the left, Close at the right
+    ui.horizontal(|ui| {
+        let gap = ui.spacing().item_spacing.x;
+        let width = ((ui.available_width() - gap) / 2.0).floor().min(110.0);
+        back = button(ui, "Back", width);
+        ui.add_space((ui.available_width() - width).floor().max(0.0));
+        close = button(ui, "Close", width);
     });
     if !g.message.is_empty() {
-        ui.add_space(6.0);
+        ui.add_space(8.0);
         ui.label(&g.message);
     }
-    ui.add_space(8.0);
-    let (mut back, mut close, mut apply) = (false, false, false);
-    ui.horizontal(|ui| {
-        back = ui.button(tr("Back")).clicked();
-        close = ui.button(tr("Close")).clicked();
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-            apply = ui.button(tr("Make Changes")).clicked();
-        });
-    });
     if back {
         g.step = Step::Select;
         g.message.clear();
@@ -1144,5 +1165,34 @@ pub(crate) mod tests {
         run.frame(&mut app, vec![], 0.0);
         let t = run.frame(&mut app, vec![], 0.0);
         assert!(t.iter().any(|(s, _)| s == "Group Selector"));
+    }
+
+    /// The Group Selector, the Group Editor and the Select a Region tool's
+    /// hint fit the panel: drawn again and again, they do not widen it (nor
+    /// so move the map).
+    #[test]
+    fn the_panels_keep_their_width() {
+        let (mut run, mut app) = setup();
+        let map = app.export.map_rect.unwrap();
+        let stays = |run: &mut Run, app: &mut EpanetApp, what: &str| {
+            for _ in 0..30 {
+                run.frame(app, vec![], 0.0);
+            }
+            // (a quarter pixel of rounding aside)
+            let now = app.export.map_rect.unwrap();
+            assert!(
+                (now.min - map.min).length() < 1.0,
+                "{what}: {map:?} -> {now:?}"
+            );
+        };
+        open(&mut app, Purpose::EditNodes);
+        stays(&mut run, &mut app, "the Group Selector");
+        run.press(&mut app, "Select all nodes");
+        run.press(&mut app, "Accept");
+        assert!(app.group.as_ref().is_some_and(|g| g.step == Step::Edit));
+        stays(&mut run, &mut app, "the Group Editor");
+        app.group = None;
+        app.set_tool(crate::app::Tool::Region);
+        stays(&mut run, &mut app, "the Select a Region hint");
     }
 }

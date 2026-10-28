@@ -7,8 +7,8 @@
   <meta name="description" content="Open-source water distribution network modeling in your browser. Runs locally, no account needed.">
   
 <script type="module">
-import init, * as bindings from '/epanet-ui-web-947ea1cb526d1387.js';
-const wasm = await init({ module_or_path: '/epanet-ui-web-947ea1cb526d1387_bg.wasm' });
+import init, * as bindings from '/epanet-ui-web-26c17dcfc93f418a.js';
+const wasm = await init({ module_or_path: '/epanet-ui-web-26c17dcfc93f418a_bg.wasm' });
 
 
 window.wasmBindings = bindings;
@@ -78,7 +78,7 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
     async
     src="https://gc.zgo.at/count.js">
   </script>
-<link rel="modulepreload" href="/epanet-ui-web-947ea1cb526d1387.js" crossorigin="anonymous" integrity="sha384-NMhPUQz4uSUhRSvdkUjlk2586pSxbK1eCgDgcPPYpB4vUbzp2Ev1xw9dAcZcCd7r"><link rel="modulepreload" href="/snippets/eui-ui-3e6d3411aa7a95b7/inline0.js" crossorigin="anonymous" integrity="sha384-vENpzkqZbyB6gXe9nbNScDV32kLhQFsKEbAEu0acJDz4BM9DLPmZozi9d99C7Ozl"><link rel="modulepreload" href="/snippets/eui-ui-f449ccf9177b5721/inline0.js" crossorigin="anonymous" integrity="sha384-vENpzkqZbyB6gXe9nbNScDV32kLhQFsKEbAEu0acJDz4BM9DLPmZozi9d99C7Ozl"><link rel="preload" href="/epanet-ui-web-947ea1cb526d1387_bg.wasm" crossorigin="anonymous" integrity="sha384-xTHbnNFrLsp3G1d5Njog1M59KoKLmi48peGg5b8APsWDMjWUEtFO4BmQ1MCre4hL" as="fetch" type="application/wasm"></head>
+<link rel="modulepreload" href="/epanet-ui-web-26c17dcfc93f418a.js" crossorigin="anonymous" integrity="sha384-LRJxaGBTO6wPByO7RJ6Ztny726rq51pcrigE9NHHw7o0vQalcBOgEe2CPr2FSwqd"><link rel="modulepreload" href="/snippets/eui-ui-3e6d3411aa7a95b7/inline0.js" crossorigin="anonymous" integrity="sha384-vENpzkqZbyB6gXe9nbNScDV32kLhQFsKEbAEu0acJDz4BM9DLPmZozi9d99C7Ozl"><link rel="modulepreload" href="/snippets/eui-ui-f449ccf9177b5721/inline0.js" crossorigin="anonymous" integrity="sha384-vENpzkqZbyB6gXe9nbNScDV32kLhQFsKEbAEu0acJDz4BM9DLPmZozi9d99C7Ozl"><link rel="preload" href="/epanet-ui-web-26c17dcfc93f418a_bg.wasm" crossorigin="anonymous" integrity="sha384-AUX8amCcs5t4fRrO0rc+o/j35G+Fs55jRlY9RdjqjOJaPD/83u7xkzICNTfezY38" as="fetch" type="application/wasm"></head>
 <body>
   <div id="devbar">DEVELOPMENT VERSION: may be unstable. <a href="../">Open the stable version</a></div>
   <canvas id="epanet_ui_canvas"></canvas>

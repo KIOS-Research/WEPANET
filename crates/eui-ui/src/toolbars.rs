@@ -378,6 +378,28 @@ pub(crate) fn show(app: &mut EpanetApp, ctx: &egui::Context) {
     }
 }
 
+/// The room the toolbars against the map's top and left edges take there
+/// (x: left, y: top), for what is placed in the map's top-left corner.
+pub(crate) fn map_insets(app: &EpanetApp) -> Vec2 {
+    let mut inset = Vec2::ZERO;
+    for bar in [Bar::Speed, Bar::Add] {
+        if !app.prefs.toolbars.shown(bar) {
+            continue;
+        }
+        let size = app.bars.size[bar as usize];
+        match app.prefs.toolbars.place(bar) {
+            Place::Edge {
+                side: Side::Top, ..
+            } => inset.y = inset.y.max(GAP + size.y),
+            Place::Edge {
+                side: Side::Left, ..
+            } => inset.x = inset.x.max(GAP + size.x),
+            _ => {}
+        }
+    }
+    inset
+}
+
 /// The top-left corner of a toolbar over the map, or None in the menu bar.
 fn position(place: Place, size: Vec2, map: Rect, screen: Rect) -> Option<Pos2> {
     let along = |a: f32, len: f32, extent: f32| a.clamp(0.0, (len - extent).max(0.0));

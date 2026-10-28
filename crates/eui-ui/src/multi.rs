@@ -1,16 +1,16 @@
 //! Many objects selected on the map at once: by the Select a Region tool
-//! (a polygon clicked or a rectangle dragged, or Enter for the whole
-//! network) or by Ctrl/Shift-clicks with the Select tool. Delete deletes
+//! (a polygon clicked or a rectangle dragged, Enter for the whole network,
+//! or by Tag) or by Ctrl/Shift-clicks with the Select tool. Delete deletes
 //! them all; Escape clears them.
 
 use std::collections::BTreeSet;
 
 use egui::{Color32, Pos2, Rect};
-use eui_core::props::Element;
+use eui_core::props::{Element, PropKey};
 
 use crate::app::{EpanetApp, Tool};
 use crate::group::{Drawn, Region, inside};
-use crate::i18n::trf;
+use crate::i18n::{tr, trf};
 
 /// The objects selected together, by ID (deletions renumber the rest), and
 /// the region being drawn.
@@ -19,6 +19,8 @@ pub(crate) struct Multi {
     nodes: BTreeSet<String>,
     links: BTreeSet<String>,
     region: Region,
+    /// The Tag typed to select by.
+    tag: String,
 }
 
 impl Multi {
@@ -123,6 +125,55 @@ pub(crate) fn map_input(app: &mut EpanetApp, rect: Rect, response: &egui::Respon
     app.multi.links.extend(links);
     report(app);
     true
+}
+
+/// Select by Tag, under the Select a Region tool's hint: the nodes and
+/// links with the Tag typed, in place of those selected or, with Shift
+/// held, besides them.
+pub(crate) fn tag_ui(app: &mut EpanetApp, ui: &mut egui::Ui) {
+    let w = ui.available_width();
+    let field = ui.add(
+        egui::TextEdit::singleline(&mut app.multi.tag)
+            .hint_text(tr("Tag"))
+            .desired_width(w),
+    );
+    let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+    let button = ui.add_sized([w, 26.0], egui::Button::new(tr("Select by Tag")));
+    if enter || button.clicked() {
+        let add = ui.input(|i| i.modifiers.shift);
+        select_tag(app, add);
+    }
+}
+
+/// Selects the nodes and links whose Tag is the one typed (in any case).
+fn select_tag(app: &mut EpanetApp, add: bool) {
+    let tag = app.multi.tag.trim().to_string();
+    if tag.is_empty() {
+        app.status = tr("Enter the Tag of the objects to select").into();
+        return;
+    }
+    if !add {
+        app.multi.clear();
+    }
+    app.selection = None;
+    app.editor_shown = None;
+    let net = &app.net;
+    let tagged = |e: Element| {
+        net.get_prop(e, PropKey::Tag)
+            .trim()
+            .eq_ignore_ascii_case(&tag)
+    };
+    let nodes: Vec<String> = (0..net.nodes.len())
+        .filter(|&i| tagged(Element::Node(i)))
+        .map(|i| net.nodes[i].id.clone())
+        .collect();
+    let links: Vec<String> = (0..net.links.len())
+        .filter(|&i| tagged(Element::Link(i)))
+        .map(|i| net.links[i].id.clone())
+        .collect();
+    app.multi.nodes.extend(nodes);
+    app.multi.links.extend(links);
+    report(app);
 }
 
 /// The region being drawn with the Select a Region tool.
@@ -239,5 +290,42 @@ mod tests {
         assert!(app.net.node_index("22").is_some(), "not before Yes");
         run.press(&mut app, "Yes");
         assert!(app.net.node_index("22").is_none() && app.net.node_index("23").is_none());
+    }
+
+    /// Select by Tag (in any case) selects the nodes and links with that
+    /// Tag; with Shift held it adds to those selected; Delete deletes them.
+    #[test]
+    fn tags_select_objects() {
+        let (mut run, mut app) = setup();
+        app.prefs.confirm_delete = false;
+        for e in [
+            Element::Node(app.net.node_index("22").unwrap()),
+            Element::Node(app.net.node_index("23").unwrap()),
+            Element::Link(app.net.link_index("22").unwrap()),
+        ] {
+            app.net.set_prop(e, PropKey::Tag, "North").unwrap();
+        }
+        app.set_tool(Tool::Region);
+        app.multi.tag = "north".into();
+        run.press(&mut app, "Select by Tag");
+        assert_eq!(ids(&app.multi.nodes), ["22", "23"]);
+        assert_eq!(ids(&app.multi.links), ["22"]);
+
+        let n10 = app.net.node_index("10").unwrap();
+        app.net
+            .set_prop(Element::Node(n10), PropKey::Tag, "Source")
+            .unwrap();
+        app.multi.tag = "Source".into();
+        run.modifiers = egui::Modifiers::SHIFT;
+        run.press(&mut app, "Select by Tag");
+        run.modifiers = Default::default();
+        assert_eq!(ids(&app.multi.nodes), ["10", "22", "23"]);
+
+        run.key(&mut app, egui::Key::Delete);
+        assert!(
+            ["10", "22", "23"]
+                .iter()
+                .all(|id| app.net.node_index(id).is_none())
+        );
     }
 }

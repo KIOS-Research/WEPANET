@@ -1016,11 +1016,13 @@ fn draw_legends(app: &mut EpanetApp, ui: &mut Ui, rect: Rect, node: Legend, link
     let font = FontId::proportional(12.5);
     let row = 19.0;
     let ink = Color32::from_gray(30);
-    let mut top = rect.top() + 10.0;
+    // at first in the top-left corner, clear of the toolbars there
+    let inset = crate::toolbars::map_insets(app);
+    let mut top = rect.top() + inset.y + 10.0;
     let mut edit = None;
     for (title, legend, is_node) in items {
         let size = vec2(150.0, row * 6.0 + 12.0);
-        let default = pos2(rect.left() + 10.0, top);
+        let default = pos2(rect.left() + inset.x + 10.0, top);
         top += size.y + 8.0;
         // a place in the map, the legend whole inside it
         let inside = |min: Pos2| {
@@ -1278,6 +1280,50 @@ mod tests {
             pressed,
             modifiers: Default::default(),
         }
+    }
+
+    /// Legends start below a toolbar against the map's top edge, and right
+    /// of one against its left edge.
+    #[test]
+    fn legends_clear_the_toolbars() {
+        let (ctx, mut app) = crate::msx::tests::new_app();
+        app.load_example("Net1", eui_core::examples::NET1);
+        app.prefs.node_legend_visible = true;
+        app.prefs.toolbars.show_add = true;
+        let title = |t: &[(String, Rect)]| {
+            t.iter()
+                .find(|(s, _)| s.starts_with("Elevation ("))
+                .map(|(_, r)| *r)
+                .expect("the node legend")
+        };
+        let bar = |ctx: &egui::Context| {
+            ctx.memory(|m| m.area_rect(egui::Id::new(("toolbar", crate::toolbars::Bar::Add))))
+                .expect("the Add toolbar")
+        };
+        let mut t = Vec::new();
+        for _ in 0..4 {
+            t = frame(&mut app, &ctx, vec![]);
+        }
+        assert!(
+            title(&t).top() > bar(&ctx).bottom(),
+            "{:?} {:?}",
+            title(&t),
+            bar(&ctx)
+        );
+
+        app.prefs.toolbars.add = crate::toolbars::Place::Edge {
+            side: crate::toolbars::Side::Left,
+            along: 8.0,
+        };
+        for _ in 0..4 {
+            t = frame(&mut app, &ctx, vec![]);
+        }
+        assert!(
+            title(&t).left() > bar(&ctx).right(),
+            "{:?} {:?}",
+            title(&t),
+            bar(&ctx)
+        );
     }
 
     /// A map legend is dragged to a new place (not the map under it) and

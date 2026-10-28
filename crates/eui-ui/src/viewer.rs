@@ -293,7 +293,7 @@ fn pencil_button() -> impl egui::Widget {
 }
 
 /// Instructions shown while adding objects, as in EPANET-UI's hint panel.
-fn tool_hint(app: &EpanetApp, ui: &mut Ui) {
+fn tool_hint(app: &mut EpanetApp, ui: &mut Ui) {
     let (title, steps): (&str, &[&str]) = match app.tool {
         Tool::AddNode(_) => (
             "To Add a Node:",
@@ -353,6 +353,10 @@ fn tool_hint(app: &EpanetApp, ui: &mut Ui) {
                     ui.add_space(8.0);
                     ui.add(egui::Label::new(crate::i18n::tr(s)).wrap());
                 });
+            }
+            if app.tool == Tool::Region {
+                ui.add_space(12.0);
+                crate::multi::tag_ui(app, ui);
             }
         });
 }
