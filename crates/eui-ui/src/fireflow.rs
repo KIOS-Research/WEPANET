@@ -16,6 +16,7 @@ use eui_core::{Network, NodeKind, NodeVar, SimResults};
 use eui_engine::RunHandle;
 
 use crate::app::{EpanetApp, ReportKind, Tool, ViewMode};
+use crate::group::{Drawn, Region, inside};
 use crate::i18n::{tr, trf};
 use crate::reports::{Rows, Selector};
 
@@ -83,13 +84,13 @@ pub struct FireFlowState {
 }
 
 /// EPANET-UI's Group Selector: junctions toggled on the map, or picked by
-/// Tag or by a polygon drawn on the map.
+/// Tag or by a region drawn on the map.
 #[derive(Default)]
 pub struct GroupSel {
     nodes: BTreeSet<usize>,
     tag: String,
-    /// The corners (world coordinates) of the polygon being drawn.
-    polygon: Option<Vec<[f64; 2]>>,
+    /// The region being drawn.
+    region: Option<Region>,
 }
 
 impl Default for FireFlowState {
@@ -296,22 +297,21 @@ fn group_selector(app: &mut EpanetApp, ui: &mut Ui) {
     }
     ui.add(egui::TextEdit::singleline(&mut g.tag).desired_width(w));
     ui.add_space(10.0);
-    let drawing = g.polygon.is_some();
+    let drawing = g.region.is_some();
     let label = if drawing {
-        "Cancel the polygon"
+        "Cancel the region"
     } else {
-        "Select a polygon region"
+        "Select a region"
     };
     if wide(ui, label) {
-        g.polygon = if drawing { None } else { Some(Vec::new()) };
+        g.region = if drawing {
+            None
+        } else {
+            Some(Region::default())
+        };
     }
-    if g.polygon.is_some() {
-        ui.label(
-            RichText::new(
-                tr("Click the corners of the region on the map; right-click, or click the first corner, to close it."),
-            )
-            .small(),
-        );
+    if g.region.is_some() {
+        ui.label(RichText::new(tr(crate::group::REGION_HINT)).small());
     }
     ui.add_space(10.0);
     if wide(ui, "Select all nodes") {
@@ -344,21 +344,20 @@ pub fn grouping(app: &EpanetApp) -> bool {
     app.rpt.selector == Selector::FireFlow && app.rpt.ff.group.is_some()
 }
 
-/// Esc: drops the polygon being drawn, or else cancels the Group Selector.
+/// Esc: drops the region being drawn, or else cancels the Group Selector.
 /// False when the Group Selector isn't open.
 pub fn cancel_group(app: &mut EpanetApp) -> bool {
     let Some(g) = app.rpt.ff.group.as_mut() else {
         return false;
     };
-    if g.polygon.take().is_none() {
+    if g.region.take().is_none() {
         app.rpt.ff.group = None;
     }
     true
 }
 
 /// Clicks on the map while the Group Selector is open: a click toggles a
-/// junction, or adds a corner to the polygon being drawn, which a right-click
-/// or a click on its first corner closes. True when the click was taken.
+/// junction, or draws the region (see [`Region::input`]). True when taken.
 pub fn map_input(app: &mut EpanetApp, rect: Rect, response: &egui::Response) -> bool {
     if !grouping(app) {
         return false;
@@ -371,35 +370,27 @@ pub fn map_input(app: &mut EpanetApp, rect: Rect, response: &egui::Response) -> 
     let Some(g) = app.rpt.ff.group.as_mut() else {
         return false;
     };
-    if let Some(poly) = &mut g.polygon {
-        if response.hovered() {
-            response.ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
-        }
-        let Some(p) = response.interact_pointer_pos() else {
-            return false;
+    if let Some(region) = &mut g.region {
+        let poly = match region.input(view, rect, response) {
+            Drawn::Ignored => return false,
+            Drawn::Taken => return true,
+            Drawn::Closed(poly) => Some(poly),
+            Drawn::Whole => None,
         };
-        let near_first = poly
-            .first()
-            .is_some_and(|&f| view.to_screen(rect, f).distance(p) < 8.0);
-        if poly.len() >= 3 && (response.secondary_clicked() || (response.clicked() && near_first)) {
-            let before = g.nodes.len();
-            g.nodes
-                .extend(net.nodes.iter().enumerate().filter_map(|(i, n)| {
-                    (n.kind == NodeKind::Junction && n.pos.is_some_and(|w| inside(poly, w)))
-                        .then_some(i)
-                }));
-            app.status = trf(
-                "{} nodes added from the region",
-                &[&(g.nodes.len() - before)],
-            );
-            g.polygon = None;
-            return true;
-        }
-        if response.clicked() {
-            poly.push(view.to_world(rect, p));
-            return true;
-        }
-        return response.secondary_clicked();
+        let before = g.nodes.len();
+        g.nodes
+            .extend(net.nodes.iter().enumerate().filter_map(|(i, n)| {
+                let within = poly
+                    .as_deref()
+                    .is_none_or(|poly| n.pos.is_some_and(|w| inside(poly, w)));
+                (n.kind == NodeKind::Junction && within).then_some(i)
+            }));
+        app.status = trf(
+            "{} nodes added from the region",
+            &[&(g.nodes.len() - before)],
+        );
+        g.region = None;
+        return true;
     }
     if !response.clicked() {
         return false;
@@ -416,7 +407,7 @@ pub fn map_input(app: &mut EpanetApp, rect: Rect, response: &egui::Response) -> 
     true
 }
 
-/// Marks the Group Selector's nodes on the map, and the polygon being drawn.
+/// Marks the Group Selector's nodes on the map, and the region being drawn.
 pub fn draw_group(app: &EpanetApp, painter: &egui::Painter, rect: Rect, hover: Option<Pos2>) {
     if !grouping(app) {
         return;
@@ -436,45 +427,9 @@ pub fn draw_group(app: &EpanetApp, painter: &egui::Painter, rect: Rect, hover: O
             }
         }
     }
-    if let Some(poly) = &g.polygon {
-        let stroke = Stroke::new(1.5, crate::style::ACCENT);
-        let mut pts: Vec<Pos2> = poly.iter().map(|&w| app.view.to_screen(rect, w)).collect();
-        for &s in &pts {
-            painter.rect_filled(
-                Rect::from_center_size(s, egui::vec2(6.0, 6.0)),
-                0.0,
-                stroke.color,
-            );
-        }
-        if let Some(h) = hover
-            && !pts.is_empty()
-        {
-            pts.push(h);
-        }
-        if pts.len() >= 3 {
-            painter.add(egui::Shape::dashed_line(
-                &[pts[pts.len() - 1], pts[0]],
-                stroke,
-                6.0,
-                4.0,
-            ));
-        }
-        painter.add(egui::Shape::line(pts, stroke));
+    if let Some(r) = &g.region {
+        r.draw(&app.view, painter, rect, hover);
     }
-}
-
-/// Is a point inside a polygon (even-odd rule)?
-fn inside(poly: &[[f64; 2]], [x, y]: [f64; 2]) -> bool {
-    let mut odd = false;
-    let mut j = poly.len() - 1;
-    for i in 0..poly.len() {
-        let ([xi, yi], [xj, yj]) = (poly[i], poly[j]);
-        if (yi > y) != (yj > y) && x < xi + (y - yi) / (yj - yi) * (xj - xi) {
-            odd = !odd;
-        }
-        j = i;
-    }
-    odd
 }
 
 fn start(app: &mut EpanetApp, ctx: &egui::Context) {

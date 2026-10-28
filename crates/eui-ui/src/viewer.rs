@@ -29,6 +29,7 @@ pub(crate) fn pane(app: &mut EpanetApp, ui: &mut Ui) {
     let pal = app.palette();
     tool_hint(app, ui);
     crate::reports::selector(app, ui);
+    crate::group::panel(app, ui);
     // The Overview Map takes the room the panel's contents leave (their
     // height is measured each frame), so that no scroll bar is needed.
     let content_id = egui::Id::new("map_viewer_content_height");
@@ -306,7 +307,7 @@ fn tool_hint(app: &EpanetApp, ui: &mut Ui) {
             "To Add a Link:",
             &[
                 "Left-click on the start node of the link, move the pointer to the end node and left-click again.",
-                "Left-click at intermediate points to add new junctions along the way. Right-click to cancel drawing the link.",
+                "Left-click at intermediate points to shape the link, or on a pipe to split it there. Press Enter or right-click to end the link at the last point, Escape to cancel it.",
                 "Repeat to add more links.",
                 "Press Escape or right-click to quit adding links.",
             ],
@@ -318,6 +319,14 @@ fn tool_hint(app: &EpanetApp, ui: &mut Ui) {
                 "Type in the label's text and press Enter.",
                 "Repeat to add more labels.",
                 "Press Escape or right-click to quit adding labels.",
+            ],
+        ),
+        Tool::Region => (
+            "To Select a Region:",
+            &[
+                "Left-click at the corners of a polygon, then right-click or press Enter to close it; or drag a rectangle.",
+                "Hold Shift to add to the objects already selected; press Enter alone to select the whole network.",
+                "Press Delete to delete the objects selected, Escape to quit.",
             ],
         ),
         _ => return,
@@ -337,12 +346,12 @@ fn tool_hint(app: &EpanetApp, ui: &mut Ui) {
         })
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(RichText::new(title).font(crate::fonts::bold(13.0)));
+            ui.label(RichText::new(crate::i18n::tr(title)).font(crate::fonts::bold(13.0)));
             for s in steps {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     ui.add_space(8.0);
-                    ui.add(egui::Label::new(*s).wrap());
+                    ui.add(egui::Label::new(crate::i18n::tr(s)).wrap());
                 });
             }
         });

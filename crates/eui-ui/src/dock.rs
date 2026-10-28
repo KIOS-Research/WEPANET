@@ -138,6 +138,12 @@ pub struct Layout {
     pub left: Vec<Group>,
     pub right: Vec<Group>,
     pub floating: Vec<Pane>,
+    /// The heights the user gave places above others, by their first panel.
+    pub heights: std::collections::HashMap<Pane, f32>,
+    /// The panels on the left are folded away to the window's edge.
+    pub fold_left: bool,
+    /// The panels on the right are folded away to the window's edge.
+    pub fold_right: bool,
 }
 
 impl Default for Layout {
@@ -155,6 +161,9 @@ impl Default for Layout {
                 Group::of(&[Pane::PropertyEditor]),
             ],
             floating: Vec::new(),
+            heights: Default::default(),
+            fold_left: false,
+            fold_right: false,
         }
     }
 }
@@ -279,6 +288,20 @@ impl Layout {
     }
 }
 
+/// Brings the Map Viewer into view: shown, its tab chosen, its side
+/// unfolded (it holds the selectors).
+pub(crate) fn reveal_viewer(app: &mut EpanetApp) {
+    app.prefs.show_viewer = true;
+    let docks = &mut app.prefs.docks;
+    docks.activate(Pane::MapViewer);
+    let on = |side: &[Group]| side.iter().any(|g| g.panes.contains(&Pane::MapViewer));
+    if on(&docks.left) {
+        docks.fold_left = false;
+    } else if on(&docks.right) {
+        docks.fold_right = false;
+    }
+}
+
 /// The part of the window's width, at either edge, that docks a panel let go there.
 const EDGE: f32 = 0.2;
 
@@ -307,6 +330,30 @@ pub(crate) fn show(app: &mut EpanetApp, ui: &mut Ui) {
         if shown.is_empty() {
             continue;
         }
+        let folded = if left {
+            layout.fold_left
+        } else {
+            layout.fold_right
+        };
+        if folded {
+            // a strip at the window's edge, whose tab unfolds the panels
+            let strip = if left {
+                egui::Panel::left("dock_left_folded")
+            } else {
+                egui::Panel::right("dock_right_folded")
+            };
+            let rect = strip
+                .exact_size(FOLDED)
+                .resizable(false)
+                .frame(egui::Frame::NONE.fill(ui.visuals().panel_fill))
+                .show(ui, |ui| ui.max_rect())
+                .inner;
+            let tab = Rect::from_center_size(rect.center(), vec2(FOLDED, TAB_H));
+            if fold_tab(app, &ctx, tab, left, !left, "Show the panels") {
+                set_fold(app, left, false);
+            }
+            continue;
+        }
         let panel = if left {
             egui::Panel::left("dock_left")
         } else {
@@ -316,7 +363,7 @@ pub(crate) fn show(app: &mut EpanetApp, ui: &mut Ui) {
             .iter()
             .flat_map(|(panes, _)| panes.iter().map(|p| p.width()))
             .fold(0.0, f32::max);
-        panel
+        let side = panel
             .default_size(width)
             .size_range(220.0..=520.0)
             .resizable(true)
@@ -339,6 +386,16 @@ pub(crate) fn show(app: &mut EpanetApp, ui: &mut Ui) {
                     }
                 }
             });
+        // the tab that folds the panels away, on their edge beside the map
+        let r = side.response.rect;
+        let x = if left { r.right() } else { r.left() - FOLDED };
+        let tab = Rect::from_min_size(
+            egui::pos2(x, r.center().y - TAB_H / 2.0),
+            vec2(FOLDED, TAB_H),
+        );
+        if fold_tab(app, &ctx, tab, left, left, "Hide the panels") {
+            set_fold(app, left, true);
+        }
     }
     let floating: Vec<Pane> = layout
         .floating
@@ -415,6 +472,58 @@ fn visible_groups(app: &EpanetApp, groups: &[Group]) -> Vec<(Vec<Pane>, Pane)> {
         .collect()
 }
 
+/// Width of the strip left by folded panels, and of their tab.
+const FOLDED: f32 = 14.0;
+/// Height of the tab that folds or unfolds the panels of a side.
+const TAB_H: f32 = 48.0;
+
+fn set_fold(app: &mut EpanetApp, left: bool, folded: bool) {
+    if left {
+        app.prefs.docks.fold_left = folded;
+    } else {
+        app.prefs.docks.fold_right = folded;
+    }
+}
+
+/// The tab that folds the panels of a side away, or brings them back: a
+/// small rounded tab with an arrow pointing left or right. True if clicked.
+fn fold_tab(
+    app: &EpanetApp,
+    ctx: &egui::Context,
+    rect: Rect,
+    left: bool,
+    points_left: bool,
+    tip: &str,
+) -> bool {
+    let fill = app.palette().menu;
+    egui::Area::new(Id::new("dock_fold").with(left))
+        .fixed_pos(rect.min)
+        .order(egui::Order::Middle)
+        .show(ctx, |ui| {
+            let (rect, resp) = ui.allocate_exact_size(rect.size(), Sense::click());
+            let fill = if resp.hovered() {
+                fill.gamma_multiply(0.8)
+            } else {
+                fill
+            };
+            ui.painter().rect_filled(rect, 4.0, fill);
+            let c = rect.center();
+            let d = if points_left { -1.0 } else { 1.0 };
+            ui.painter().line(
+                vec![
+                    c + vec2(-2.0 * d, -4.5),
+                    c + vec2(2.0 * d, 0.0),
+                    c + vec2(-2.0 * d, 4.5),
+                ],
+                egui::Stroke::new(1.6, Color32::WHITE),
+            );
+            resp.on_hover_cursor(CursorIcon::PointingHand)
+                .on_hover_text(crate::i18n::tr(tip))
+                .clicked()
+        })
+        .inner
+}
+
 /// A group's place drawn: its panels, their title bars or tabs, and where
 /// those are.
 type Drawn = (Vec<Pane>, Vec<(Pane, Response)>, Rect);
@@ -435,12 +544,32 @@ pub(crate) fn stack(app: &mut EpanetApp, ui: &mut Ui, groups: &[(Vec<Pane>, Pane
             (tabs, rect)
         };
         let (tabs, rect) = if k + 1 < groups.len() {
-            // Not below the default: the first frame (in the browser) can be
-            // laid out before the window has its real height.
-            let height = panes.iter().map(|q| q.height()).fold(0.0, f32::max);
-            let max = (ui.available_height() - 120.0).max(height);
-            egui::Panel::top(Id::new("dock_stack").with(panes[0]))
-                .default_size(height)
+            // The place keeps the height the user gave it (at first its
+            // panels' own), as much of it as fits: a smaller window shrinks it
+            // only until the window is large again.
+            let id = Id::new("dock_stack").with(panes[0]);
+            let splitter = id.with("__resize");
+            let ctx = ui.ctx().clone();
+            let wanted = app
+                .prefs
+                .docks
+                .heights
+                .get(&panes[0])
+                .copied()
+                .unwrap_or_else(|| panes.iter().map(|q| q.height()).fold(0.0, f32::max));
+            let max = (ui.available_height() - 120.0).max(60.0);
+            let fits = wanted.min(max);
+            let had = egui::containers::panel::PanelState::load(&ctx, id).map(|s| s.size().y);
+            // grown back after a smaller window (not shrunk: a panel may need
+            // more than that for what it holds)
+            if !ctx.is_being_dragged(splitter) && had.is_none_or(|h| h < fits - 0.5) {
+                let r = ui.available_rect_before_wrap();
+                let outer_rect = Rect::from_min_size(r.min, vec2(r.width(), fits));
+                ctx.data_mut(|d| {
+                    d.insert_persisted(id, egui::containers::panel::PanelState { outer_rect })
+                });
+            }
+            let shown = egui::Panel::top(id)
                 .size_range(60.0..=max)
                 .resizable(true)
                 .frame(egui::Frame::NONE.fill(fill))
@@ -449,8 +578,14 @@ pub(crate) fn stack(app: &mut EpanetApp, ui: &mut Ui, groups: &[(Vec<Pane>, Pane
                     // height: the panel takes the height of what it holds
                     ui.set_min_height(ui.available_height());
                     body(app, ui)
-                })
-                .inner
+                });
+            if ctx.is_being_dragged(splitter) || ctx.drag_stopped_id() == Some(splitter) {
+                app.prefs
+                    .docks
+                    .heights
+                    .insert(panes[0], shown.response.rect.height());
+            }
+            shown.inner
         } else {
             let rect = ui.available_rect_before_wrap();
             ui.painter().rect_filled(rect, 0.0, fill);
@@ -1167,6 +1302,7 @@ mod tests {
             left: vec![Group::of(&[Pane::MapViewer, Pane::MapViewer])],
             right: vec![],
             floating: vec![Pane::PropertyEditor],
+            ..Default::default()
         };
         l.repair();
         let (left, right) = sides(&l);
@@ -1221,5 +1357,87 @@ mod tests {
         // not onto its own title
         let own = target(&ctx, egui::pos2(900.0, 60.0), Pane::ProjectExplorer, &bars);
         assert_eq!(own, Place::Right(true));
+    }
+
+    /// A smaller window shrinks the Project Explorer only while it lasts:
+    /// back at its size, the panel has its height again.
+    #[test]
+    fn panels_grow_back_with_the_window() {
+        use eframe::App as _;
+        let (ctx, mut app) = crate::msx::tests::new_app();
+        app.load_example("Net1", eui_core::examples::NET1);
+        let mut f = eframe::Frame::_new_kittest();
+        // where the Property Editor's title bar is, below the explorer
+        let mut editor_at = |app: &mut EpanetApp, h: f32| {
+            let mut y = 0.0;
+            for _ in 0..3 {
+                let input = egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1400.0, h))),
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ui| {
+                    app.logic(ui.ctx(), &mut f);
+                    app.ui(ui, &mut f);
+                });
+                out.textures_delta.clear();
+                y = out
+                    .shapes
+                    .iter()
+                    .find_map(|c| match &c.shape {
+                        egui::Shape::Text(t) if t.galley.text() == "Property Editor" => {
+                            Some(t.pos.y)
+                        }
+                        _ => None,
+                    })
+                    .expect("the Property Editor");
+            }
+            y
+        };
+        let tall = editor_at(&mut app, 900.0);
+        let small = editor_at(&mut app, 450.0);
+        assert!(small < tall - 50.0, "{tall} {small}");
+        assert_eq!(editor_at(&mut app, 900.0), tall);
+    }
+
+    /// The tab beside the panels on a side folds them away to the window's
+    /// edge, which gives the map their room; the tab on the strip left there
+    /// brings them back as they were.
+    #[test]
+    fn side_panels_fold_away() {
+        let (ctx, mut app) = crate::msx::tests::new_app();
+        app.load_example("Net1", eui_core::examples::NET1);
+        for _ in 0..3 {
+            frame(&mut app, &ctx, vec![]);
+        }
+        let map = app.export.map_rect.unwrap();
+        let tab = || {
+            ctx.memory(|m| m.area_rect(Id::new("dock_fold").with(true)))
+                .expect("the tab")
+                .center()
+        };
+        let click = |app: &mut EpanetApp, p: Pos2| {
+            let button = |pressed| egui::Event::PointerButton {
+                pos: p,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            };
+            frame(app, &ctx, vec![egui::Event::PointerMoved(p)]);
+            frame(app, &ctx, vec![button(true)]);
+            frame(app, &ctx, vec![button(false)]);
+            frame(app, &ctx, vec![]);
+        };
+        assert!(tab().x > map.left() - 10.0);
+        click(&mut app, tab());
+        assert!(app.prefs.docks.fold_left && !app.prefs.docks.fold_right);
+        frame(&mut app, &ctx, vec![]);
+        let wide = app.export.map_rect.unwrap();
+        assert!(wide.left() < map.left() - 150.0, "{map:?} -> {wide:?}");
+        assert_eq!(wide.right(), map.right());
+        assert!(tab().x < FOLDED, "on the strip at the window's edge");
+        click(&mut app, tab());
+        assert!(!app.prefs.docks.fold_left);
+        frame(&mut app, &ctx, vec![]);
+        assert_eq!(app.export.map_rect.unwrap(), map);
     }
 }

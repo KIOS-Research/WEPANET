@@ -2,7 +2,7 @@
 //! File / Edit / Map / Project / Help, a toolbar for the selected menu, the
 //! quick-access speed bar on the right, and the drop-down File menu.
 
-use egui::{Align2, Color32, CornerRadius, FontId, Rect, Response, Sense, Stroke, Ui, pos2, vec2};
+use egui::{Align2, Color32, FontId, Rect, Response, Sense, Stroke, Ui, pos2, vec2};
 use eui_core::{LinkKind, NodeKind};
 
 use crate::app::{Dialog, EpanetApp, MenuTab, ReportKind, Tool, ViewMode};
@@ -12,7 +12,7 @@ use crate::style;
 
 pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
     let pal = app.palette();
-    egui::Panel::top("menubar")
+    app.bars.menubar = egui::Panel::top("menubar")
         .exact_size(34.0)
         .frame(egui::Frame::NONE.fill(pal.menu))
         .show(ui, |ui| {
@@ -29,26 +29,67 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
                 for (tab, name) in tabs {
                     let selected = match tab {
                         None => app.backstage,
-                        Some(t) => !app.backstage && app.prefs.menu_tab == t,
+                        Some(t) => {
+                            !app.backstage
+                                && !app.prefs.toolbars.ribbon_collapsed
+                                && app.prefs.menu_tab == t
+                        }
                     };
-                    if menu_tab(ui, name, selected, pal.form).clicked() {
+                    let resp = menu_tab(ui, name, selected, pal.form);
+                    if tab.is_some() && resp.double_clicked() {
+                        // a double-click on a tab hides the ribbon, unless
+                        // its first click showed it
+                        if !app.bars.ribbon_opened {
+                            app.prefs.toolbars.ribbon_collapsed = true;
+                        }
+                        app.bars.ribbon_opened = false;
+                    } else if resp.clicked() {
                         match tab {
                             None => app.backstage = !app.backstage,
                             Some(t) => {
                                 app.prefs.menu_tab = t;
                                 app.backstage = false;
+                                // a hidden ribbon comes back with its tab
+                                let bars = &mut app.prefs.toolbars;
+                                app.bars.ribbon_opened = bars.ribbon_collapsed;
+                                bars.ribbon_collapsed = false;
                             }
                         }
                     }
                 }
+                // the ribbon hidden: an arrow after the tabs shows it again
+                if app.prefs.toolbars.ribbon_collapsed {
+                    ui.add_space(4.0);
+                    crate::toolbars::ribbon_button(app, ui, vec2(28.0, 28.0), Color32::WHITE);
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_space(6.0);
-                    speed_bar(app, ui);
+                    crate::toolbars::menubar(app, ui);
                 });
             });
-        });
-    egui::Panel::top("toolbar")
-        .exact_size(60.0)
+        })
+        .response
+        .rect;
+}
+
+/// The ribbon: the toolbar of the selected menu, on the window edge the
+/// user moved it to (under the menu bar at first).
+pub fn ribbon(app: &mut EpanetApp, ui: &mut Ui) {
+    use crate::toolbars::{RIBBON_HEIGHT, RIBBON_WIDTH, Side};
+    crate::toolbars::follow_ribbon(app, ui.ctx());
+    if app.prefs.toolbars.ribbon_collapsed {
+        return;
+    }
+    let side = app.prefs.toolbars.ribbon;
+    let vertical = matches!(side, Side::Left | Side::Right);
+    let panel = match side {
+        Side::Top => egui::Panel::top("ribbon_top").exact_size(RIBBON_HEIGHT),
+        Side::Bottom => egui::Panel::bottom("ribbon_bottom").exact_size(RIBBON_HEIGHT),
+        Side::Left => egui::Panel::left("ribbon_left").exact_size(RIBBON_WIDTH),
+        Side::Right => egui::Panel::right("ribbon_right").exact_size(RIBBON_WIDTH),
+    };
+    panel
+        .resizable(false)
         .frame(
             egui::Frame::NONE
                 .fill(toolbar_fill(ui))
@@ -58,8 +99,9 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
             if app.backstage {
                 return;
             }
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
+            let tools = |ui: &mut Ui| {
+                ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+                crate::toolbars::ribbon_grip(app, ui, vertical);
                 match app.prefs.menu_tab {
                     MenuTab::Edit => edit_toolbar(app, ui),
                     MenuTab::Map => map_toolbar(app, ui),
@@ -67,7 +109,23 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
                     MenuTab::Plugins => plugins_toolbar(app, ui),
                     MenuTab::Help => help_toolbar(app, ui),
                 }
-            });
+                // last, at the far end
+                if vertical {
+                    ui.add_space(6.0);
+                    let fg = ui.visuals().text_color();
+                    crate::toolbars::ribbon_button(app, ui, vec2(20.0, 20.0), fg);
+                } else {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Max), |ui| {
+                        let fg = ui.visuals().text_color();
+                        crate::toolbars::ribbon_button(app, ui, vec2(20.0, 20.0), fg)
+                    });
+                }
+            };
+            if vertical {
+                egui::ScrollArea::vertical().show(ui, |ui| ui.vertical_centered_justified(tools));
+            } else {
+                ui.horizontal(tools);
+            }
         });
 }
 
@@ -113,85 +171,6 @@ fn menu_tab(ui: &mut Ui, name: &str, selected: bool, form: Color32) -> Response 
     resp
 }
 
-fn speed_bar(app: &mut EpanetApp, ui: &mut Ui) {
-    let ctx = ui.ctx().clone();
-    egui::Frame::NONE
-        .fill(Color32::from_rgb(0xdf, 0xe8, 0xf3))
-        .stroke(Stroke::new(1.0, Color32::from_rgb(0xa9, 0xb8, 0xc8)))
-        .corner_radius(CornerRadius::same(2))
-        .inner_margin(egui::Margin::symmetric(3, 1))
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.x = 3.0;
-            let dark = Color32::from_rgb(0x18, 0x18, 0x18);
-            let small = |ui: &mut Ui, icon: Icon, tip: &str| -> bool {
-                let (rect, resp) = ui.allocate_exact_size(vec2(23.0, 23.0), Sense::click());
-                if resp.hovered() {
-                    ui.painter()
-                        .rect_filled(rect, CornerRadius::same(3), Color32::WHITE);
-                }
-                icons::paint(ui.painter(), icon, rect.center(), 16.0, dark);
-                resp.on_hover_text(tr(tip)).clicked()
-            };
-            // Right-to-left layout: listed in reverse visual order.
-            // Last, apart and in red: report an issue on GitHub.
-            let (rect, resp) = ui.allocate_exact_size(vec2(23.0, 23.0), Sense::click());
-            if resp.hovered() {
-                ui.painter()
-                    .rect_filled(rect, CornerRadius::same(3), Color32::WHITE);
-            }
-            issue_icon(
-                ui.painter(),
-                rect.center() + vec2(0.0, 1.0),
-                0.72,
-                ISSUE_RED,
-                Some(ISSUE_RED),
-            );
-            if resp
-                .on_hover_text(tr(
-                    "Report a problem or suggest a feature on WEPANET's GitHub",
-                ))
-                .clicked()
-            {
-                crate::help::report_issue(&ctx);
-            }
-            let (sep, _) = ui.allocate_exact_size(vec2(5.0, 23.0), Sense::hover());
-            ui.painter().vline(
-                sep.center().x,
-                sep.y_range().shrink(3.0),
-                Stroke::new(1.0, Color32::from_rgb(0xa9, 0xb8, 0xc8)),
-            );
-            if small(ui, Icon::Help, "Help") {
-                app.dialog = Dialog::About;
-            }
-            if small(ui, Icon::Report, "Report") {
-                let kind = app.report_kind;
-                crate::reports::open(app, kind);
-            }
-            if small(ui, Icon::Analyze, "Analyze (F5)") {
-                app.run_simulation(&ctx);
-            }
-            if small(ui, Icon::FullExtent, "Full Extent") {
-                app.view_mode = ViewMode::Map;
-                app.view.fit_pending = true;
-            }
-            if small(ui, Icon::ZoomOut, "Zoom Out") {
-                app.view.zoom_steps(-1.0);
-            }
-            if small(ui, Icon::ZoomIn, "Zoom In") {
-                app.view.zoom_steps(1.0);
-            }
-            if small(ui, Icon::Save, "Save") {
-                app.save(false);
-            }
-            if small(ui, Icon::Open, "Open") {
-                app.open(&ctx);
-            }
-            if small(ui, Icon::New, "New") {
-                app.new_project();
-            }
-        });
-}
-
 /// A toolbar button: icon above caption, as in EPANET-UI. A caption ending
 /// in " ▾" gets a drop-down arrow beside the icon.
 fn tool_button(
@@ -218,11 +197,17 @@ fn paint_issue(p: &egui::Painter, c: egui::Pos2, fg: Color32) {
 }
 
 /// The red Report Issue button of the speed bar.
-const ISSUE_RED: Color32 = Color32::from_rgb(0xd3, 0x2f, 0x2f);
+pub(crate) const ISSUE_RED: Color32 = Color32::from_rgb(0xd3, 0x2f, 0x2f);
 
 /// A speech bubble with an exclamation mark, `s` times the toolbar size;
 /// with `fill`, a filled bubble and a white mark.
-fn issue_icon(p: &egui::Painter, c: egui::Pos2, s: f32, fg: Color32, fill: Option<Color32>) {
+pub(crate) fn issue_icon(
+    p: &egui::Painter,
+    c: egui::Pos2,
+    s: f32,
+    fg: Color32,
+    fill: Option<Color32>,
+) {
     let stroke = Stroke::new(1.6 * s.max(0.8), fg);
     let r = Rect::from_center_size(c - vec2(0.0, 2.0 * s), vec2(22.0, 16.0) * s);
     // the tail, under the bubble's left part
@@ -279,10 +264,13 @@ fn tool_button_with(
             .size()
             .x
     });
-    let size = vec2(
-        (text_w + 30.0).max(96.0) + if dropdown { 18.0 } else { 0.0 },
-        56.0,
-    );
+    // in a ribbon at the side of the window, as wide as the ribbon
+    let width = if ui.layout().main_dir().is_vertical() {
+        ui.available_width()
+    } else {
+        (text_w + 30.0).max(96.0) + if dropdown { 18.0 } else { 0.0 }
+    };
+    let size = vec2(width, 56.0);
     let (rect, resp) = ui.allocate_exact_size(
         size,
         if enabled {
@@ -332,19 +320,25 @@ fn tool_button_with(
 }
 
 fn separator(ui: &mut Ui) {
-    let (r, _) = ui.allocate_exact_size(vec2(2.0, 56.0), Sense::hover());
-    ui.painter().vline(
-        r.center().x,
-        r.top()..=r.bottom(),
-        ui.visuals().widgets.noninteractive.bg_stroke,
-    );
+    let stroke = ui.visuals().widgets.noninteractive.bg_stroke;
+    if ui.layout().main_dir().is_vertical() {
+        let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 8.0), Sense::hover());
+        ui.painter()
+            .hline(r.x_range().shrink(6.0), r.center().y, stroke);
+    } else {
+        let (r, _) = ui.allocate_exact_size(vec2(2.0, 56.0), Sense::hover());
+        ui.painter()
+            .vline(r.center().x, r.top()..=r.bottom(), stroke);
+    }
 }
 
 /// Opens a drop-down menu under a toolbar button.
 fn dropdown(resp: &Response, add: impl FnOnce(&mut Ui)) {
     egui::Popup::menu(resp).gap(0.0).show(|ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
-        ui.set_min_width(200.0);
+        // the items stretch to the width there is: keep it a menu's width
+        ui.set_min_width(170.0);
+        ui.set_max_width(200.0);
         add(ui);
     });
 }
@@ -405,47 +399,38 @@ fn edit_toolbar(app: &mut EpanetApp, ui: &mut Ui) {
         app.set_tool(if reshape { Tool::Select } else { Tool::Reshape });
     }
     separator(ui);
-    if tool_button(
-        ui,
-        Icon::Undo,
-        "Undo",
-        app.can_undo(),
-        false,
-        "Undo (Ctrl+Z)",
-    )
-    .clicked()
-    {
-        app.undo();
-    }
-    if tool_button(
-        ui,
-        Icon::Redo,
-        "Redo",
-        app.can_redo(),
-        false,
-        "Redo (Ctrl+Y)",
-    )
-    .clicked()
-    {
-        app.redo();
-    }
-    separator(ui);
-    tool_button(
+    use crate::group::Purpose;
+    let grouping = app.group.is_some();
+    let group_edit = tool_button(
         ui,
         Icon::GroupEdit,
-        "Group Edit",
-        false,
-        false,
+        "Group Edit ▾",
+        true,
+        grouping,
         "Edit a property for a group of objects",
     );
-    tool_button(
+    dropdown(&group_edit, |ui| {
+        if icons::menu_item(ui, Icon::Junction, "Nodes", true).clicked() {
+            crate::group::open(app, Purpose::EditNodes);
+            ui.close();
+        }
+        if icons::menu_item(ui, Icon::Pipe, "Links", true).clicked() {
+            crate::group::open(app, Purpose::EditLinks);
+            ui.close();
+        }
+    });
+    if tool_button(
         ui,
         Icon::GroupDelete,
         "Group Delete",
-        false,
+        true,
         false,
         "Delete a group of objects",
-    );
+    )
+    .clicked()
+    {
+        crate::group::open(app, Purpose::Delete);
+    }
     let conv = tool_button(
         ui,
         Icon::Convert,
@@ -659,6 +644,12 @@ fn project_toolbar(app: &mut EpanetApp, ui: &mut Ui) {
             app.set_tool(Tool::AddLabel);
             ui.close();
         }
+        ui.separator();
+        let shown = app.prefs.toolbars.show_add;
+        if icons::check_item(ui, "Show as Toolbar", shown).clicked() {
+            app.prefs.toolbars.show_add = !shown;
+            ui.close();
+        }
     });
     if tool_button(
         ui,
@@ -674,6 +665,31 @@ fn project_toolbar(app: &mut EpanetApp, ui: &mut Ui) {
     }
     if tool_button(ui, Icon::Locate, "Locate", true, false, "Find an object").clicked() {
         crate::locater::open(app);
+    }
+    separator(ui);
+    if tool_button(
+        ui,
+        Icon::Undo,
+        "Undo",
+        app.can_undo(),
+        false,
+        "Undo (Ctrl+Z)",
+    )
+    .clicked()
+    {
+        app.undo();
+    }
+    if tool_button(
+        ui,
+        Icon::Redo,
+        "Redo",
+        app.can_redo(),
+        false,
+        "Redo (Ctrl+Y)",
+    )
+    .clicked()
+    {
+        app.redo();
     }
     separator(ui);
     if tool_button(

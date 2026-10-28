@@ -29,6 +29,8 @@ pub enum Tool {
     AddLabel,
     /// Click on the map to see the features of the map layers there.
     Identify,
+    /// Draw a region on the map to select the objects in it.
+    Region,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -182,6 +184,8 @@ pub struct Prefs {
     pub show_explorer: bool,
     /// Where the side panels are (the user moves them).
     pub docks: crate::dock::Layout,
+    /// Where the small toolbars are (the user moves them).
+    pub(crate) toolbars: crate::toolbars::Layout,
     /// Layers from web map services over the map (see [`crate::layers`]):
     /// the project's, saved with it (.wepanet), not with the preferences.
     #[serde(skip)]
@@ -304,6 +308,7 @@ impl Default for Prefs {
             show_viewer: true,
             show_explorer: true,
             docks: Default::default(),
+            toolbars: Default::default(),
             map_layers: Vec::new(),
             hide_layers: false,
             hide_identify: false,
@@ -458,6 +463,8 @@ pub struct EpanetApp {
     pub(crate) editor_shown: Option<Element>,
     pub(crate) tool: Tool,
     pub(crate) link_start: Option<usize>,
+    /// The vertices clicked so far for the link being drawn (world units).
+    pub(crate) link_vertices: Vec<[f64; 2]>,
     /// A map label being typed: its position and text so far.
     pub(crate) label_edit: Option<([f64; 2], String)>,
     pub(crate) drag_node: Option<usize>,
@@ -497,6 +504,11 @@ pub struct EpanetApp {
     pub(crate) scripts: crate::scripting::ScriptState,
     pub(crate) python: crate::python::PythonState,
     pub(crate) export: crate::export::ExportState,
+    pub(crate) bars: crate::toolbars::State,
+    /// Group Edit or Group Delete, while open.
+    pub(crate) group: Option<crate::group::Group>,
+    /// Objects selected together (Select a Region, Ctrl/Shift-clicks).
+    pub(crate) multi: crate::multi::Multi,
     pub(crate) shp_import: Option<crate::import_shp::ShpImport>,
     pub(crate) dxf_import: Option<crate::import_dxf::DxfImport>,
     pub(crate) csv_import: Option<crate::import_csv::CsvImport>,
@@ -577,6 +589,7 @@ impl EpanetApp {
             editor_shown: None,
             tool: Tool::Select,
             link_start: None,
+            link_vertices: Vec::new(),
             label_edit: None,
             drag_node: None,
             drag_vertex: None,
@@ -604,6 +617,9 @@ impl EpanetApp {
             scripts: Default::default(),
             python: Default::default(),
             export: Default::default(),
+            bars: Default::default(),
+            group: None,
+            multi: Default::default(),
             shp_import: None,
             dxf_import: None,
             csv_import: None,
@@ -707,10 +723,12 @@ impl EpanetApp {
         self.run_error = None;
         self.selection = None;
         self.editor_shown = None;
-        self.link_start = None;
+        self.cancel_link();
         self.drag_node = None;
         self.drag_vertex = None;
         self.label_edit = None;
+        self.group = None;
+        self.multi = Default::default();
         self.copied = None;
         self.buffers.clear();
         self.buffer_owner = None;
@@ -1186,7 +1204,7 @@ impl EpanetApp {
             Element::Node(i) => i < self.net.nodes.len(),
             Element::Link(i) => i < self.net.links.len(),
         });
-        self.link_start = None;
+        self.cancel_link();
         self.drag_node = None;
         self.buffer_owner = None;
         self.section_buffer = None;
@@ -1201,15 +1219,18 @@ impl EpanetApp {
         }
     }
 
-    /// Deletes the selection, asking first if the user wants deletions confirmed.
+    /// Deletes the selection, or the objects selected together, asking first
+    /// if the user wants deletions confirmed.
     pub(crate) fn request_delete(&mut self) {
-        if self.selection.is_none() {
+        if self.selection.is_none() && self.multi.is_empty() {
             return;
         }
         if self.prefs.confirm_delete {
             self.dialog = Dialog::ConfirmDelete;
-        } else {
+        } else if self.multi.is_empty() {
             self.delete_selection();
+        } else {
+            crate::multi::delete(self);
         }
     }
 
@@ -1231,10 +1252,51 @@ impl EpanetApp {
         self.buffer_owner = None;
     }
 
+    /// Stops drawing a link: drops its start node and the vertices clicked.
+    pub(crate) fn cancel_link(&mut self) {
+        self.link_start = None;
+        self.link_vertices.clear();
+    }
+
+    /// Adds the link being drawn from its start node to node `to`, through
+    /// the vertices clicked. The caller takes the undo checkpoint.
+    pub(crate) fn end_link(&mut self, to: usize) {
+        let (Tool::AddLink(kind), Some(from)) = (self.tool, self.link_start) else {
+            return;
+        };
+        let i = self
+            .setup
+            .add_link(&mut self.net, kind, from, to, self.prefs.auto_length);
+        self.net.links[i].vertices = std::mem::take(&mut self.link_vertices);
+        if kind == LinkKind::Pipe
+            && self.prefs.auto_length
+            && let Some(len) = self.net.link_map_length(i)
+        {
+            self.net.links[i].fields[0] = format!("{len:.2}");
+        }
+        self.select(Some(Element::Link(i)));
+        self.cancel_link();
+        self.status = format!("Added {} {}", kind.label(), self.net.links[i].id);
+    }
+
+    /// Ends the link being drawn at its last vertex, with a new junction
+    /// there; a link with no vertices yet is dropped.
+    pub(crate) fn finish_link(&mut self) {
+        if self.link_start.is_some()
+            && let Some(p) = self.link_vertices.pop()
+        {
+            self.checkpoint();
+            let to = self.setup.add_node(&mut self.net, NodeKind::Junction, p);
+            self.end_link(to);
+        }
+        self.cancel_link();
+    }
+
     pub(crate) fn set_tool(&mut self, tool: Tool) {
         self.tool = tool;
-        self.link_start = None;
+        self.cancel_link();
         self.label_edit = None;
+        self.multi.reset_region();
         self.view_mode = ViewMode::Map;
         self.status = match tool {
             Tool::Select => String::new(),
@@ -1243,6 +1305,7 @@ impl EpanetApp {
             Tool::Reshape => "Drag a vertex to move it, click the link to add one, right-click a vertex to delete it".into(),
             Tool::AddLabel => "Click on the map to place a label (Esc to stop)".into(),
             Tool::Identify => "Click on the map to see the features of the map layers there (Esc to stop)".into(),
+            Tool::Region => "Click the corners of a polygon, or drag a rectangle, around the objects to select (Esc to stop)".into(),
         };
     }
 
@@ -1812,6 +1875,10 @@ impl EpanetApp {
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F5)) {
             self.run_simulation(ctx);
         }
+        if ctx.input_mut(|i| i.consume_shortcut(&cmd(Key::F1))) {
+            let bars = &mut self.prefs.toolbars;
+            bars.ribbon_collapsed = !bars.ribbon_collapsed;
+        }
         if ctx.egui_wants_keyboard_input() {
             return;
         }
@@ -1836,14 +1903,25 @@ impl EpanetApp {
         }) {
             self.request_delete();
         }
+        // Enter ends the link being drawn at its last vertex, as a right-click does.
+        if self.link_start.is_some()
+            && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter))
+        {
+            self.finish_link();
+        }
         // Esc closes the innermost thing open: a dialog (which handles the key
         // itself), the drawing tool or File menu, a report selector, a report.
         if self.dialog == Dialog::None
             && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape))
         {
-            if self.tool != Tool::Select || self.backstage {
+            if self.link_start.is_some() {
+                self.cancel_link();
+            } else if crate::group::cancel(self) {
+            } else if self.tool != Tool::Select || self.backstage {
                 self.set_tool(Tool::Select);
                 self.backstage = false;
+            } else if !self.multi.is_empty() {
+                self.multi.clear();
             } else if self.rpt.selector != crate::reports::Selector::None {
                 crate::reports::close_selector(self);
             } else if self.view_mode == ViewMode::Report {
@@ -1911,6 +1989,8 @@ impl eframe::App for EpanetApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         crate::menu::show(self, ui);
         crate::status::show(self, ui);
+        // after the status bar: at the bottom, the ribbon goes above it
+        crate::menu::ribbon(self, ui);
         // Project ▸ Details takes the whole area below the toolbar.
         if self.data_view.open {
             egui::CentralPanel::default()
@@ -1935,6 +2015,8 @@ impl eframe::App for EpanetApp {
             });
         if self.backstage {
             crate::menu::file_menu(self, ui.ctx());
+        } else {
+            crate::toolbars::show(self, ui.ctx());
         }
         crate::dialogs::show(self, ui.ctx());
     }

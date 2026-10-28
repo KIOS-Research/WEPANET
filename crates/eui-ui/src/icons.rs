@@ -79,6 +79,10 @@ pub enum Icon {
     Menu,
     /// A funnel: the results tables' Set Filters.
     Filter,
+    /// The pointer of the Select tool.
+    Pointer,
+    /// A dashed rectangle with the pointer: selecting a region.
+    Region,
 }
 
 /// An image list taken from EPANET-UI: square BGRA images stored one after another.
@@ -204,7 +208,9 @@ fn image_of(icon: Icon) -> Option<(&'static Sheet, usize)> {
         | Icon::Python
         | Icon::Layers
         | Icon::Identify
-        | Icon::Filter => None,
+        | Icon::Filter
+        | Icon::Pointer
+        | Icon::Region => None,
     }
 }
 
@@ -323,6 +329,43 @@ pub fn paint(p: &Painter, icon: Icon, c: Pos2, size: f32, fg: Color32) {
                     vec![at(-0.95, y), at(0.0, y + 0.45), at(0.95, y)],
                     s,
                 ));
+            }
+        }
+        Icon::Pointer | Icon::Region => {
+            // the arrow of a mouse pointer, at the bottom right for a region
+            let (dx, dy, k) = if icon == Icon::Region {
+                (0.3, 0.3, 0.7)
+            } else {
+                (0.0, 0.0, 1.0)
+            };
+            let arrow = [
+                (-0.55, -0.85),
+                (0.55, 0.15),
+                (0.05, 0.2),
+                (0.35, 0.8),
+                (0.12, 0.9),
+                (-0.15, 0.3),
+                (-0.55, 0.65),
+            ];
+            p.add(Shape::closed_line(
+                arrow
+                    .iter()
+                    .map(|&(x, y)| at(dx + k * x, dy + k * y))
+                    .collect(),
+                s,
+            ));
+            if icon == Icon::Region {
+                // the rectangle's edges, short of the arrow
+                let (tl, tr, bl) = (at(-0.9, -0.9), at(0.5, -0.9), at(-0.9, 0.5));
+                let dash = Stroke::new(s.width * 0.8, fg);
+                for (a, b) in [
+                    (tl, tr),
+                    (tr, at(0.5, -0.35)),
+                    (tl, bl),
+                    (bl, at(-0.35, 0.5)),
+                ] {
+                    p.extend(Shape::dashed_line(&[a, b], dash, 2.5, 2.0));
+                }
             }
         }
         Icon::Filter => {

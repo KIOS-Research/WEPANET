@@ -636,22 +636,36 @@ fn run_status(app: &mut EpanetApp, ui: &mut Ui) -> bool {
 }
 
 fn confirm_delete(app: &mut EpanetApp, ui: &mut Ui) -> bool {
-    let what = match app.selection {
-        Some(Element::Node(i)) => {
-            format!("{} {}", app.net.nodes[i].kind.label(), app.net.nodes[i].id)
-        }
-        Some(Element::Link(i)) => {
-            format!("{} {}", app.net.links[i].kind.label(), app.net.links[i].id)
-        }
-        None => return true,
+    let many = !app.multi.is_empty();
+    let question = if many {
+        let (n, l) = app.multi.counts();
+        crate::i18n::trf(
+            "Delete the {} nodes (with their links) and {} links selected?",
+            &[&n, &l],
+        )
+    } else {
+        let what = match app.selection {
+            Some(Element::Node(i)) => {
+                format!("{} {}", app.net.nodes[i].kind.label(), app.net.nodes[i].id)
+            }
+            Some(Element::Link(i)) => {
+                format!("{} {}", app.net.links[i].kind.label(), app.net.links[i].id)
+            }
+            None => return true,
+        };
+        format!("Delete {what}?")
     };
     ui.add_space(14.0);
-    ui.vertical_centered(|ui| ui.label(RichText::new(format!("Delete {what}?")).size(14.0)));
+    ui.vertical_centered(|ui| ui.label(RichText::new(question).size(14.0)));
     ui.add_space(24.0);
     let b = buttons(ui, &["Yes", "No"]);
     ui.add_space(6.0);
     if b == Some(0) || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-        app.delete_selection();
+        if many {
+            crate::multi::delete(app);
+        } else {
+            app.delete_selection();
+        }
         return true;
     }
     b == Some(1) || ui.input(|i| i.key_pressed(egui::Key::Escape))

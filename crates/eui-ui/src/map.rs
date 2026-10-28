@@ -124,21 +124,12 @@ fn fit_scale(rect: Rect, [x0, y0, x1, y1]: [f64; 4]) -> f64 {
 
 const HIT_RADIUS: f32 = 8.0;
 
-/// Junctions can be hidden; tanks and reservoirs are always drawn, as plain
-/// nodes when their symbols are turned off (Tanks/Reservoirs unticked).
+/// Junctions can be hidden; tanks and reservoirs are always drawn, as small
+/// squares when their symbols are turned off (Tanks/Reservoirs unticked).
 fn node_visible(app: &EpanetApp, kind: NodeKind) -> bool {
     match kind {
         NodeKind::Junction => app.prefs.show_junctions,
         _ => true,
-    }
-}
-
-/// The shape a node is drawn with.
-fn node_shape(app: &EpanetApp, kind: NodeKind) -> NodeKind {
-    if app.prefs.show_tanks {
-        kind
-    } else {
-        NodeKind::Junction
     }
 }
 
@@ -199,7 +190,7 @@ pub(crate) fn hit_node(app: &EpanetApp, rect: Rect, p: Pos2) -> Option<usize> {
 }
 
 /// Nearest link and the index of the polyline segment hit.
-fn hit_link(app: &EpanetApp, rect: Rect, p: Pos2) -> Option<(usize, usize)> {
+pub(crate) fn hit_link(app: &EpanetApp, rect: Rect, p: Pos2) -> Option<(usize, usize)> {
     if !app.prefs.show_links {
         return None;
     }
@@ -320,7 +311,11 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
             };
             let bb = Rect::from_points(&pts);
             let value = app.link_theme_value(i);
-            let color = if selected {
+            let color = if let Some(c) =
+                crate::group::shade(app, false, i).or_else(|| crate::multi::shade(app, false, i))
+            {
+                c
+            } else if selected {
                 style::SELECTED
             } else if highlight(false, i) {
                 style::SELECTED.gamma_multiply(0.8)
@@ -386,9 +381,15 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
     if let (Some(start), Some(hover)) = (app.link_start, response.hover_pos())
         && let Some(p) = app.net.nodes.get(start).and_then(|n| n.pos)
     {
-        let a = app.view.to_screen(rect, p);
+        let mut pts = vec![app.view.to_screen(rect, p)];
+        pts.extend(
+            app.link_vertices
+                .iter()
+                .map(|&v| app.view.to_screen(rect, v)),
+        );
+        pts.push(hover);
         painter.add(Shape::dashed_line(
-            &[a, hover],
+            &pts,
             Stroke::new(1.5, style::ACCENT),
             6.0,
             4.0,
@@ -410,13 +411,16 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
         }
         let marked = app.selection == Some(Element::Node(i))
             || app.link_start == Some(i)
-            || highlight(true, i);
+            || highlight(true, i)
+            || crate::multi::shade(app, true, i).is_some();
         if n.kind == NodeKind::Junction && !marked && !spots.claim(s) {
             visible_nodes.push((i, s, app.prefs.node_size));
             continue;
         }
         let value = app.node_theme_value(i);
-        let fill = value.map_or(pal.node, |v| node_legend.color(v));
+        let fill = crate::group::shade(app, true, i)
+            .or_else(|| crate::multi::shade(app, true, i))
+            .unwrap_or_else(|| value.map_or(pal.node, |v| node_legend.color(v)));
         let mut r = app.prefs.node_size;
         if app.prefs.node_proportional
             && let Some(v) = value
@@ -427,10 +431,11 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
         draw_node(
             &painter,
             s,
-            node_shape(app, n.kind),
+            n.kind,
             r,
             fill,
             app.prefs.node_border,
+            app.prefs.show_tanks,
         );
         if app.selection == Some(Element::Node(i)) || app.link_start == Some(i) {
             // The marker blinks (about twice a second) if the user wants it to.
@@ -453,7 +458,11 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
         }
     }
 
-    crate::fireflow::draw_group(app, &painter, rect, response.hover_pos());
+    // the pointer, also while a region is dragged
+    let pointer = response.hover_pos().or(response.interact_pointer_pos());
+    crate::fireflow::draw_group(app, &painter, rect, pointer);
+    crate::group::draw(app, &painter, rect, pointer);
+    crate::multi::draw(app, &painter, rect, pointer);
 
     // ---- labels (only when they can be read) ----
     let font = FontId::proportional(app.prefs.label_font);
@@ -576,8 +585,12 @@ fn handle_input(app: &mut EpanetApp, ui: &mut Ui, rect: Rect, response: &egui::R
     {
         return;
     }
-    // The fire flow Group Selector takes clicks on the map.
-    if crate::fireflow::map_input(app, rect, response) {
+    // The fire flow Group Selector, and Group Edit or Delete, take clicks
+    // (and regions dragged) on the map.
+    if crate::fireflow::map_input(app, rect, response)
+        || crate::group::map_input(app, rect, response)
+        || crate::multi::map_input(app, rect, response)
+    {
         return;
     }
     let pointer = response.interact_pointer_pos().or(response.hover_pos());
@@ -611,6 +624,7 @@ fn handle_input(app: &mut EpanetApp, ui: &mut Ui, rect: Rect, response: &egui::R
             }
         } else if app.tool == Tool::Select
             && !crate::fireflow::grouping(app)
+            && !crate::group::active(app)
             && let Some(i) = hit_node(app, rect, p)
         {
             app.checkpoint();
@@ -656,9 +670,10 @@ fn handle_input(app: &mut EpanetApp, ui: &mut Ui, rect: Rect, response: &egui::R
         app.drag_vertex = None;
     }
 
-    // Right-click: cancel a link being drawn, or delete a vertex.
+    // Right-click: end a link being drawn, or delete a vertex.
     if response.secondary_clicked() {
-        // Right-click cancels the link being drawn, or stops adding objects.
+        // Right-click ends the link being drawn at its last vertex, or stops
+        // adding objects.
         match app.tool {
             Tool::AddLink(_) if app.link_start.is_some() => {}
             Tool::AddNode(_) | Tool::AddLink(_) | Tool::AddLabel | Tool::Identify => {
@@ -666,7 +681,7 @@ fn handle_input(app: &mut EpanetApp, ui: &mut Ui, rect: Rect, response: &egui::R
             }
             _ => {}
         }
-        app.link_start = None;
+        app.finish_link();
         app.label_edit = None;
         if let (Some(l), Some(p)) = (reshape_link, response.interact_pointer_pos())
             && let Some(v) = hit_vertex(app, rect, l, p)
@@ -689,7 +704,14 @@ fn handle_input(app: &mut EpanetApp, ui: &mut Ui, rect: Rect, response: &egui::R
         return;
     };
     match app.tool {
-        Tool::Select => app.select(hit(app, rect, p)),
+        // Ctrl or Shift: the object joins the others selected, or leaves them
+        Tool::Select if ui.input(|i| i.modifiers.command || i.modifiers.shift) => {
+            crate::multi::toggle(app, hit(app, rect, p))
+        }
+        Tool::Select => {
+            app.multi.clear();
+            app.select(hit(app, rect, p))
+        }
         Tool::Reshape => match (reshape_link, hit_link(app, rect, p)) {
             (Some(l), Some((h, seg))) if h == l && hit_vertex(app, rect, l, p).is_none() => {
                 app.checkpoint();
@@ -702,11 +724,18 @@ fn handle_input(app: &mut EpanetApp, ui: &mut Ui, rect: Rect, response: &egui::R
         },
         Tool::AddLabel => app.label_edit = Some((app.view.to_world(rect, p), String::new())),
         Tool::Identify => crate::layers::identify(app, rect, p),
+        // its clicks draw the region (see crate::multi::map_input)
+        Tool::Region => {}
         Tool::AddNode(kind) => {
             app.checkpoint();
-            let i = app
-                .setup
-                .add_node(&mut app.net, kind, app.view.to_world(rect, p));
+            let at = app.view.to_world(rect, p);
+            // A node placed on a pipe splits it.
+            let split = hit_node(app, rect, p)
+                .is_none()
+                .then(|| hit_link(app, rect, p))
+                .flatten()
+                .and_then(|(l, seg)| app.setup.split_link(&mut app.net, l, seg, kind, at));
+            let i = split.unwrap_or_else(|| app.setup.add_node(&mut app.net, kind, at));
             app.select(Some(Element::Node(i)));
             app.status = format!("Added {} {}", kind.label(), app.net.nodes[i].id);
         }
@@ -719,33 +748,48 @@ fn handle_input(app: &mut EpanetApp, ui: &mut Ui, rect: Rect, response: &egui::R
                     app.net.nodes[i].id
                 );
             }
+            // Starting on a pipe splits it with a junction the link starts from.
+            (None, None) => {
+                let at = app.view.to_world(rect, p);
+                if let Some((l, seg)) =
+                    hit_link(app, rect, p).filter(|&(l, _)| app.net.links[l].kind == LinkKind::Pipe)
+                {
+                    app.checkpoint();
+                    if let Some(a) =
+                        app.setup
+                            .split_link(&mut app.net, l, seg, NodeKind::Junction, at)
+                    {
+                        app.link_start = Some(a);
+                        app.status = format!(
+                            "{} from {}: now click the end node",
+                            kind.label(),
+                            app.net.nodes[a].id
+                        );
+                    }
+                }
+            }
             (Some(a), Some(b)) if a != b => {
                 app.checkpoint();
-                let i = app
-                    .setup
-                    .add_link(&mut app.net, kind, a, b, app.prefs.auto_length);
-                app.select(Some(Element::Link(i)));
-                app.link_start = None;
-                app.status = format!("Added {} {}", kind.label(), app.net.links[i].id);
+                app.end_link(b);
             }
-            (Some(a), None) => {
-                // Clicking empty space while drawing adds a junction there and keeps drawing.
-                app.checkpoint();
-                let b = app.setup.add_node(
-                    &mut app.net,
-                    NodeKind::Junction,
-                    app.view.to_world(rect, p),
-                );
-                let i = app
-                    .setup
-                    .add_link(&mut app.net, kind, a, b, app.prefs.auto_length);
-                app.select(Some(Element::Link(i)));
-                app.link_start = Some(b);
-                app.status = format!(
-                    "Added {} {} — keep clicking, Esc to stop",
-                    kind.label(),
-                    app.net.links[i].id
-                );
+            // Clicking a pipe while drawing splits it with a junction where the
+            // link ends; clicking empty space adds a vertex to the link.
+            (Some(_), None) => {
+                let at = app.view.to_world(rect, p);
+                match hit_link(app, rect, p)
+                    .filter(|&(l, _)| app.net.links[l].kind == LinkKind::Pipe)
+                {
+                    Some((l, seg)) => {
+                        app.checkpoint();
+                        if let Some(b) =
+                            app.setup
+                                .split_link(&mut app.net, l, seg, NodeKind::Junction, at)
+                        {
+                            app.end_link(b);
+                        }
+                    }
+                    None => app.link_vertices.push(at),
+                }
             }
             _ => {}
         },
@@ -800,7 +844,8 @@ fn midpoint(pts: &[Pos2]) -> (Pos2, Vec2) {
 
 /// Node symbols, drawn as EPANET-UI's `maprenderer` does: a dot for a
 /// junction, an open container with water for a reservoir and a bowl on a
-/// stem for a tank. `size` is the node size (half the dot's width).
+/// stem for a tank, or a small square for either when `symbols` is off.
+/// `size` is the node size (half the dot's width).
 fn draw_node(
     painter: &egui::Painter,
     s: Pos2,
@@ -808,6 +853,7 @@ fn draw_node(
     size: f32,
     fill: Color32,
     border: bool,
+    symbols: bool,
 ) {
     let edge = Stroke::new(1.0, if border { OUTLINE } else { fill });
     let at = |x: f32, y: f32| s + vec2(x, y);
@@ -815,6 +861,15 @@ fn draw_node(
     match kind {
         NodeKind::Junction => {
             painter.circle(s, size, fill, edge);
+        }
+        _ if !symbols => {
+            painter.rect(
+                Rect::from_min_max(at(-size, -size), at(size + 1.0, size + 1.0)),
+                0.0,
+                fill,
+                edge,
+                StrokeKind::Inside,
+            );
         }
         NodeKind::Reservoir => {
             painter.add(Shape::line(
@@ -1311,9 +1366,6 @@ mod tests {
         app.prefs.show_pumps = false;
         app.prefs.show_valves = false;
         assert!(node_visible(&app, NodeKind::Tank) && node_visible(&app, NodeKind::Reservoir));
-        assert_eq!(node_shape(&app, NodeKind::Tank), NodeKind::Junction);
-        app.prefs.show_tanks = true;
-        assert_eq!(node_shape(&app, NodeKind::Tank), NodeKind::Tank);
         app.prefs.show_junctions = false;
         assert!(!node_visible(&app, NodeKind::Junction));
     }
@@ -1409,7 +1461,7 @@ mod tests {
 
         let p = at(&mut app, "Select Nodes");
         click(&mut app, p);
-        let p = at(&mut app, "Select a polygon region");
+        let p = at(&mut app, "Select a region");
         click(&mut app, p);
         let m = map.shrink(5.0);
         for c in [
@@ -1426,5 +1478,190 @@ mod tests {
         let mut ids = app.rpt.ff.nodes.clone();
         ids.sort();
         assert_eq!(ids, ["10", "11", "12", "13", "21", "22", "23", "31", "32"]);
+    }
+
+    /// Tanks and reservoirs are drawn with their own symbols, or as small
+    /// squares when Tanks/Reservoirs is unticked; never as junction dots.
+    #[test]
+    fn tanks_and_reservoirs_have_symbols() {
+        let (ctx, mut app) = crate::msx::tests::new_app();
+        app.load_example("Net1", eui_core::examples::NET1);
+        let mut f = eframe::Frame::_new_kittest();
+        // the small rectangles and the dots drawn on tank 2 and reservoir 9
+        let mut draw = |app: &mut EpanetApp| {
+            let mut shapes = Vec::new();
+            for _ in 0..3 {
+                let input = egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1400.0, 900.0))),
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ui| {
+                    app.logic(ui.ctx(), &mut f);
+                    app.ui(ui, &mut f);
+                });
+                out.textures_delta.clear();
+                shapes = out.shapes.into_iter().map(|c| c.shape).collect::<Vec<_>>();
+            }
+            let map = app.export.map_rect.unwrap();
+            ["2", "9"].map(|id| {
+                let n = app.net.node_index(id).unwrap();
+                let s = app.view.to_screen(map, app.net.nodes[n].pos.unwrap());
+                let rects: Vec<Rect> = shapes
+                    .iter()
+                    .filter_map(|sh| match sh {
+                        Shape::Rect(r) if r.rect.contains(s) && r.rect.width() < 30.0 => {
+                            Some(r.rect)
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                let dots = shapes
+                    .iter()
+                    .filter(|sh| matches!(sh, Shape::Circle(c) if c.center == s))
+                    .count();
+                (rects, dots)
+            })
+        };
+        let [(tank, dots), (reservoir, more)] = draw(&mut app);
+        assert_eq!((tank.len(), reservoir.len(), dots + more), (2, 1, 0));
+        // unticked: one square each, the size of a junction dot
+        app.prefs.show_tanks = false;
+        let side = 2.0 * app.prefs.node_size + 1.0;
+        for (rects, dots) in draw(&mut app) {
+            assert_eq!((rects.len(), dots), (1, 0));
+            assert_eq!(rects[0].size(), vec2(side, side));
+        }
+    }
+
+    /// Clicks on empty map space while drawing a pipe add vertices, not
+    /// junctions; Enter ends the pipe at its last vertex, and a click on
+    /// another pipe splits it and ends the new one there, as placing a node
+    /// on a pipe splits it.
+    #[test]
+    fn drawn_pipes_get_vertices() {
+        let (ctx, mut app) = crate::msx::tests::new_app();
+        app.load_example("Net1", eui_core::examples::NET1);
+        for _ in 0..3 {
+            frame(&mut app, &ctx, vec![]);
+        }
+        let map = app.export.map_rect.unwrap();
+        let at = |app: &EpanetApp, id: &str| {
+            let n = app.net.node_index(id).unwrap();
+            app.view.to_screen(map, app.net.nodes[n].pos.unwrap())
+        };
+        let click = |app: &mut EpanetApp, p: Pos2| {
+            frame(app, &ctx, vec![egui::Event::PointerMoved(p)]);
+            frame(app, &ctx, vec![button(p, true)]);
+            frame(app, &ctx, vec![button(p, false)]);
+        };
+        let (a, b) = (at(&app, "11"), at(&app, "22"));
+        let bends = [
+            a + (b - a) * 0.3 + vec2(0.0, 25.0),
+            a + (b - a) * 0.7 + vec2(0.0, 25.0),
+        ];
+        let (nodes, links) = (app.net.nodes.len(), app.net.links.len());
+        app.set_tool(Tool::AddLink(LinkKind::Pipe));
+        click(&mut app, a);
+        for p in bends {
+            click(&mut app, p);
+        }
+        click(&mut app, b);
+
+        assert_eq!(app.net.nodes.len(), nodes, "no junctions added");
+        assert_eq!(app.net.links.len(), links + 1);
+        let l = &app.net.links[links];
+        assert_eq!((l.from.as_str(), l.to.as_str()), ("11", "22"));
+        assert_eq!(l.vertices.len(), 2);
+        for (v, p) in l.vertices.iter().zip(bends) {
+            assert!((app.view.to_screen(map, *v) - p).length() < 1.0);
+        }
+        assert_eq!(app.tool, Tool::AddLink(LinkKind::Pipe), "keeps drawing");
+
+        // Enter ends a pipe at its last vertex with a new junction there,
+        // and keeps the tool
+        let enter = egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        };
+        // (off the pipe just drawn, which a click would split)
+        let bends = bends.map(|p| p - vec2(0.0, 50.0));
+        click(&mut app, a);
+        for p in bends {
+            click(&mut app, p);
+        }
+        frame(&mut app, &ctx, vec![enter.clone()]);
+        assert!(app.link_start.is_none() && app.link_vertices.is_empty());
+        assert_eq!(app.net.nodes.len(), nodes + 1);
+        assert_eq!(app.net.links.len(), links + 2);
+        let l = &app.net.links[links + 1];
+        assert_eq!(l.from, "11");
+        assert_eq!(l.to, app.net.nodes[nodes].id);
+        assert_eq!(l.vertices.len(), 1);
+        let end = app.view.to_screen(map, app.net.nodes[nodes].pos.unwrap());
+        assert!((end - bends[1]).length() < 1.0);
+        assert_eq!(app.tool, Tool::AddLink(LinkKind::Pipe));
+        // one undo removes both the pipe and its end junction
+        app.undo();
+        assert_eq!(app.net.nodes.len(), nodes);
+        assert_eq!(app.net.links.len(), links + 1);
+
+        // a pipe drawn onto another pipe splits it with a junction there
+        let (c, d) = (at(&app, "21"), at(&app, "22"));
+        let on = c + (d - c) * 0.5;
+        click(&mut app, a);
+        click(&mut app, on);
+        assert_eq!(app.net.nodes.len(), nodes + 1);
+        assert_eq!(app.net.links.len(), links + 3);
+        let j = app.net.nodes[nodes].id.clone();
+        let split = app.net.link_index("21").unwrap();
+        assert_eq!(app.net.links[split].to, j);
+        assert_eq!(app.net.links[links + 1].from, j);
+        assert_eq!(app.net.links[links + 1].to, "22");
+        let new = &app.net.links[links + 2];
+        assert_eq!((new.from.as_str(), new.to.as_str()), ("11", j.as_str()));
+        assert!(app.link_start.is_none());
+        app.undo();
+        assert_eq!(app.net.nodes.len(), nodes);
+        assert_eq!(app.net.links.len(), links + 1);
+
+        // a node placed on a pipe splits it; one placed elsewhere does not
+        app.set_tool(Tool::AddNode(NodeKind::Junction));
+        click(&mut app, on);
+        assert_eq!(app.net.nodes.len(), nodes + 1);
+        assert_eq!(app.net.links.len(), links + 2);
+        assert_eq!(app.net.links[split].to, app.net.nodes[nodes].id);
+        click(&mut app, bends[0]);
+        assert_eq!(app.net.nodes.len(), nodes + 2);
+        assert_eq!(app.net.links.len(), links + 2);
+        app.undo();
+        app.undo();
+        app.set_tool(Tool::AddLink(LinkKind::Pipe));
+
+        // a pipe started on another pipe splits it and starts there
+        click(&mut app, on);
+        assert_eq!(app.net.nodes.len(), nodes + 1);
+        assert_eq!(app.net.links.len(), links + 2);
+        assert_eq!(app.link_start, Some(nodes));
+        assert_eq!(app.net.links[split].to, app.net.nodes[nodes].id);
+        click(&mut app, a);
+        assert_eq!(app.net.links.len(), links + 3);
+        let new = &app.net.links[links + 2];
+        assert_eq!(
+            (new.from.as_str(), new.to.as_str()),
+            (app.net.nodes[nodes].id.as_str(), "11")
+        );
+        app.undo();
+        app.undo();
+        assert_eq!(app.net.nodes.len(), nodes);
+        assert_eq!(app.net.links.len(), links + 1);
+
+        // a pipe with no vertices yet is dropped
+        click(&mut app, a);
+        frame(&mut app, &ctx, vec![enter]);
+        assert!(app.link_start.is_none());
+        assert_eq!(app.net.links.len(), links + 1);
     }
 }

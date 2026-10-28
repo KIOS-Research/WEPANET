@@ -316,6 +316,22 @@ fn crs_comment(line: &str) -> Option<String> {
     (key.trim().eq_ignore_ascii_case("CRS") && !value.is_empty()).then(|| value.to_string())
 }
 
+/// A section line from its tokens and comment, as [`tokenize_line`] splits it.
+fn join_line(tokens: &[String], comment: &str) -> String {
+    let mut l = format!(
+        " {}",
+        tokens
+            .iter()
+            .map(|t| quote(t))
+            .collect::<Vec<_>>()
+            .join("\t")
+    );
+    if !comment.is_empty() {
+        let _ = write!(l, "\t;{comment}");
+    }
+    l
+}
+
 pub(crate) fn tokenize_line(line: &str) -> (Vec<String>, String) {
     let (data, comment) = match line.find(';') {
         Some(i) => (&line[..i], line[i + 1..].trim().to_string()),
@@ -795,6 +811,107 @@ impl Network {
         i
     }
 
+    /// Splits pipe `idx` with node `node`, moved onto the pipe's segment
+    /// `seg` (0 runs from the start node to the first vertex). The pipe keeps
+    /// its first part; a copy of it, named `prefix` and the first free number,
+    /// takes the rest. The length is shared in proportion to the map distance,
+    /// the node's elevation is interpolated between the end nodes, and
+    /// the pipe's lines in [STATUS], [TAGS], [REACTIONS] and [LEAKAGE] are
+    /// copied for the new pipe. Returns the new pipe's index.
+    pub fn split_link(
+        &mut self,
+        idx: usize,
+        seg: usize,
+        node: usize,
+        prefix: &str,
+    ) -> Option<usize> {
+        let link = &self.links[idx];
+        if link.kind != LinkKind::Pipe {
+            return None;
+        }
+        let (a, b) = self.link_ends(link)?;
+        let mut pts = vec![self.nodes[a].pos?];
+        pts.extend(link.vertices.iter().copied());
+        pts.push(self.nodes[b].pos?);
+        let (p, q) = (*pts.get(seg)?, *pts.get(seg + 1)?);
+        let dist =
+            |p: [f64; 2], q: [f64; 2]| ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2)).sqrt();
+
+        // the point of the segment nearest the junction
+        let at = self.nodes[node].pos?;
+        let d = [q[0] - p[0], q[1] - p[1]];
+        let dd = d[0] * d[0] + d[1] * d[1];
+        let t = if dd > 0.0 {
+            (((at[0] - p[0]) * d[0] + (at[1] - p[1]) * d[1]) / dd).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let at = [p[0] + d[0] * t, p[1] + d[1] * t];
+        let total: f64 = pts.windows(2).map(|w| dist(w[0], w[1])).sum();
+        let before: f64 = pts[..=seg]
+            .windows(2)
+            .map(|w| dist(w[0], w[1]))
+            .sum::<f64>()
+            + dist(p, at);
+        let share = if total > 0.0 { before / total } else { 0.5 };
+        let num = |v: f64| {
+            let s = format!("{v:.2}");
+            s.trim_end_matches('0').trim_end_matches('.').to_string()
+        };
+
+        let elevation = |n: &Node| match n.kind {
+            NodeKind::Reservoir => None,
+            _ => n.num(0),
+        };
+        let elev = match (elevation(&self.nodes[a]), elevation(&self.nodes[b])) {
+            (Some(x), Some(y)) => Some(x + (y - x) * share),
+            (x, y) => x.or(y),
+        };
+        let n = &mut self.nodes[node];
+        n.pos = Some(at);
+        // a reservoir's first field is its head, not an elevation
+        if let Some(e) = elev
+            && n.kind != NodeKind::Reservoir
+        {
+            n.fields[0] = num(e);
+        }
+        let node_id = n.id.clone();
+
+        let id = self.unique_id(prefix.trim(), |id| self.link_lookup.contains_key(id));
+        let link = &mut self.links[idx];
+        let mut rest = link.clone();
+        rest.id = id.clone();
+        rest.from = node_id.clone();
+        rest.vertices = link.vertices.split_off(seg.min(link.vertices.len()));
+        link.to = node_id;
+        if let Some(len) = link.fields.first().and_then(|f| f.parse::<f64>().ok()) {
+            link.fields[0] = num(len * share);
+            rest.fields[0] = num(len * (1.0 - share));
+        }
+        let old = link.id.clone();
+        self.links.push(rest);
+        let i = self.links.len() - 1;
+        self.link_lookup.insert(id.clone(), i);
+
+        for s in &mut self.raw {
+            if !matches!(s.name.as_str(), "STATUS" | "TAGS" | "REACTIONS" | "LEAKAGE") {
+                continue;
+            }
+            let mut copies = Vec::new();
+            for line in &s.lines {
+                let (mut tokens, comment) = tokenize_line(line);
+                if let Some(col) = ref_column(&s.name, &tokens, false)
+                    && tokens.get(col) == Some(&old)
+                {
+                    tokens[col] = id.clone();
+                    copies.push(join_line(&tokens, &comment));
+                }
+            }
+            s.lines.extend(copies);
+        }
+        Some(i)
+    }
+
     /// Deletes a node together with the links attached to it.
     pub fn delete_node(&mut self, idx: usize) {
         let id = self.nodes.remove(idx).id;
@@ -949,18 +1066,7 @@ impl Network {
                     }
                 }
                 if changed {
-                    let mut l = format!(
-                        " {}",
-                        tokens
-                            .iter()
-                            .map(|t| quote(t))
-                            .collect::<Vec<_>>()
-                            .join("\t")
-                    );
-                    if !comment.is_empty() {
-                        let _ = write!(l, "\t;{comment}");
-                    }
-                    *line = l;
+                    *line = join_line(&tokens, &comment);
                 }
             }
         }
@@ -1015,6 +1121,50 @@ fn write_record(out: &mut String, head: &[&str], fields: &[String], comment: &st
 mod tests {
     use super::*;
     use crate::examples;
+
+    /// A pipe split by a junction becomes two pipes that share its length in
+    /// proportion to the map distance, keep its vertices on their side and
+    /// its other properties; the junction lies on the pipe with an
+    /// elevation between the end nodes'.
+    #[test]
+    fn split_pipes() {
+        let mut net = Network::from_inp(examples::NET1).unwrap();
+        let p = net.link_index("11").unwrap();
+        net.links[p].vertices = vec![[40.0, 80.0]];
+        let status = net.raw.iter_mut().find(|s| s.name == "STATUS").unwrap();
+        status.lines.push(" 11\tClosed".into());
+        let j = net.add_node(NodeKind::Junction, [45.0, 76.0]);
+        let q = net.split_link(p, 1, j, "P").unwrap();
+
+        let junction = net.nodes[j].clone();
+        assert_eq!(junction.pos, Some([44.5, 75.5]));
+        assert_eq!(junction.field(0), "702.75");
+        let (first, rest) = (&net.links[p], &net.links[q]);
+        assert_eq!(
+            (first.from.as_str(), first.to.as_str()),
+            ("11", junction.id.as_str())
+        );
+        assert_eq!(
+            (rest.from.as_str(), rest.to.as_str()),
+            (junction.id.as_str(), "12")
+        );
+        assert_eq!(rest.id, "P1");
+        assert_eq!(first.vertices, [[40.0, 80.0]]);
+        assert!(rest.vertices.is_empty());
+        assert_eq!((first.field(0), rest.field(0)), ("3828", "1452"));
+        assert_eq!(rest.fields[1..], first.fields[1..]);
+        let back = Network::from_inp(&net.to_inp()).unwrap();
+        let status = back.raw.iter().find(|s| s.name == "STATUS").unwrap();
+        assert!(
+            status
+                .lines
+                .iter()
+                .any(|l| l.split_whitespace().eq(["P1", "Closed"]))
+        );
+        // pumps and valves are not split
+        let pump = net.link_index("9").unwrap();
+        assert!(net.split_link(pump, 0, j, "P").is_none());
+    }
 
     /// A new valve is a fully open throttle control valve (TCV), as EPANET-UI
     /// adds them, and is written so to the INP file.

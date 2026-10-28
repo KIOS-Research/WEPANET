@@ -146,6 +146,24 @@ impl SetupDefaults {
         i
     }
 
+    /// Splits pipe `link` on its segment `seg` near `pos` with a new node of
+    /// `kind`, see [`Network::split_link`]. Returns the node's index.
+    pub fn split_link(
+        &self,
+        net: &mut Network,
+        link: usize,
+        seg: usize,
+        kind: NodeKind,
+        pos: [f64; 2],
+    ) -> Option<usize> {
+        if net.links[link].kind != LinkKind::Pipe {
+            return None;
+        }
+        let node = self.add_node(net, kind, pos);
+        net.split_link(link, seg, node, self.prefix(3))?;
+        Some(node)
+    }
+
     /// Sets the saved default options on a new project.
     pub fn apply_new_project_options(&self, net: &mut Network) {
         if let Some(opts) = &self.options {

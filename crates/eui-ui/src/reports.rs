@@ -2327,6 +2327,31 @@ pub fn selector(app: &mut EpanetApp, ui: &mut Ui) {
         Selector::FireFlow if app.rpt.ff.group.is_some() => "Group Selector",
         Selector::FireFlow => "Fire Flow Selector",
     };
+    let closed = selector_frame(app, ui, title, |app, ui| match app.rpt.selector {
+        Selector::TimeSeries => ts_selector(app, ui),
+        Selector::Percentiles => pc_selector(app, ui),
+        Selector::Profile => pf_selector(app, ui),
+        Selector::FireFlow => crate::fireflow::selector(app, ui),
+        Selector::None => {}
+    });
+    if closed {
+        if app.rpt.selector == Selector::TimeSeries {
+            ts_cancel(app);
+        } else {
+            app.rpt.selector = Selector::None;
+        }
+    }
+}
+
+/// A selector panel at the top of the left panel, as EPANET-UI's: a title
+/// bar with a close button over contents on the hint color. True when the
+/// close button was clicked (the contents are then not drawn).
+pub(crate) fn selector_frame(
+    app: &mut EpanetApp,
+    ui: &mut Ui,
+    title: &str,
+    add: impl FnOnce(&mut EpanetApp, &mut Ui),
+) -> bool {
     let pal = app.palette();
     let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::hover());
     ui.painter().rect_filled(bar, 0.0, pal.menu);
@@ -2338,7 +2363,11 @@ pub fn selector(app: &mut EpanetApp, ui: &mut Ui) {
         Color32::WHITE,
     );
     let close_rect = Rect::from_center_size(bar.right_center() - vec2(18.0, 0.0), vec2(26.0, 26.0));
-    let x = ui.interact(close_rect, ui.id().with("sel_close"), Sense::click());
+    let x = ui.interact(
+        close_rect,
+        ui.id().with(("sel_close", title)),
+        Sense::click(),
+    );
     white_button(ui, close_rect, x.hovered());
     ui.painter().text(
         close_rect.center(),
@@ -2348,12 +2377,7 @@ pub fn selector(app: &mut EpanetApp, ui: &mut Ui) {
         Color32::BLACK,
     );
     if x.clicked() {
-        if app.rpt.selector == Selector::TimeSeries {
-            ts_cancel(app);
-        } else {
-            app.rpt.selector = Selector::None;
-        }
-        return;
+        return true;
     }
     let bg = if ui.visuals().dark_mode {
         Color32::from_rgb(0x3a, 0x38, 0x2a)
@@ -2365,14 +2389,9 @@ pub fn selector(app: &mut EpanetApp, ui: &mut Ui) {
         .inner_margin(egui::Margin::symmetric(10, 10))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            match app.rpt.selector {
-                Selector::TimeSeries => ts_selector(app, ui),
-                Selector::Percentiles => pc_selector(app, ui),
-                Selector::Profile => pf_selector(app, ui),
-                Selector::FireFlow => crate::fireflow::selector(app, ui),
-                Selector::None => {}
-            }
+            add(app, ui);
         });
+    false
 }
 
 /// A text box for an object ID with a "+" button that takes the object

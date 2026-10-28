@@ -7,8 +7,8 @@
   <meta name="description" content="Open-source water distribution network modeling in your browser. Runs locally, no account needed.">
   
 <script type="module">
-import init, * as bindings from '/epanet-ui-web-e1c2411bf5d8a143.js';
-const wasm = await init({ module_or_path: '/epanet-ui-web-e1c2411bf5d8a143_bg.wasm' });
+import init, * as bindings from '/epanet-ui-web-947ea1cb526d1387.js';
+const wasm = await init({ module_or_path: '/epanet-ui-web-947ea1cb526d1387_bg.wasm' });
 
 
 window.wasmBindings = bindings;
@@ -78,7 +78,7 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
     async
     src="https://gc.zgo.at/count.js">
   </script>
-<link rel="modulepreload" href="/epanet-ui-web-e1c2411bf5d8a143.js" crossorigin="anonymous" integrity="sha384-p5IEAp57j+m5tu4vzsGoD37GWIfBNXu1MQmXPN6Xx/RQbwMmjQpH8ujld/cWlP0B"><link rel="modulepreload" href="/snippets/eui-ui-3e6d3411aa7a95b7/inline0.js" crossorigin="anonymous" integrity="sha384-vENpzkqZbyB6gXe9nbNScDV32kLhQFsKEbAEu0acJDz4BM9DLPmZozi9d99C7Ozl"><link rel="preload" href="/epanet-ui-web-e1c2411bf5d8a143_bg.wasm" crossorigin="anonymous" integrity="sha384-3CUUAga67pmtm9oLFu8GP/UHHW2mol/i3RRWE0hgYFf2TvEXWwHtDupmEWl56Bvg" as="fetch" type="application/wasm"></head>
+<link rel="modulepreload" href="/epanet-ui-web-947ea1cb526d1387.js" crossorigin="anonymous" integrity="sha384-NMhPUQz4uSUhRSvdkUjlk2586pSxbK1eCgDgcPPYpB4vUbzp2Ev1xw9dAcZcCd7r"><link rel="modulepreload" href="/snippets/eui-ui-3e6d3411aa7a95b7/inline0.js" crossorigin="anonymous" integrity="sha384-vENpzkqZbyB6gXe9nbNScDV32kLhQFsKEbAEu0acJDz4BM9DLPmZozi9d99C7Ozl"><link rel="modulepreload" href="/snippets/eui-ui-f449ccf9177b5721/inline0.js" crossorigin="anonymous" integrity="sha384-vENpzkqZbyB6gXe9nbNScDV32kLhQFsKEbAEu0acJDz4BM9DLPmZozi9d99C7Ozl"><link rel="preload" href="/epanet-ui-web-947ea1cb526d1387_bg.wasm" crossorigin="anonymous" integrity="sha384-xTHbnNFrLsp3G1d5Njog1M59KoKLmi48peGg5b8APsWDMjWUEtFO4BmQ1MCre4hL" as="fetch" type="application/wasm"></head>
 <body>
   <div id="devbar">DEVELOPMENT VERSION: may be unstable. <a href="../">Open the stable version</a></div>
   <canvas id="epanet_ui_canvas"></canvas>
