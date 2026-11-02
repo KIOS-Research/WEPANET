@@ -645,5 +645,18 @@
   "{} nodes and {} links selected": "{} nodos y {} enlaces seleccionados",
   "Deleted {} nodes and {} links": "Se eliminaron {} nodos y {} enlaces",
   "Delete the {} nodes (with their links) and {} links selected?": "¿Eliminar los {} nodos (con sus enlaces) y {} enlaces seleccionados?",
-  "Select by Tag": "Seleccionar por etiqueta"
+  "Select by Tag": "Seleccionar por etiqueta",
+  "Reservoirs": "Embalses",
+  "Tanks": "Depósitos",
+  "  The project has no {}.": "  El proyecto no tiene {}.",
+  "Type an ID to find": "Escriba un ID para buscar",
+  "No ID matches": "Ningún ID coincide",
+  "{} more: type to narrow the list": "{} más: escriba para acotar la lista",
+  "Find a node or link by its ID": "Buscar un nudo o línea por su ID",
+  "Reset All to Defaults…": "Restablecer Todo a los Valores Predeterminados…",
+  "Every preference, the recent projects, the plugins and the panels back to a new install's": "Todas las preferencias, los proyectos recientes, los complementos y los paneles como en una instalación nueva",
+  "Reset all to defaults?": "¿Restablecer todo a los valores predeterminados?",
+  "All preferences, map settings, legends, the recent projects list, the installed plugins and the panels' layout go back to their defaults. The open project is closed and its changes that are not saved are lost.": "Todas las preferencias, los ajustes del mapa, las leyendas, la lista de proyectos recientes, los complementos instalados y la disposición de los paneles vuelven a sus valores predeterminados. El proyecto abierto se cierra y se pierden sus cambios no guardados.",
+  "Reset": "Restablecer",
+  "Settings reset to their defaults": "Ajustes restablecidos a sus valores predeterminados"
 }

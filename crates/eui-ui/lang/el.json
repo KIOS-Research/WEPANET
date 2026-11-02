@@ -645,5 +645,18 @@
   "{} nodes and {} links selected": "{} κόμβοι και {} συνδέσεις επιλεγμένοι",
   "Deleted {} nodes and {} links": "Διαγράφηκαν {} κόμβοι και {} συνδέσεις",
   "Delete the {} nodes (with their links) and {} links selected?": "Διαγραφή των {} επιλεγμένων κόμβων (με τις συνδέσεις τους) και {} συνδέσεων;",
-  "Select by Tag": "Επιλογή με Ετικέτα"
+  "Select by Tag": "Επιλογή με Ετικέτα",
+  "Reservoirs": "Ταμιευτήρες",
+  "Tanks": "Δεξαμενές",
+  "  The project has no {}.": "  Το έργο δεν έχει {}.",
+  "Type an ID to find": "Πληκτρολογήστε ένα ID για αναζήτηση",
+  "No ID matches": "Κανένα ID δεν ταιριάζει",
+  "{} more: type to narrow the list": "{} ακόμη: πληκτρολογήστε για να περιορίσετε τη λίστα",
+  "Find a node or link by its ID": "Εύρεση κόμβου ή σύνδεσης με βάση το ID",
+  "Reset All to Defaults…": "Επαναφορά Όλων στις Προεπιλογές…",
+  "Every preference, the recent projects, the plugins and the panels back to a new install's": "Όλες οι προτιμήσεις, τα πρόσφατα έργα, τα πρόσθετα και τα πάνελ όπως σε νέα εγκατάσταση",
+  "Reset all to defaults?": "Επαναφορά όλων στις προεπιλογές;",
+  "All preferences, map settings, legends, the recent projects list, the installed plugins and the panels' layout go back to their defaults. The open project is closed and its changes that are not saved are lost.": "Όλες οι προτιμήσεις, οι ρυθμίσεις χάρτη, τα υπομνήματα, η λίστα πρόσφατων έργων, τα εγκατεστημένα πρόσθετα και η διάταξη των πάνελ επιστρέφουν στις προεπιλογές. Το ανοιχτό έργο κλείνει και οι αλλαγές του που δεν έχουν αποθηκευτεί χάνονται.",
+  "Reset": "Επαναφορά",
+  "Settings reset to their defaults": "Οι ρυθμίσεις επανήλθαν στις προεπιλογές"
 }

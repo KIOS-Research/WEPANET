@@ -382,6 +382,26 @@ pub fn take_reload_request() -> bool {
     asked
 }
 
+/// Removes what the browser keeps for the app in its local storage: the
+/// preferences and egui's memory (windows, panels), as eframe names them.
+/// Other sites' data on the same origin are left alone.
+#[cfg(target_arch = "wasm32")]
+pub fn clear_local_storage() {
+    use wasm_bindgen::JsCast;
+    let global = js_sys::global();
+    let Ok(storage) = js_sys::Reflect::get(&global, &"localStorage".into()) else {
+        return;
+    };
+    let Ok(remove) = js_sys::Reflect::get(&storage, &"removeItem".into())
+        .and_then(|f| f.dyn_into::<js_sys::Function>().map_err(Into::into))
+    else {
+        return;
+    };
+    for key in [crate::app::PREFS_KEY, "egui_memory_ron"] {
+        let _ = remove.call1(&storage, &key.into());
+    }
+}
+
 /// Reloads the page, the changes given up.
 pub fn reload_page() {
     #[cfg(target_arch = "wasm32")]

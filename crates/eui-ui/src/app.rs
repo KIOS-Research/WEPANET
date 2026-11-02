@@ -379,7 +379,7 @@ impl Default for Prefs {
     }
 }
 
-const PREFS_KEY: &str = "epanet-ui-prefs";
+pub(crate) const PREFS_KEY: &str = "epanet-ui-prefs";
 
 /// A color as stored in the preferences.
 pub(crate) fn rgb(c: egui::Color32) -> [u8; 3] {
@@ -461,6 +461,15 @@ pub struct EpanetApp {
     /// The element the Property Editor shows: the selection, or the last
     /// one selected (a click on an empty part of the map only unselects).
     pub(crate) editor_shown: Option<Element>,
+    /// The node or link type chosen under Network Nodes / Links in the
+    /// Project Explorer (none: all of them).
+    pub(crate) explorer_kind: Option<crate::explorer::KindFilter>,
+    /// The text typed in the Property Editor's ID finder.
+    pub(crate) explorer_find: String,
+    /// When the page reloads after Reset All to Defaults (the browser's app
+    /// time, in seconds).
+    #[cfg(target_arch = "wasm32")]
+    reset_reload: Option<f64>,
     pub(crate) tool: Tool,
     pub(crate) link_start: Option<usize>,
     /// The vertices clicked so far for the link being drawn (world units).
@@ -587,6 +596,10 @@ impl EpanetApp {
             report_kind: ReportKind::Status,
             selection: None,
             editor_shown: None,
+            explorer_kind: None,
+            explorer_find: String::new(),
+            #[cfg(target_arch = "wasm32")]
+            reset_reload: None,
             tool: Tool::Select,
             link_start: None,
             link_vertices: Vec::new(),
@@ -818,6 +831,48 @@ impl EpanetApp {
         self.prefs.setup.apply_new_project_options(&mut net);
         self.setup = self.prefs.setup.clone();
         self.request_document(net, "Untitled", None);
+    }
+
+    /// Program Preferences > Reset All to Defaults: every preference (map
+    /// settings, legends, setup defaults, plugins and their repositories, the
+    /// recent projects) and the panels' layout as on a new install, and a
+    /// new project in place of the open one, its changes given up. In the
+    /// browser what it keeps for the app is emptied and the page reloads.
+    pub(crate) fn reset_to_defaults(&mut self, ctx: &egui::Context) {
+        #[cfg(target_arch = "wasm32")]
+        crate::recent::clear(self);
+        let mut prefs = Prefs {
+            map_style: MAP_STYLE,
+            ..Default::default()
+        };
+        crate::plugin_manager::migrate_repositories(&mut prefs.plugin_repos);
+        self.prefs = prefs;
+        self.prefs_backup = None;
+        // where windows and panels were, what was open or scrolled
+        ctx.memory_mut(|m| {
+            m.reset_areas();
+            m.data = Default::default();
+        });
+        #[cfg(target_arch = "wasm32")]
+        {
+            crate::io::clear_local_storage();
+            // (the recent projects are cleared in the background first)
+            self.reset_reload = Some(ctx.input(|i| i.time) + 0.5);
+            ctx.request_repaint();
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.dirty = false;
+            self.pending_document = None;
+            self.dialog = Dialog::None;
+            self.new_project();
+            self.apply_theme(ctx);
+            crate::i18n::set(&self.prefs.language);
+            if self.prefs.show_welcome {
+                self.dialog = Dialog::Welcome;
+            }
+            self.status = crate::i18n::tr("Settings reset to their defaults").into();
+        }
     }
 
     fn request_document(&mut self, net: Network, name: &str, path: Option<PathBuf>) {
@@ -1216,6 +1271,14 @@ impl EpanetApp {
             Some(Element::Node(_)) => self.explorer = ExplorerItem::Nodes,
             Some(Element::Link(_)) => self.explorer = ExplorerItem::Links,
             None => {}
+        }
+        // a type chosen in the Project Explorer stays while what is selected
+        // is of that type
+        if let Some(e) = sel
+            && self.explorer_kind.is_some()
+            && self.explorer_kind != crate::explorer::KindFilter::of(&self.net, e)
+        {
+            self.explorer_kind = None;
         }
     }
 
@@ -1962,6 +2025,14 @@ impl eframe::App for EpanetApp {
         if io::take_reload_request() && self.unsaved() {
             self.dialog = Dialog::ConfirmReload;
         }
+        #[cfg(target_arch = "wasm32")]
+        if let Some(t) = self.reset_reload {
+            if ctx.input(|i| i.time) >= t {
+                io::reload_page();
+            } else {
+                ctx.request_repaint();
+            }
+        }
         crate::style::set_decimals(self.prefs.decimals);
         crate::style::set_decimal_comma(self.prefs.decimal_separator.is_comma());
         crate::i18n::set(&self.prefs.language);
@@ -2041,6 +2112,29 @@ mod document_tests {
         EpanetApp::new(&eframe::CreationContext::_new_kittest(
             egui::Context::default(),
         ))
+    }
+
+    /// Reset All to Defaults: the preferences as on a new install and a new
+    /// project, even with changes not saved.
+    #[test]
+    fn reset_to_defaults_brings_back_a_new_install() {
+        let mut a = app();
+        a.load_example("Net1", eui_core::examples::NET1);
+        a.prefs.link_width = 9.0;
+        a.prefs.dark = true;
+        a.prefs.show_welcome = false;
+        a.prefs.recent.push("x.inp".into());
+        a.dirty = true;
+        let ctx = a.ctx.clone();
+        a.reset_to_defaults(&ctx);
+        let d = Prefs::default();
+        assert_eq!(a.prefs.link_width, d.link_width);
+        assert_eq!(a.prefs.dark, d.dark);
+        assert!(a.prefs.recent.is_empty());
+        assert_eq!(a.prefs.map_style, MAP_STYLE);
+        assert!(a.net.nodes.is_empty(), "the project was not replaced");
+        assert!(!a.dirty);
+        assert_eq!(a.dialog, Dialog::Welcome);
     }
 
     /// The coordinate reference system is saved in the project's file and

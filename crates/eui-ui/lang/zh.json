@@ -645,5 +645,18 @@
   "{} nodes and {} links selected": "已选择 {} 个节点和 {} 条管段",
   "Deleted {} nodes and {} links": "已删除 {} 个节点和 {} 条管段",
   "Delete the {} nodes (with their links) and {} links selected?": "删除所选的 {} 个节点（及其管段）和 {} 条管段？",
-  "Select by Tag": "按标签选择"
+  "Select by Tag": "按标签选择",
+  "Reservoirs": "水库",
+  "Tanks": "水池",
+  "  The project has no {}.": "  项目中没有{}。",
+  "Type an ID to find": "输入 ID 进行查找",
+  "No ID matches": "找不到此 ID",
+  "{} more: type to narrow the list": "另有 {} 个：输入以缩小列表",
+  "Find a node or link by its ID": "按 ID 查找节点或管段",
+  "Reset All to Defaults…": "全部重置为默认值…",
+  "Every preference, the recent projects, the plugins and the panels back to a new install's": "所有首选项、最近项目、插件和面板重置为全新安装时的状态",
+  "Reset all to defaults?": "全部重置为默认值？",
+  "All preferences, map settings, legends, the recent projects list, the installed plugins and the panels' layout go back to their defaults. The open project is closed and its changes that are not saved are lost.": "所有首选项、地图设置、图例、最近项目列表、已安装的插件和面板布局将重置为默认值。打开的项目将被关闭，未保存的更改将丢失。",
+  "Reset": "重置",
+  "Settings reset to their defaults": "设置已重置为默认值"
 }

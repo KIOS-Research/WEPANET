@@ -742,6 +742,48 @@ fn preferences(app: &mut EpanetApp, ui: &mut Ui) -> bool {
                 });
         });
     });
+    ui.add_space(8.0);
+    let reset_id = egui::Id::new("prefs_reset_all");
+    if ui
+        .button(crate::i18n::tr("Reset All to Defaults…"))
+        .on_hover_text(crate::i18n::tr(
+            "Every preference, the recent projects, the plugins and the panels back to a new install's",
+        ))
+        .clicked()
+    {
+        ctx.data_mut(|d| d.insert_temp(reset_id, true));
+    }
+    if ctx.data(|d| d.get_temp(reset_id)).unwrap_or(false) {
+        let mut answer = None;
+        egui::Modal::new(egui::Id::new("prefs_reset_modal")).show(&ctx, |ui| {
+            use crate::i18n::tr;
+            ui.set_width(380.0);
+            ui.label(RichText::new(tr("Reset all to defaults?")).font(crate::fonts::bold(14.0)));
+            ui.add_space(8.0);
+            ui.label(tr(
+                "All preferences, map settings, legends, the recent projects list, the installed plugins and the panels' layout go back to their defaults. The open project is closed and its changes that are not saved are lost.",
+            ));
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.button(tr("Reset")).clicked() {
+                    answer = Some(true);
+                }
+                if ui.button(tr("Cancel")).clicked()
+                    || ui.input(|i| i.key_pressed(egui::Key::Escape))
+                {
+                    answer = Some(false);
+                }
+            });
+        });
+        if let Some(reset) = answer {
+            ctx.data_mut(|d| d.remove::<bool>(reset_id));
+            if reset {
+                ctx.data_mut(|d| d.remove::<bool>(clear_id));
+                app.reset_to_defaults(&ctx);
+                return true;
+            }
+        }
+    }
     ui.add_space(12.0);
     let b = buttons(ui, &["Help", "OK", "Cancel"]);
     ui.add_space(6.0);
