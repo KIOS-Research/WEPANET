@@ -7,8 +7,61 @@ use eui_core::props::{self, Element, OptionCategory, PropKind};
 use eui_core::{LinkKind, LinkVar, NodeKind, NodeVar};
 
 use crate::app::{EpanetApp, ExplorerItem};
-use crate::i18n::tr;
+use crate::i18n::{tr, trf};
 use crate::style;
+
+/// A node or link type under Network Nodes / Network Links in the tree:
+/// the Property Editor then steps through (and finds) objects of that type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KindFilter {
+    Node(NodeKind),
+    Link(LinkKind),
+}
+
+impl KindFilter {
+    /// The type of an element.
+    pub fn of(net: &eui_core::Network, e: Element) -> Option<KindFilter> {
+        match e {
+            Element::Node(i) => net.nodes.get(i).map(|n| KindFilter::Node(n.kind)),
+            Element::Link(i) => net.links.get(i).map(|l| KindFilter::Link(l.kind)),
+        }
+    }
+
+    /// The tree's label for the type, without its count.
+    fn label(self) -> &'static str {
+        match self {
+            KindFilter::Node(NodeKind::Junction) => "Junctions",
+            KindFilter::Node(NodeKind::Reservoir) => "Reservoirs",
+            KindFilter::Node(NodeKind::Tank) => "Tanks",
+            KindFilter::Link(LinkKind::Pipe) => "Pipes",
+            KindFilter::Link(LinkKind::Pump) => "Pumps",
+            KindFilter::Link(LinkKind::Valve) => "Valves",
+        }
+    }
+}
+
+/// The elements the Property Editor steps through: the nodes (or links),
+/// only those of `kind` when one is chosen.
+fn elements(app: &EpanetApp, nodes: bool, kind: Option<KindFilter>) -> Vec<Element> {
+    if nodes {
+        (0..app.net.nodes.len())
+            .filter(|&i| kind.is_none_or(|k| k == KindFilter::Node(app.net.nodes[i].kind)))
+            .map(Element::Node)
+            .collect()
+    } else {
+        (0..app.net.links.len())
+            .filter(|&i| kind.is_none_or(|k| k == KindFilter::Link(app.net.links[i].kind)))
+            .map(Element::Link)
+            .collect()
+    }
+}
+
+fn element_id(app: &EpanetApp, e: Element) -> &str {
+    match e {
+        Element::Node(i) => &app.net.nodes[i].id,
+        Element::Link(i) => &app.net.links[i].id,
+    }
+}
 
 /// The Project Explorer and the Property Editor, as they first are: the
 /// tree above, with a splitter between them.
@@ -64,30 +117,98 @@ pub(crate) fn editor_pane(app: &mut EpanetApp, ui: &mut Ui) {
         .show(ui, |ui| editor(app, ui));
 }
 
-fn tree(app: &mut EpanetApp, ui: &mut Ui) {
-    let item = |ui: &mut Ui, app: &mut EpanetApp, label: &str, it: ExplorerItem| {
-        // Categories with no data are grayed out, as in EPANET-UI.
-        let empty = match it {
-            ExplorerItem::Nodes => app.net.nodes.is_empty(),
-            ExplorerItem::Links => app.net.links.is_empty(),
-            ExplorerItem::Labels => app.net.raw_lines("LABELS").next().is_none(),
-            _ => false,
-        };
-        let text = if empty {
-            RichText::new(tr(label)).weak()
-        } else {
-            RichText::new(tr(label))
-        };
-        if ui.selectable_label(app.explorer == it, text).clicked() {
-            app.explorer = it;
-            if it == ExplorerItem::Nodes && !matches!(app.selection, Some(Element::Node(_))) {
-                app.selection = (!app.net.nodes.is_empty()).then_some(Element::Node(0));
-            }
-            if it == ExplorerItem::Links && !matches!(app.selection, Some(Element::Link(_))) {
-                app.selection = (!app.net.links.is_empty()).then_some(Element::Link(0));
-            }
-        }
+/// One category of the tree. Returns true when clicked.
+fn item(ui: &mut Ui, app: &mut EpanetApp, label: &str, it: ExplorerItem) -> bool {
+    // Categories with no data are grayed out, as in EPANET-UI.
+    let empty = match it {
+        ExplorerItem::Nodes => app.net.nodes.is_empty(),
+        ExplorerItem::Links => app.net.links.is_empty(),
+        ExplorerItem::Labels => app.net.raw_lines("LABELS").next().is_none(),
+        _ => false,
     };
+    let text = if empty {
+        RichText::new(tr(label)).weak()
+    } else {
+        RichText::new(tr(label))
+    };
+    let network = matches!(it, ExplorerItem::Nodes | ExplorerItem::Links);
+    let selected = app.explorer == it && !(network && app.explorer_kind.is_some());
+    let clicked = ui.selectable_label(selected, text).clicked();
+    if clicked {
+        app.explorer = it;
+        app.explorer_kind = None;
+        if it == ExplorerItem::Nodes && !matches!(app.selection, Some(Element::Node(_))) {
+            app.selection = (!app.net.nodes.is_empty()).then_some(Element::Node(0));
+        }
+        if it == ExplorerItem::Links && !matches!(app.selection, Some(Element::Link(_))) {
+            app.selection = (!app.net.links.is_empty()).then_some(Element::Link(0));
+        }
+    }
+    clicked
+}
+
+/// Network Nodes (or Links) with its types below it, each with its count:
+/// closed at first (the whole tree fits), opened when it is chosen.
+fn network_item(ui: &mut Ui, app: &mut EpanetApp, nodes: bool) {
+    let (label, it) = if nodes {
+        ("Network Nodes", ExplorerItem::Nodes)
+    } else {
+        ("Network Links", ExplorerItem::Links)
+    };
+    let kinds: Vec<KindFilter> = if nodes {
+        NodeKind::ALL.iter().map(|&k| KindFilter::Node(k)).collect()
+    } else {
+        [LinkKind::Pipe, LinkKind::Pump, LinkKind::Valve]
+            .into_iter()
+            .map(KindFilter::Link)
+            .collect()
+    };
+    let id = ui.make_persistent_id(("explorer_network", nodes));
+    let mut chosen = false;
+    egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false)
+        .show_header(ui, |ui| chosen = item(ui, app, label, it))
+        .body(|ui| {
+            for k in kinds {
+                let count = if nodes {
+                    app.net
+                        .nodes
+                        .iter()
+                        .filter(|n| KindFilter::Node(n.kind) == k)
+                        .count()
+                } else {
+                    app.net
+                        .links
+                        .iter()
+                        .filter(|l| KindFilter::Link(l.kind) == k)
+                        .count()
+                };
+                let text = format!("{} ({count})", tr(k.label()));
+                let text = if count == 0 {
+                    RichText::new(text).weak()
+                } else {
+                    RichText::new(text)
+                };
+                let selected = app.explorer == it && app.explorer_kind == Some(k);
+                if ui.selectable_label(selected, text).clicked() {
+                    app.explorer = it;
+                    app.explorer_kind = Some(k);
+                    let shown = app.selection.and_then(|e| KindFilter::of(&app.net, e));
+                    if shown != Some(k) {
+                        app.selection = elements(app, nodes, Some(k)).first().copied();
+                        app.editor_shown = None;
+                    }
+                }
+            }
+        });
+    if chosen {
+        let mut state =
+            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
+        state.set_open(true);
+        state.store(ui.ctx());
+    }
+}
+
+fn tree(app: &mut EpanetApp, ui: &mut Ui) {
     item(ui, app, "Title / Notes", ExplorerItem::Title);
     egui::CollapsingHeader::new(tr("Analysis Options"))
         .default_open(true)
@@ -96,8 +217,8 @@ fn tree(app: &mut EpanetApp, ui: &mut Ui) {
                 item(ui, app, c.label(), ExplorerItem::Options(c));
             }
         });
-    item(ui, app, "Network Nodes", ExplorerItem::Nodes);
-    item(ui, app, "Network Links", ExplorerItem::Links);
+    network_item(ui, app, true);
+    network_item(ui, app, false);
     item(ui, app, "Time Patterns", ExplorerItem::Patterns);
     item(ui, app, "Data Curves", ExplorerItem::Curves);
     egui::CollapsingHeader::new(tr("Control Actions"))
@@ -361,66 +482,57 @@ fn prop_units(app: &EpanetApp, name: &str) -> String {
 fn element_editor(app: &mut EpanetApp, ui: &mut Ui) {
     let menu = app.palette().menu;
     let want_nodes = app.explorer == ExplorerItem::Nodes;
-    let of_kind = |e: Option<Element>| match (e, want_nodes) {
-        (Some(Element::Node(i)), true) if i < app.net.nodes.len() => Some(Element::Node(i)),
-        (Some(Element::Link(i)), false) if i < app.net.links.len() => Some(Element::Link(i)),
-        _ => None,
+    // a type chosen in the tree that is not of this category is dropped
+    let kind = app
+        .explorer_kind
+        .filter(|k| matches!(k, KindFilter::Node(_)) == want_nodes);
+    app.explorer_kind = kind;
+    let of_kind = |e: Option<Element>| {
+        let e = e?;
+        let ek = KindFilter::of(&app.net, e)?;
+        (matches!(ek, KindFilter::Node(_)) == want_nodes && kind.is_none_or(|k| k == ek))
+            .then_some(e)
     };
     // the selection; with none, what was shown last (as EPANET-UI keeps it),
     // else the first
-    let first = if want_nodes {
-        (!app.net.nodes.is_empty()).then_some(Element::Node(0))
-    } else {
-        (!app.net.links.is_empty()).then_some(Element::Link(0))
-    };
+    let members = elements(app, want_nodes, kind);
     let sel = match of_kind(app.selection)
         .or_else(|| of_kind(app.editor_shown))
-        .or(first)
+        .or(members.first().copied())
     {
         Some(e) => e,
         None => {
-            item_header(
-                ui,
-                menu,
-                if want_nodes {
-                    "Network Nodes"
-                } else {
-                    "Network Links"
-                },
-                false,
-            );
+            let title = match kind {
+                Some(k) => k.label(),
+                None if want_nodes => "Network Nodes",
+                None => "Network Links",
+            };
+            item_header(ui, menu, title, false);
             ui.add_space(8.0);
-            ui.label(
-                RichText::new(if want_nodes {
-                    "  The project has no nodes."
-                } else {
-                    "  The project has no links."
-                })
-                .weak(),
-            );
+            let text = match kind {
+                Some(k) => trf("  The project has no {}.", &[&tr(k.label())]),
+                None if want_nodes => tr("  The project has no nodes.").to_string(),
+                None => tr("  The project has no links.").to_string(),
+            };
+            ui.label(RichText::new(text).weak());
             return;
         }
     };
     app.editor_shown = Some(sel);
-    let (title, count, idx) = match sel {
-        Element::Node(i) => (
-            format!("{} {}", app.net.nodes[i].kind.label(), app.net.nodes[i].id),
-            app.net.nodes.len(),
-            i,
-        ),
-        Element::Link(i) => (
-            format!("{} {}", app.net.links[i].kind.label(), app.net.links[i].id),
-            app.net.links.len(),
-            i,
-        ),
+    let title = match sel {
+        Element::Node(i) => format!("{} {}", app.net.nodes[i].kind.label(), app.net.nodes[i].id),
+        Element::Link(i) => format!("{} {}", app.net.links[i].kind.label(), app.net.links[i].id),
     };
     let step = item_header(ui, menu, &title, true);
     if step != 0 {
-        let j = (idx as i64 + step as i64).rem_euclid(count as i64) as usize;
-        app.selection = Some(match sel {
-            Element::Node(_) => Element::Node(j),
-            Element::Link(_) => Element::Link(j),
-        });
+        // ◀ ▶ step through the objects of the type chosen in the tree
+        let idx = members.iter().position(|&e| e == sel).unwrap_or(0);
+        let j = (idx as i64 + step as i64).rem_euclid(members.len() as i64) as usize;
+        app.selection = Some(members[j]);
+        return;
+    }
+    if let Some(found) = id_finder(app, ui, sel, &members) {
+        app.selection = Some(found);
         return;
     }
 
@@ -499,6 +611,73 @@ fn element_editor(app: &mut EpanetApp, ui: &mut Ui) {
             }
         }
     }
+}
+
+/// Most IDs the finder lists at once; typing narrows the list.
+const FINDER_ROWS: usize = 500;
+
+/// A drop-down list of the IDs the Property Editor steps through, with a
+/// box at its top to type (part of) an ID in. Returns the element picked.
+fn id_finder(
+    app: &mut EpanetApp,
+    ui: &mut Ui,
+    sel: Element,
+    members: &[Element],
+) -> Option<Element> {
+    let mut picked = None;
+    ui.add_space(2.0);
+    let width = ui.available_width();
+    let current = element_id(app, sel).to_string();
+    let inner = egui::ComboBox::from_id_salt("explorer_find")
+        .width(width - 4.0)
+        .height(320.0)
+        .selected_text(current)
+        .show_ui(ui, |ui| {
+            let edit = ui.add(
+                egui::TextEdit::singleline(&mut app.explorer_find)
+                    .hint_text(tr("Type an ID to find"))
+                    .desired_width(f32::INFINITY),
+            );
+            if !edit.has_focus() && !ui.input(|i| i.pointer.any_down()) {
+                edit.request_focus();
+            }
+            let needle = app.explorer_find.trim().to_lowercase();
+            let mut matches = members.iter().copied().filter(|&e| {
+                needle.is_empty() || element_id(app, e).to_lowercase().contains(&needle)
+            });
+            let shown: Vec<Element> = matches.by_ref().take(FINDER_ROWS).collect();
+            let more = matches.count();
+            // Enter picks an exact match, else the first one listed
+            if edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                picked = shown
+                    .iter()
+                    .copied()
+                    .find(|&e| element_id(app, e).eq_ignore_ascii_case(&needle))
+                    .or(shown.first().copied());
+            }
+            ui.separator();
+            for &e in &shown {
+                if ui.selectable_label(e == sel, element_id(app, e)).clicked() {
+                    picked = Some(e);
+                }
+            }
+            if shown.is_empty() {
+                ui.label(RichText::new(tr("No ID matches")).weak());
+            }
+            if more > 0 {
+                ui.label(RichText::new(trf("{} more: type to narrow the list", &[&more])).weak());
+            }
+            if picked.is_some() {
+                ui.close();
+            }
+        });
+    inner
+        .response
+        .on_hover_text(tr("Find a node or link by its ID"));
+    if picked.is_some() {
+        app.explorer_find.clear();
+    }
+    picked
 }
 
 /// EPANET's single species water quality properties, left out while
@@ -1230,6 +1409,67 @@ mod tests {
         assert!(t.iter().any(|x| x == "Initial Quality"), "{t:?}");
         assert!(t.iter().any(|x| x == "Source Quality"));
         assert!(!t.iter().any(|x| x == "Initial AS3"));
+    }
+}
+
+#[cfg(test)]
+mod type_tests {
+    use super::*;
+
+    fn net1() -> (egui::Context, EpanetApp) {
+        let ctx = egui::Context::default();
+        let mut app = EpanetApp::new(&eframe::CreationContext::_new_kittest(ctx.clone()));
+        app.load_example("Net1", eui_core::examples::NET1);
+        (ctx, app)
+    }
+
+    fn draw(ctx: &egui::Context, app: &mut EpanetApp) {
+        ctx.run_ui(egui::RawInput::default(), |ui| editor_pane(app, ui))
+            .textures_delta
+            .clear();
+    }
+
+    /// With Tanks chosen under Network Nodes the Property Editor shows a
+    /// tank, and only tanks are listed to step through.
+    #[test]
+    fn a_type_chosen_in_the_tree_is_what_the_editor_shows() {
+        let (ctx, mut app) = net1();
+        app.explorer = ExplorerItem::Nodes;
+        app.explorer_kind = Some(KindFilter::Node(NodeKind::Tank));
+        app.selection = None;
+        app.editor_shown = None;
+        draw(&ctx, &mut app);
+        let Some(Element::Node(i)) = app.editor_shown else {
+            panic!("no node shown")
+        };
+        assert_eq!(app.net.nodes[i].kind, NodeKind::Tank);
+        let tanks = elements(&app, true, app.explorer_kind);
+        assert_eq!(tanks.len(), 1);
+        let pipes = elements(&app, false, Some(KindFilter::Link(LinkKind::Pipe)));
+        assert_eq!(pipes.len(), 12);
+        assert!(
+            pipes
+                .iter()
+                .all(|&e| KindFilter::of(&app.net, e) == Some(KindFilter::Link(LinkKind::Pipe)))
+        );
+    }
+
+    /// Selecting an object of another type (on the map) drops the type.
+    #[test]
+    fn selecting_another_type_drops_the_type() {
+        let (_ctx, mut app) = net1();
+        app.explorer_kind = Some(KindFilter::Node(NodeKind::Tank));
+        let junction = (0..app.net.nodes.len())
+            .find(|&i| app.net.nodes[i].kind == NodeKind::Junction)
+            .unwrap();
+        app.select(Some(Element::Node(junction)));
+        assert_eq!(app.explorer_kind, None);
+        let tank = (0..app.net.nodes.len())
+            .find(|&i| app.net.nodes[i].kind == NodeKind::Tank)
+            .unwrap();
+        app.explorer_kind = Some(KindFilter::Node(NodeKind::Tank));
+        app.select(Some(Element::Node(tank)));
+        assert_eq!(app.explorer_kind, Some(KindFilter::Node(NodeKind::Tank)));
     }
 }
 
