@@ -630,6 +630,7 @@ fn id_finder(
     let current = element_id(app, sel).to_string();
     let inner = egui::ComboBox::from_id_salt("explorer_find")
         .width(width - 4.0)
+        .truncate()
         .height(320.0)
         .selected_text(current)
         .show_ui(ui, |ui| {

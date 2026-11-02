@@ -570,8 +570,13 @@ fn selector_ui(app: &mut EpanetApp, ui: &mut Ui) {
 /// A drop-down of fixed choices, by index.
 fn choice(ui: &mut Ui, id: &str, index: &mut usize, choices: &[&str], width: f32, enabled: bool) {
     ui.add_enabled_ui(enabled, |ui| {
+        // a text too long for the box is cut short: egui would otherwise
+        // widen the box past `width` (and the panel with it), by how much
+        // depending on the fonts
+        ui.set_max_width(width);
         egui::ComboBox::from_id_salt(id)
             .width(width)
+            .truncate()
             .selected_text(tr(choices[*index]))
             .show_ui(ui, |ui| {
                 for (k, c) in choices.iter().enumerate() {
