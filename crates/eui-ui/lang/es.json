@@ -692,9 +692,14 @@
   "No link has a value to classify (run an analysis for results).": "Ninguna línea tiene un valor que clasificar (ejecute un análisis para los resultados).",
   "From": "Desde",
   "To": "Hasta",
-  "Link Styling": "Estilo de Líneas",
   "Styling": "Estilo",
-  "Color and size the links by type or value, as in QGIS": "Color y grosor de las líneas por tipo o valor, como en QGIS",
+  "Color and size the nodes and links by type or value, as in QGIS": "Color y tamaño de los nodos y las líneas por tipo o valor, como en QGIS",
+  "Layer": "Capa",
+  "Size": "Tamaño",
+  "Symbol Size": "Tamaño del Símbolo",
+  "The nodes are colored by the map theme chosen in the Map Viewer, with EPANET-UI's legend.": "Los nodos se colorean según el tema elegido en el Map Viewer, con la leyenda de EPANET-UI.",
+  "Choose the value to color the nodes by.": "Elija el valor con el que colorear los nodos.",
+  "No node has a value to classify (run an analysis for results).": "Ningún nodo tiene un valor que clasificar (ejecute un análisis para los resultados).",
   "To SVG File": "A Archivo SVG",
   "A vector picture of the map (without the basemap), for print and editing": "Una imagen vectorial del mapa (sin el mapa base), para imprimir y editar"
 }

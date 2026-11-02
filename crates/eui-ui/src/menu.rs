@@ -591,12 +591,13 @@ fn map_toolbar(app: &mut EpanetApp, ui: &mut Ui) {
         Icon::Styling,
         "Styling",
         true,
-        app.prefs.link_style.active(),
-        "Color and size the links by type or value, as in QGIS",
+        app.prefs.link_style.active() || app.prefs.node_style.active(),
+        "Color and size the nodes and links by type or value, as in QGIS",
     )
     .clicked()
     {
-        crate::styling::open(app);
+        let layer = app.styling_layer;
+        crate::styling::open(app, layer);
     }
     if tool_button(
         ui,

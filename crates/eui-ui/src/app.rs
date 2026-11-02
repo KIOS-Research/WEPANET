@@ -169,7 +169,7 @@ pub enum Dialog {
     ConfirmReplace,
     /// F5 / Ctrl+R in the browser with changes not saved.
     ConfirmReload,
-    LinkStyling,
+    Styling,
 }
 
 /// User preferences, persisted between sessions.
@@ -260,7 +260,9 @@ pub struct Prefs {
     pub node_legend_pos: Option<[f32; 2]>,
     pub link_legend_pos: Option<[f32; 2]>,
     /// Map > Styling: how the links are drawn.
-    pub link_style: crate::styling::LinkStyle,
+    pub link_style: crate::styling::Style,
+    /// Map > Styling of the nodes.
+    pub node_style: crate::styling::Style,
     /// Project Setup defaults for new objects and projects.
     pub setup: crate::setup::SetupDefaults,
     /// Loaded user plugins: (file name, Rhai source).
@@ -358,7 +360,8 @@ impl Default for Prefs {
             node_legend_framed: true,
             node_legend_pos: None,
             link_legend_pos: None,
-            link_style: Default::default(),
+            link_style: crate::styling::Style::links(),
+            node_style: crate::styling::Style::nodes(),
             link_legend_framed: true,
             setup: Default::default(),
             user_plugins: Vec::new(),
@@ -545,6 +548,8 @@ pub struct EpanetApp {
     /// This project's ID prefixes and properties for new objects.
     pub(crate) setup: crate::setup::SetupDefaults,
     pub(crate) setup_edit: Option<crate::setup::SetupEdit>,
+    /// The layer the Styling window shows.
+    pub(crate) styling_layer: crate::styling::Layer,
     /// Whether the document is a WEPANET project (a .wepanet file), which Save
     /// saves as one.
     pub(crate) project: bool,
@@ -681,6 +686,7 @@ impl EpanetApp {
             dxf_import: None,
             csv_import: None,
             setup_edit: None,
+            styling_layer: Default::default(),
             project: false,
             saved_layers: Vec::new(),
             pending_project: None,

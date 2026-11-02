@@ -1,24 +1,49 @@
-//! Map > Styling: QGIS-like symbology for the links (pipes, pumps and
-//! valves), beside EPANET-UI's map themes. A link style is drawn with one
-//! of four renderers:
+//! Map > Styling: QGIS-like symbology for the nodes (junctions, reservoirs
+//! and tanks) and the links (pipes, pumps and valves), beside EPANET-UI's
+//! map themes. Each layer's style is drawn with one of four renderers:
 //!
 //! - EPANET-UI Theme: the map theme and its legend, as in EPANET-UI;
-//! - Single Symbol: one color and width for every link;
-//! - Categorized: a color and width per link type;
-//! - Graduated: the link theme's values in classes (Equal Interval,
+//! - Single Symbol: one color and size for every node or link;
+//! - Categorized: a color and size per node or link type;
+//! - Graduated: the layer theme's values in classes (Equal Interval,
 //!   Quantile, Natural Breaks or Pretty Breaks), colored along a color ramp,
-//!   with widths fixed, by class or proportional to the value.
+//!   with sizes fixed, by class or proportional to the value.
 //!
+//! A node's size is the radius of its symbol, a link's its line width.
 //! Styles are kept in the preferences and can be saved to a `.wstyle` file
 //! (JSON) and loaded again, for other networks.
 
 use egui::{Color32, RichText, Ui, vec2};
-use eui_core::LinkKind;
+use eui_core::{LinkKind, NodeKind};
 use serde::{Deserialize, Serialize};
 
 use crate::app::{Dialog, EpanetApp};
 use crate::i18n::{tr, trf};
-use crate::style::LinkTheme;
+use crate::style::{LinkTheme, NodeTheme};
+
+/// The map layer a style is for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Layer {
+    Nodes,
+    #[default]
+    Links,
+}
+
+impl Layer {
+    pub fn label(self) -> &'static str {
+        match self {
+            Layer::Nodes => "Nodes",
+            Layer::Links => "Links",
+        }
+    }
+}
+
+/// The theme a graduated style's classes were found for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Classified {
+    Node(NodeTheme),
+    Link(LinkTheme),
+}
 
 /// File extension of saved styles.
 pub const EXT: &str = "wstyle";
@@ -232,22 +257,25 @@ impl Ramp {
     }
 }
 
-/// The color and width a link is drawn with.
+/// The color and size a node or link is drawn with: a link's line width, a
+/// node's symbol radius.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Symbol {
     pub color: Color32,
     pub width: f32,
 }
 
-/// The link style (Map > Styling).
+/// The style of the nodes or of the links (Map > Styling). Widths are a
+/// link's line width and a node's symbol radius.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct LinkStyle {
+pub struct Style {
     pub renderer: Renderer,
     /// Single Symbol.
     pub color: [u8; 3],
     pub width: f32,
-    /// Categorized: pipes, pumps and valves.
+    /// Categorized: pipes, pumps and valves, or junctions, reservoirs and
+    /// tanks.
     pub kind_colors: [[u8; 3]; 3],
     pub kind_widths: [f32; 3],
     /// Graduated.
@@ -262,17 +290,27 @@ pub struct LinkStyle {
     pub bounds: Vec<f32>,
     /// The classes' colors.
     pub colors: Vec<[u8; 3]>,
-    /// The link theme the classes were found for.
-    pub classified: Option<LinkTheme>,
-    /// Links without a value (a pump has no diameter).
+    /// The theme the classes were found for.
+    pub classified: Option<Classified>,
+    /// Values are classified with their sign (node values: a negative
+    /// pressure is low), else by magnitude (link flows run either way).
+    pub signed: bool,
+    /// Elements without a value (a pump has no diameter).
     pub no_value: [u8; 3],
     /// 0.1 (nearly see-through) to 1.
     pub opacity: f32,
 }
 
-impl Default for LinkStyle {
+impl Default for Style {
     fn default() -> Self {
-        LinkStyle {
+        Style::links()
+    }
+}
+
+impl Style {
+    /// The links' style at first.
+    pub fn links() -> Self {
+        Style {
             renderer: Renderer::Theme,
             color: [0x1f, 0x5f, 0xa8],
             width: 2.0,
@@ -288,8 +326,24 @@ impl Default for LinkStyle {
             bounds: Vec::new(),
             colors: Vec::new(),
             classified: None,
+            signed: false,
             no_value: [0xa0, 0xa0, 0xa0],
             opacity: 1.0,
+        }
+    }
+
+    /// The nodes' style at first.
+    pub fn nodes() -> Self {
+        Style {
+            color: [0x1f, 0x5f, 0xa8],
+            width: 3.0,
+            kind_colors: [[0x1f, 0x5f, 0xa8], [0x2c, 0xa2, 0x5f], [0xd9, 0x48, 0x01]],
+            kind_widths: [3.0, 5.0, 5.0],
+            width_by: WidthBy::Fixed,
+            min_width: 2.0,
+            max_width: 7.0,
+            signed: true,
+            ..Style::links()
         }
     }
 }
@@ -302,7 +356,8 @@ fn to_rgb(c: Color32) -> [u8; 3] {
     [c.r(), c.g(), c.b()]
 }
 
-fn kind_index(kind: LinkKind) -> usize {
+/// The Categorized row of a link type.
+pub fn link_kind(kind: LinkKind) -> usize {
     match kind {
         LinkKind::Pipe => 0,
         LinkKind::Pump => 1,
@@ -310,8 +365,25 @@ fn kind_index(kind: LinkKind) -> usize {
     }
 }
 
-impl LinkStyle {
-    /// Whether the style, not EPANET-UI's theme, colors the links.
+/// The Categorized row of a node type.
+pub fn node_kind(kind: NodeKind) -> usize {
+    match kind {
+        NodeKind::Junction => 0,
+        NodeKind::Reservoir => 1,
+        NodeKind::Tank => 2,
+    }
+}
+
+/// The Categorized rows' names.
+fn kind_names(layer: Layer) -> [&'static str; 3] {
+    match layer {
+        Layer::Nodes => ["Junctions", "Reservoirs", "Tanks"],
+        Layer::Links => ["Pipes", "Pumps", "Valves"],
+    }
+}
+
+impl Style {
+    /// Whether the style, not EPANET-UI's theme, colors the layer.
     pub fn active(&self) -> bool {
         self.renderer != Renderer::Theme
     }
@@ -327,13 +399,18 @@ impl LinkStyle {
         if n == 0 {
             return None;
         }
-        let v = value.abs();
+        let v = self.magnitude(value);
         Some(
             self.bounds[1..n]
                 .iter()
                 .position(|&b| v < b)
                 .unwrap_or(n - 1),
         )
+    }
+
+    /// The value as it is classified: signed, or its magnitude.
+    fn magnitude(&self, v: f32) -> f32 {
+        if self.signed { v } else { v.abs() }
     }
 
     fn class_color(&self, k: usize) -> Color32 {
@@ -361,9 +438,10 @@ impl LinkStyle {
         }
     }
 
-    /// How a link of `kind` with the theme's `value` is drawn; None for
-    /// EPANET-UI's theme.
-    pub fn symbol(&self, kind: LinkKind, value: Option<f32>) -> Option<Symbol> {
+    /// How an element of the Categorized row `kind` (see [`link_kind`],
+    /// [`node_kind`]) with the theme's `value` is drawn; None for EPANET-UI's
+    /// theme.
+    pub fn symbol(&self, kind: usize, value: Option<f32>) -> Option<Symbol> {
         let fade = |c: Color32| {
             if self.opacity < 1.0 {
                 c.gamma_multiply(self.opacity.clamp(0.05, 1.0))
@@ -378,7 +456,7 @@ impl LinkStyle {
                 width: self.width,
             },
             Renderer::Categorized => {
-                let k = kind_index(kind);
+                let k = kind.min(2);
                 Symbol {
                     color: rgb(self.kind_colors[k]),
                     width: self.kind_widths[k],
@@ -394,7 +472,7 @@ impl LinkStyle {
                     width: if self.width_by == WidthBy::Value {
                         let (lo, hi) = (self.bounds[0], self.bounds[self.class_count()]);
                         let t = if hi > lo {
-                            ((v.abs() - lo) / (hi - lo)).clamp(0.0, 1.0)
+                            ((self.magnitude(v) - lo) / (hi - lo)).clamp(0.0, 1.0)
                         } else {
                             1.0
                         };
@@ -411,13 +489,14 @@ impl LinkStyle {
         })
     }
 
-    /// Finds the class bounds for `values` (their magnitudes) and colors the
-    /// classes along the ramp. With no values the classes are cleared.
+    /// Finds the class bounds for `values` (signed or their magnitudes) and
+    /// colors the classes along the ramp. With no values the classes are
+    /// cleared.
     pub fn classify(&mut self, values: &[f32]) {
         let mut v: Vec<f64> = values
             .iter()
             .filter(|x| x.is_finite())
-            .map(|x| x.abs() as f64)
+            .map(|&x| self.magnitude(x) as f64)
             .collect();
         v.sort_by(f64::total_cmp);
         self.bounds = class_bounds(&v, self.classes.clamp(2, 12), self.method)
@@ -433,27 +512,29 @@ impl LinkStyle {
         self.colors = (0..n).map(|k| to_rgb(self.ramp_color(k, n))).collect();
     }
 
-    /// The legend of the style; None for EPANET-UI's theme.
-    pub fn legend(&self, title: String) -> Option<crate::map::LegendBox> {
+    /// The legend of the style of `layer`; None for EPANET-UI's theme.
+    pub fn legend(&self, title: String, layer: Layer) -> Option<crate::map::LegendBox> {
         use crate::map::{LegendBox, Swatch};
-        let line = |s: Symbol| Swatch::Line {
-            color: s.color,
-            width: s.width,
+        let swatch = |s: Symbol| match layer {
+            Layer::Nodes => Swatch::Dot {
+                color: s.color,
+                radius: s.width,
+            },
+            Layer::Links => Swatch::Line {
+                color: s.color,
+                width: s.width,
+            },
         };
         let rows = match self.renderer {
             Renderer::Theme => return None,
-            Renderer::Single => vec![(
-                line(self.symbol(LinkKind::Pipe, None)?),
-                tr("Links").to_string(),
-            )],
-            Renderer::Categorized => [
-                (LinkKind::Pipe, "Pipes"),
-                (LinkKind::Pump, "Pumps"),
-                (LinkKind::Valve, "Valves"),
-            ]
-            .into_iter()
-            .map(|(k, label)| (line(self.symbol(k, None).unwrap()), tr(label).to_string()))
-            .collect(),
+            Renderer::Single => {
+                vec![(swatch(self.symbol(0, None)?), tr(layer.label()).to_string())]
+            }
+            Renderer::Categorized => kind_names(layer)
+                .into_iter()
+                .enumerate()
+                .map(|(k, label)| (swatch(self.symbol(k, None).unwrap()), tr(label).to_string()))
+                .collect(),
             Renderer::Graduated => {
                 let n = self.class_count();
                 if n == 0 {
@@ -468,7 +549,7 @@ impl LinkStyle {
                         } else {
                             a
                         };
-                        let mut s = self.symbol(LinkKind::Pipe, Some(mid)).unwrap();
+                        let mut s = self.symbol(0, Some(mid)).unwrap();
                         s.color = {
                             let c = self.class_color(k);
                             if self.opacity < 1.0 {
@@ -482,16 +563,16 @@ impl LinkStyle {
                             crate::style::fmt_break(a),
                             crate::style::fmt_break(b)
                         );
-                        (line(s), label)
+                        (swatch(s), label)
                     })
                     .collect()
             }
         };
         Some(LegendBox {
-            title: if self.renderer == Renderer::Categorized {
-                tr("Link Type").to_string()
-            } else {
-                title
+            title: match (self.renderer, layer) {
+                (Renderer::Categorized, Layer::Nodes) => tr("Node Type").to_string(),
+                (Renderer::Categorized, Layer::Links) => tr("Link Type").to_string(),
+                _ => title,
             },
             rows,
         })
@@ -612,51 +693,150 @@ fn jenks(all: &[f64], k: usize) -> Vec<f64> {
     b
 }
 
-/// Classifies the graduated style again when its theme changed, or when it
-/// has no classes yet (as when result values were not there before).
-pub fn prepare(app: &mut EpanetApp) {
-    let s = &app.prefs.link_style;
-    if s.renderer != Renderer::Graduated {
-        return;
+/// The style of a layer.
+pub fn style(app: &EpanetApp, layer: Layer) -> &Style {
+    match layer {
+        Layer::Nodes => &app.prefs.node_style,
+        Layer::Links => &app.prefs.link_style,
     }
-    let theme = app.prefs.link_theme;
-    if s.classified == Some(theme) && s.class_count() > 0 {
-        return;
-    }
-    let values = theme_values(app);
-    let s = &mut app.prefs.link_style;
-    s.classify(&values);
-    // tried again once there are values (results to come)
-    s.classified = (!values.is_empty()).then_some(theme);
 }
 
-fn theme_values(app: &EpanetApp) -> Vec<f32> {
-    (0..app.net.links.len())
-        .filter_map(|i| app.link_theme_value(i))
+fn style_mut(app: &mut EpanetApp, layer: Layer) -> &mut Style {
+    match layer {
+        Layer::Nodes => &mut app.prefs.node_style,
+        Layer::Links => &mut app.prefs.link_style,
+    }
+}
+
+/// The map theme of a layer.
+fn theme(app: &EpanetApp, layer: Layer) -> Classified {
+    match layer {
+        Layer::Nodes => Classified::Node(app.prefs.node_theme),
+        Layer::Links => Classified::Link(app.prefs.link_theme),
+    }
+}
+
+fn set_theme(app: &mut EpanetApp, t: Classified) {
+    match t {
+        Classified::Node(t) => app.prefs.node_theme = t,
+        Classified::Link(t) => app.prefs.link_theme = t,
+    }
+}
+
+fn theme_name(app: &EpanetApp, t: Classified) -> String {
+    match t {
+        Classified::Node(t) => app.node_theme_name(t),
+        Classified::Link(t) => app.link_theme_name(t),
+    }
+}
+
+fn no_theme(t: Classified) -> bool {
+    matches!(
+        t,
+        Classified::Node(NodeTheme::None) | Classified::Link(LinkTheme::None)
+    )
+}
+
+/// The themes a graduated style can classify, with whether they have values
+/// (result themes need an analysis).
+fn themes(app: &EpanetApp, layer: Layer) -> Vec<(Classified, String, bool)> {
+    let results = app.results.is_some();
+    match layer {
+        Layer::Nodes => app
+            .node_themes()
+            .into_iter()
+            .filter(|&t| t != NodeTheme::None)
+            .map(|t| {
+                let c = Classified::Node(t);
+                (c, theme_name(app, c), !t.is_result() || results)
+            })
+            .collect(),
+        Layer::Links => app
+            .link_themes()
+            .into_iter()
+            .filter(|&t| t != LinkTheme::None)
+            .map(|t| {
+                let c = Classified::Link(t);
+                (c, theme_name(app, c), !t.is_result() || results)
+            })
+            .collect(),
+    }
+}
+
+/// The theme value of the layer's element `i`.
+fn value(app: &EpanetApp, layer: Layer, i: usize) -> Option<f32> {
+    match layer {
+        Layer::Nodes => app.node_theme_value(i),
+        Layer::Links => app.link_theme_value(i),
+    }
+}
+
+fn element_count(app: &EpanetApp, layer: Layer) -> usize {
+    match layer {
+        Layer::Nodes => app.net.nodes.len(),
+        Layer::Links => app.net.links.len(),
+    }
+}
+
+/// Classifies the graduated styles again when their theme changed, or when
+/// they have no classes yet (as when result values were not there before).
+pub fn prepare(app: &mut EpanetApp) {
+    for layer in [Layer::Nodes, Layer::Links] {
+        let s = style(app, layer);
+        if s.renderer != Renderer::Graduated {
+            continue;
+        }
+        let t = theme(app, layer);
+        if s.classified == Some(t) && s.class_count() > 0 {
+            continue;
+        }
+        classify(app, layer);
+    }
+}
+
+/// Classifies the layer's theme values.
+fn classify(app: &mut EpanetApp, layer: Layer) {
+    let t = theme(app, layer);
+    let values = theme_values(app, layer);
+    let s = style_mut(app, layer);
+    s.classify(&values);
+    // tried again once there are values (results to come)
+    s.classified = (!values.is_empty()).then_some(t);
+}
+
+fn theme_values(app: &EpanetApp, layer: Layer) -> Vec<f32> {
+    (0..element_count(app, layer))
+        .filter_map(|i| value(app, layer, i))
         .collect()
 }
 
-/// The link legend's title for a graduated style: the theme and its units.
-pub fn theme_title(app: &EpanetApp) -> String {
-    let t = app.prefs.link_theme;
-    let u = app.link_theme_units(t);
+/// A layer legend's title for a graduated style: the theme and its units.
+pub fn theme_title(app: &EpanetApp, layer: Layer) -> String {
+    let t = theme(app, layer);
+    let u = match t {
+        Classified::Node(t) => app.node_theme_units(t),
+        Classified::Link(t) => app.link_theme_units(t),
+    };
+    let name = theme_name(app, t);
     if u.is_empty() {
-        app.link_theme_name(t)
+        name
     } else {
-        format!("{} ({u})", app.link_theme_name(t))
+        format!("{name} ({u})")
     }
 }
 
-/// Opens Map > Styling.
-pub fn open(app: &mut EpanetApp) {
-    app.dialog = Dialog::LinkStyling;
+/// Opens Map > Styling for a layer.
+pub fn open(app: &mut EpanetApp, layer: Layer) {
+    app.styling_layer = layer;
+    app.dialog = Dialog::Styling;
 }
 
-/// Loads a saved style.
+/// Loads a saved style, for the layer shown in the Styling window.
 pub fn load(app: &mut EpanetApp, name: &str, bytes: &[u8]) {
-    match serde_json::from_slice::<LinkStyle>(bytes) {
+    match serde_json::from_slice::<Style>(bytes) {
         Ok(s) => {
-            app.prefs.link_style = s;
+            let layer = app.styling_layer;
+            *style_mut(app, layer) = s;
             app.status = trf("Style {} loaded", &[&name]);
         }
         Err(e) => app.status = format!("{name}: {e}"),
@@ -664,10 +844,14 @@ pub fn load(app: &mut EpanetApp, name: &str, bytes: &[u8]) {
 }
 
 fn save(app: &mut EpanetApp) {
-    let Ok(json) = serde_json::to_string_pretty(&app.prefs.link_style) else {
+    let Ok(json) = serde_json::to_string_pretty(style(app, app.styling_layer)) else {
         return;
     };
-    let name = format!("{}.{EXT}", app.file_name);
+    let layer = match app.styling_layer {
+        Layer::Nodes => "nodes",
+        Layer::Links => "links",
+    };
+    let name = format!("{} {layer}.{EXT}", app.file_name);
     app.status = match crate::io::save_bytes(
         json.as_bytes(),
         &name,
@@ -747,8 +931,17 @@ fn combo<T: Copy + PartialEq>(
     *value != before
 }
 
-/// The Styling window: the renderer and its settings above, Load, Save,
-/// OK and Cancel below. Changes show on the map at once; Cancel undoes them.
+/// "Width" of a link, "Size" of a node.
+fn size_label(layer: Layer) -> &'static str {
+    match layer {
+        Layer::Nodes => "Size",
+        Layer::Links => "Width",
+    }
+}
+
+/// The Styling window: the layer and its renderer and settings above, Load,
+/// Save, OK and Cancel below. Changes show on the map at once; Cancel
+/// undoes them (of both layers).
 pub fn panel(app: &mut EpanetApp, ui: &mut Ui) -> bool {
     if app.prefs_backup.is_none() {
         app.prefs_backup = Some(app.prefs.clone());
@@ -758,8 +951,16 @@ pub fn panel(app: &mut EpanetApp, ui: &mut Ui) -> bool {
         .num_columns(2)
         .spacing([12.0, 8.0])
         .show(ui, |ui| {
+            ui.label(tr("Layer"));
+            ui.horizontal(|ui| {
+                for l in [Layer::Nodes, Layer::Links] {
+                    ui.selectable_value(&mut app.styling_layer, l, tr(l.label()));
+                }
+            });
+            ui.end_row();
+            let layer = app.styling_layer;
             ui.label(tr("Renderer"));
-            let s = &mut app.prefs.link_style;
+            let s = style_mut(app, layer);
             let was = s.renderer;
             combo(
                 ui,
@@ -770,17 +971,19 @@ pub fn panel(app: &mut EpanetApp, ui: &mut Ui) -> bool {
             );
             // a style is shown with its legend
             if was == Renderer::Theme && s.renderer != Renderer::Theme {
-                app.prefs.link_legend_visible = true;
+                *legend_visible(app, layer) = true;
             }
             ui.end_row();
         });
+    let layer = app.styling_layer;
     ui.separator();
-    match app.prefs.link_style.renderer {
+    match style(app, layer).renderer {
         Renderer::Theme => {
             ui.label(
-                RichText::new(tr(
-                    "The links are colored by the map theme chosen in the Map Viewer, with EPANET-UI's legend.",
-                ))
+                RichText::new(tr(match layer {
+                    Layer::Nodes => "The nodes are colored by the map theme chosen in the Map Viewer, with EPANET-UI's legend.",
+                    Layer::Links => "The links are colored by the map theme chosen in the Map Viewer, with EPANET-UI's legend.",
+                }))
                 .weak(),
             );
         }
@@ -789,19 +992,19 @@ pub fn panel(app: &mut EpanetApp, ui: &mut Ui) -> bool {
                 .num_columns(2)
                 .spacing([12.0, 8.0])
                 .show(ui, |ui| {
-                    let s = &mut app.prefs.link_style;
+                    let s = style_mut(app, layer);
                     ui.label(tr("Color"));
                     color_button(ui, &mut s.color);
                     ui.end_row();
-                    ui.label(tr("Width"));
+                    ui.label(tr(size_label(layer)));
                     width_drag(ui, &mut s.width);
                     ui.end_row();
                 });
         }
-        Renderer::Categorized => categorized(app, ui),
-        Renderer::Graduated => graduated(app, ui),
+        Renderer::Categorized => categorized(app, ui, layer),
+        Renderer::Graduated => graduated(app, ui, layer),
     }
-    if app.prefs.link_style.active() {
+    if style(app, layer).active() {
         ui.separator();
         egui::Grid::new("styling_common")
             .num_columns(2)
@@ -809,15 +1012,19 @@ pub fn panel(app: &mut EpanetApp, ui: &mut Ui) -> bool {
             .show(ui, |ui| {
                 ui.label(tr("Opacity"));
                 ui.add(
-                    egui::Slider::new(&mut app.prefs.link_style.opacity, 0.1..=1.0)
+                    egui::Slider::new(&mut style_mut(app, layer).opacity, 0.1..=1.0)
                         .fixed_decimals(2),
                 );
                 ui.end_row();
                 ui.label("");
-                crate::widgets::checkbox(ui, &mut app.prefs.link_border, "Display Border");
+                let border = match layer {
+                    Layer::Nodes => &mut app.prefs.node_border,
+                    Layer::Links => &mut app.prefs.link_border,
+                };
+                crate::widgets::checkbox(ui, border, "Display Border");
                 ui.end_row();
                 ui.label("");
-                crate::widgets::checkbox(ui, &mut app.prefs.link_legend_visible, "Legend");
+                crate::widgets::checkbox(ui, legend_visible(app, layer), "Legend");
                 ui.end_row();
             });
     }
@@ -840,6 +1047,13 @@ pub fn panel(app: &mut EpanetApp, ui: &mut Ui) -> bool {
     close
 }
 
+fn legend_visible(app: &mut EpanetApp, layer: Layer) -> &mut bool {
+    match layer {
+        Layer::Nodes => &mut app.prefs.node_legend_visible,
+        Layer::Links => &mut app.prefs.link_legend_visible,
+    }
+}
+
 /// Undoes the changes made in the Styling window.
 pub fn cancel(app: &mut EpanetApp) {
     if let Some(old) = app.prefs_backup.take() {
@@ -847,20 +1061,24 @@ pub fn cancel(app: &mut EpanetApp) {
     }
 }
 
-fn categorized(app: &mut EpanetApp, ui: &mut Ui) {
-    let counts = [LinkKind::Pipe, LinkKind::Pump, LinkKind::Valve]
-        .map(|k| app.net.links.iter().filter(|l| l.kind == k).count());
+fn categorized(app: &mut EpanetApp, ui: &mut Ui, layer: Layer) {
+    let counts = match layer {
+        Layer::Nodes => [NodeKind::Junction, NodeKind::Reservoir, NodeKind::Tank]
+            .map(|k| app.net.nodes.iter().filter(|n| n.kind == k).count()),
+        Layer::Links => [LinkKind::Pipe, LinkKind::Pump, LinkKind::Valve]
+            .map(|k| app.net.links.iter().filter(|l| l.kind == k).count()),
+    };
     egui::Grid::new("styling_categories")
         .num_columns(4)
         .spacing([12.0, 8.0])
         .show(ui, |ui| {
             ui.label("");
             ui.label(RichText::new(tr("Color")).weak());
-            ui.label(RichText::new(tr("Width")).weak());
+            ui.label(RichText::new(tr(size_label(layer))).weak());
             ui.label(RichText::new(tr("Count")).weak());
             ui.end_row();
-            let s = &mut app.prefs.link_style;
-            for (k, label) in ["Pipes", "Pumps", "Valves"].iter().enumerate() {
+            let s = style_mut(app, layer);
+            for (k, label) in kind_names(layer).iter().enumerate() {
                 ui.label(tr(label));
                 color_button(ui, &mut s.kind_colors[k]);
                 width_drag(ui, &mut s.kind_widths[k]);
@@ -870,27 +1088,21 @@ fn categorized(app: &mut EpanetApp, ui: &mut Ui) {
         });
 }
 
-fn graduated(app: &mut EpanetApp, ui: &mut Ui) {
-    let has_results = app.results.is_some();
-    let themes: Vec<(LinkTheme, String, bool)> = app
-        .link_themes()
-        .into_iter()
-        .filter(|&t| t != LinkTheme::None)
-        .map(|t| (t, app.link_theme_name(t), !t.is_result() || has_results))
-        .collect();
+fn graduated(app: &mut EpanetApp, ui: &mut Ui, layer: Layer) {
+    let themes = themes(app, layer);
     let mut reclassify = false;
     egui::Grid::new("styling_graduated")
         .num_columns(2)
         .spacing([12.0, 8.0])
         .show(ui, |ui| {
             ui.label(tr("Value"));
-            let current = app.prefs.link_theme;
-            egui::ComboBox::from_id_salt("styling_value")
+            let current = theme(app, layer);
+            egui::ComboBox::from_id_salt(("styling_value", layer as u8))
                 .width(210.0)
-                .selected_text(if current == LinkTheme::None {
+                .selected_text(if no_theme(current) {
                     tr("Choose a value").to_string()
                 } else {
-                    tr(&app.link_theme_name(current)).to_string()
+                    tr(&theme_name(app, current)).to_string()
                 })
                 .show_ui(ui, |ui| {
                     for (t, label, enabled) in &themes {
@@ -901,12 +1113,12 @@ fn graduated(app: &mut EpanetApp, ui: &mut Ui) {
                             )
                             .on_disabled_hover_text(tr("Run an analysis first"));
                         if resp.clicked() {
-                            app.prefs.link_theme = *t;
+                            set_theme(app, *t);
                         }
                     }
                 });
             ui.end_row();
-            let s = &mut app.prefs.link_style;
+            let s = style_mut(app, layer);
             ui.label(tr("Mode"));
             reclassify |= combo(ui, "styling_method", &mut s.method, &Method::ALL, |m| {
                 m.label()
@@ -940,7 +1152,10 @@ fn graduated(app: &mut EpanetApp, ui: &mut Ui) {
             ui.label("");
             ramp_bar(ui, s.ramp, s.invert, vec2(210.0, 12.0));
             ui.end_row();
-            ui.label(tr("Line Width"));
+            ui.label(tr(match layer {
+                Layer::Nodes => "Symbol Size",
+                Layer::Links => "Line Width",
+            }));
             combo(
                 ui,
                 "styling_width_by",
@@ -950,7 +1165,7 @@ fn graduated(app: &mut EpanetApp, ui: &mut Ui) {
             );
             ui.end_row();
             if s.width_by == WidthBy::Fixed {
-                ui.label(tr("Width"));
+                ui.label(tr(size_label(layer)));
                 width_drag(ui, &mut s.width);
             } else {
                 ui.label(tr("Min / Max"));
@@ -965,29 +1180,31 @@ fn graduated(app: &mut EpanetApp, ui: &mut Ui) {
             ui.end_row();
         });
     if reclassify || ui.button(tr("Classify")).clicked() {
-        let values = theme_values(app);
-        let theme = app.prefs.link_theme;
-        let s = &mut app.prefs.link_style;
-        s.classify(&values);
-        s.classified = (!values.is_empty()).then_some(theme);
+        classify(app, layer);
     }
-    // the classes: color, lower and upper bound, number of links
-    let s = &app.prefs.link_style;
+    // the classes: color, lower and upper bound, number of elements
+    let s = style(app, layer);
     let n = s.class_count();
     if n == 0 {
+        let none = no_theme(theme(app, layer));
         ui.label(
-            RichText::new(if app.prefs.link_theme == LinkTheme::None {
-                tr("Choose the value to color the links by.")
-            } else {
-                tr("No link has a value to classify (run an analysis for results).")
-            })
+            RichText::new(tr(match (layer, none) {
+                (Layer::Nodes, true) => "Choose the value to color the nodes by.",
+                (Layer::Links, true) => "Choose the value to color the links by.",
+                (Layer::Nodes, false) => {
+                    "No node has a value to classify (run an analysis for results)."
+                }
+                (Layer::Links, false) => {
+                    "No link has a value to classify (run an analysis for results)."
+                }
+            }))
             .weak(),
         );
         return;
     }
     let mut counts = vec![0usize; n];
-    for i in 0..app.net.links.len() {
-        if let Some(k) = app.link_theme_value(i).and_then(|v| s.class_of(v)) {
+    for i in 0..element_count(app, layer) {
+        if let Some(k) = value(app, layer, i).and_then(|v| s.class_of(v)) {
             counts[k] += 1;
         }
     }
@@ -1006,7 +1223,7 @@ fn graduated(app: &mut EpanetApp, ui: &mut Ui) {
                     ui.label(RichText::new(tr("To")).weak());
                     ui.label(RichText::new(tr("Count")).weak());
                     ui.end_row();
-                    let s = &mut app.prefs.link_style;
+                    let s = style_mut(app, layer);
                     let span = (s.bounds[n] - s.bounds[0]).abs().max(1e-6);
                     for k in 0..n {
                         if s.colors.len() < n {
@@ -1048,7 +1265,7 @@ mod tests {
 
     #[test]
     fn equal_intervals_split_the_range() {
-        let mut s = LinkStyle {
+        let mut s = Style {
             method: Method::EqualInterval,
             classes: 4,
             ..Default::default()
@@ -1064,7 +1281,7 @@ mod tests {
 
     #[test]
     fn quantiles_hold_about_as_many_values() {
-        let mut s = LinkStyle {
+        let mut s = Style {
             method: Method::Quantile,
             classes: 2,
             ..Default::default()
@@ -1075,7 +1292,7 @@ mod tests {
 
     #[test]
     fn natural_breaks_find_the_groups() {
-        let mut s = LinkStyle {
+        let mut s = Style {
             method: Method::NaturalBreaks,
             classes: 3,
             ..Default::default()
@@ -1091,7 +1308,7 @@ mod tests {
 
     #[test]
     fn pretty_breaks_are_round() {
-        let mut s = LinkStyle {
+        let mut s = Style {
             method: Method::Pretty,
             classes: 5,
             ..Default::default()
@@ -1104,7 +1321,7 @@ mod tests {
 
     #[test]
     fn equal_values_make_one_class() {
-        let mut s = LinkStyle::default();
+        let mut s = Style::default();
         s.classify(&[4.0, 4.0, 4.0]);
         assert_eq!(s.class_count(), 1);
         s.classify(&[]);
@@ -1113,7 +1330,7 @@ mod tests {
 
     #[test]
     fn widths_follow_the_class_or_the_value() {
-        let mut s = LinkStyle {
+        let mut s = Style {
             renderer: Renderer::Graduated,
             method: Method::EqualInterval,
             classes: 4,
@@ -1122,35 +1339,35 @@ mod tests {
             ..Default::default()
         };
         s.classify(&values());
-        let w = |s: &LinkStyle, v| s.symbol(LinkKind::Pipe, Some(v)).unwrap().width;
+        let w = |s: &Style, v| s.symbol(0, Some(v)).unwrap().width;
         assert_eq!(w(&s, 1.0), 1.0);
         assert_eq!(w(&s, 52.0), 7.0);
         assert_eq!(w(&s, 20.0), 3.0);
         s.width_by = WidthBy::Value;
         assert_eq!(w(&s, 26.5), 4.0);
         // no value: the no-value color
-        let none = s.symbol(LinkKind::Pump, None).unwrap();
+        let none = s.symbol(1, None).unwrap();
         assert_eq!(none.color, rgb(s.no_value));
     }
 
     #[test]
     fn the_theme_renderer_leaves_the_links_to_the_theme() {
-        let s = LinkStyle::default();
+        let s = Style::default();
         assert!(!s.active());
-        assert_eq!(s.symbol(LinkKind::Pipe, Some(3.0)), None);
-        assert!(s.legend("x".into()).is_none());
+        assert_eq!(s.symbol(0, Some(3.0)), None);
+        assert!(s.legend("x".into(), Layer::Links).is_none());
     }
 
     #[test]
     fn categories_color_by_type() {
-        let s = LinkStyle {
+        let s = Style {
             renderer: Renderer::Categorized,
             ..Default::default()
         };
-        let pump = s.symbol(LinkKind::Pump, None).unwrap();
+        let pump = s.symbol(1, None).unwrap();
         assert_eq!(pump.color, rgb(s.kind_colors[1]));
         assert_eq!(pump.width, s.kind_widths[1]);
-        assert_eq!(s.legend("x".into()).unwrap().rows.len(), 3);
+        assert_eq!(s.legend("x".into(), Layer::Links).unwrap().rows.len(), 3);
     }
 
     #[test]
@@ -1164,20 +1381,20 @@ mod tests {
 
     #[test]
     fn styles_save_and_load() {
-        let mut s = LinkStyle {
+        let mut s = Style {
             renderer: Renderer::Graduated,
             ramp: Ramp::Spectral,
-            classified: Some(LinkTheme::Diameter),
+            classified: Some(Classified::Link(LinkTheme::Diameter)),
             ..Default::default()
         };
         s.classify(&values());
         let json = serde_json::to_string(&s).unwrap();
-        let back: LinkStyle = serde_json::from_str(&json).unwrap();
+        let back: Style = serde_json::from_str(&json).unwrap();
         assert_eq!(back, s);
         // an older or partial file takes the defaults for what it lacks
-        let partial: LinkStyle = serde_json::from_str(r#"{"renderer":"Single"}"#).unwrap();
+        let partial: Style = serde_json::from_str(r#"{"renderer":"Single"}"#).unwrap();
         assert_eq!(partial.renderer, Renderer::Single);
-        assert_eq!(partial.width, LinkStyle::default().width);
+        assert_eq!(partial.width, Style::default().width);
     }
 
     /// The Styling window shows every renderer; Cancel undoes the changes.
@@ -1205,9 +1422,9 @@ mod tests {
                 out.textures_delta.clear();
             }
         };
-        open(&mut app);
+        open(&mut app, Layer::Links);
         run(&mut app);
-        assert_eq!(app.dialog, Dialog::LinkStyling);
+        assert_eq!(app.dialog, Dialog::Styling);
         for r in Renderer::ALL {
             app.prefs.link_style.renderer = r;
             run(&mut app);
@@ -1216,8 +1433,21 @@ mod tests {
             app.prefs.link_style.class_count() >= 2,
             "Graduated classified"
         );
+        // the nodes' page
+        app.styling_layer = Layer::Nodes;
+        app.prefs.node_theme = NodeTheme::Elevation;
+        for r in Renderer::ALL {
+            app.prefs.node_style.renderer = r;
+            run(&mut app);
+        }
+        assert!(app.prefs.node_style.class_count() >= 2, "nodes classified");
+        assert_eq!(
+            app.prefs.node_style.classified,
+            Some(Classified::Node(NodeTheme::Elevation))
+        );
         cancel(&mut app);
         assert_eq!(app.prefs.link_style.renderer, Renderer::Theme);
+        assert_eq!(app.prefs.node_style.renderer, Renderer::Theme);
     }
 
     /// The map draws the links in the style's color and width, and an SVG
@@ -1278,15 +1508,100 @@ mod tests {
         app.prefs.link_theme = LinkTheme::Diameter;
         prepare(&mut app);
         let s = &app.prefs.link_style;
-        assert_eq!(s.classified, Some(LinkTheme::Diameter));
+        assert_eq!(s.classified, Some(Classified::Link(LinkTheme::Diameter)));
         assert!(s.class_count() >= 2);
         app.prefs.link_theme = LinkTheme::Length;
         prepare(&mut app);
-        assert_eq!(app.prefs.link_style.classified, Some(LinkTheme::Length));
+        assert_eq!(
+            app.prefs.link_style.classified,
+            Some(Classified::Link(LinkTheme::Length))
+        );
         // no values yet (results): tried again later
         app.prefs.link_theme = LinkTheme::Flow;
         prepare(&mut app);
         assert_eq!(app.prefs.link_style.classified, None);
         assert_eq!(app.prefs.link_style.class_count(), 0);
+    }
+
+    /// Node values are classified with their sign: a negative pressure is
+    /// the lowest class, not a high one.
+    #[test]
+    fn node_values_keep_their_sign() {
+        let mut s = Style {
+            renderer: Renderer::Graduated,
+            method: Method::EqualInterval,
+            classes: 2,
+            ..Style::nodes()
+        };
+        s.classify(&[-40.0, 0.0, 10.0, 40.0]);
+        assert_eq!(s.bounds, vec![-40.0, 0.0, 40.0]);
+        assert_eq!(s.class_of(-30.0), Some(0));
+        assert_eq!(s.class_of(30.0), Some(1));
+        // the links' flows by magnitude
+        let mut l = Style {
+            method: Method::EqualInterval,
+            classes: 2,
+            ..Style::links()
+        };
+        l.classify(&[-40.0, 0.0, 10.0, 40.0]);
+        assert_eq!(l.bounds, vec![0.0, 20.0, 40.0]);
+    }
+
+    /// Categorized nodes: a color and size per node type, with its legend
+    /// of dots.
+    #[test]
+    fn nodes_are_categorized_by_type() {
+        let s = Style {
+            renderer: Renderer::Categorized,
+            ..Style::nodes()
+        };
+        let tank = s.symbol(node_kind(NodeKind::Tank), None).unwrap();
+        assert_eq!(tank.color, rgb(s.kind_colors[2]));
+        assert_eq!(tank.width, s.kind_widths[2]);
+        let legend = s.legend("x".into(), Layer::Nodes).unwrap();
+        assert_eq!(legend.title, "Node Type");
+        assert_eq!(legend.rows.len(), 3);
+        assert!(matches!(legend.rows[0].0, crate::map::Swatch::Dot { .. }));
+        assert_eq!(legend.rows[2].1, "Tanks");
+    }
+
+    /// The map draws the nodes in the node style's color and size.
+    #[test]
+    fn the_map_draws_the_nodes_in_their_style() {
+        use eframe::App as _;
+        let (ctx, mut app) = crate::msx::tests::new_app();
+        app.load_example("Net1", eui_core::examples::NET1);
+        app.prefs.node_style.renderer = Renderer::Single;
+        app.prefs.node_style.color = [0x65, 0x43, 0x21];
+        app.prefs.node_style.width = 6.0;
+        app.prefs.node_legend_visible = true;
+        let mut frame = eframe::Frame::_new_kittest();
+        let mut shapes = Vec::new();
+        for _ in 0..4 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1400.0, 900.0),
+                )),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                app.logic(ui.ctx(), &mut frame);
+                app.ui(ui, &mut frame);
+            });
+            out.textures_delta.clear();
+            shapes = out.shapes;
+        }
+        let color = Color32::from_rgb(0x65, 0x43, 0x21);
+        let dots = shapes
+            .iter()
+            .filter(|c| {
+                matches!(&c.shape, egui::Shape::Circle(k) if k.radius == 6.0 && k.fill == color)
+            })
+            .count();
+        // Net1's nine junctions
+        assert!(dots >= 9, "{dots} junctions in the style's color");
+        let svg = crate::export::to_svg(&shapes, app.export.map_rect.unwrap());
+        assert!(svg.contains(">Nodes</text>"), "no node legend");
     }
 }

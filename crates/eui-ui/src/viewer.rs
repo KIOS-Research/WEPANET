@@ -144,7 +144,11 @@ fn contents(app: &mut EpanetApp, ui: &mut Ui) {
                 .on_hover_text(crate::i18n::tr("Edit the node legend"))
                 .clicked()
             {
-                crate::dialogs::open_legend_editor(app, true);
+                if app.prefs.node_style.active() {
+                    crate::styling::open(app, crate::styling::Layer::Nodes);
+                } else {
+                    crate::dialogs::open_legend_editor(app, true);
+                }
             }
         });
         ui.add_space(4.0);
@@ -182,7 +186,7 @@ fn contents(app: &mut EpanetApp, ui: &mut Ui) {
                 .clicked()
             {
                 if app.prefs.link_style.active() {
-                    crate::styling::open(app);
+                    crate::styling::open(app, crate::styling::Layer::Links);
                 } else {
                     crate::dialogs::open_legend_editor(app, false);
                 }

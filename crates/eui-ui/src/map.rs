@@ -317,7 +317,10 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
             let bb = Rect::from_points(&pts);
             let value = app.link_theme_value(i);
             // Map > Styling, else the EPANET-UI theme
-            let styled = app.prefs.link_style.symbol(kind, value);
+            let styled = app
+                .prefs
+                .link_style
+                .symbol(crate::styling::link_kind(kind), value);
             let color = if let Some(c) =
                 crate::group::shade(app, false, i).or_else(|| crate::multi::shade(app, false, i))
             {
@@ -434,15 +437,27 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
             continue;
         }
         let value = app.node_theme_value(i);
+        // Map > Styling, else the EPANET-UI theme
+        let styled = app
+            .prefs
+            .node_style
+            .symbol(crate::styling::node_kind(n.kind), value);
         let fill = crate::group::shade(app, true, i)
             .or_else(|| crate::multi::shade(app, true, i))
+            .or(styled.map(|s| s.color))
             .unwrap_or_else(|| value.map_or(pal.node, |v| node_legend.color(v)));
-        let mut r = app.prefs.node_size;
-        if app.prefs.node_proportional
-            && let Some(v) = value
-        {
-            r += node_legend.class(v) as f32;
-        }
+        let r = match styled {
+            Some(s) => s.width,
+            None => {
+                let mut r = app.prefs.node_size;
+                if app.prefs.node_proportional
+                    && let Some(v) = value
+                {
+                    r += node_legend.class(v) as f32;
+                }
+                r
+            }
+        };
         visible_nodes.push((i, s, r));
         draw_node(
             &painter,
@@ -1002,6 +1017,8 @@ pub(crate) enum Swatch {
         first: bool,
         last: bool,
     },
+    /// A node drawn as Map > Styling draws it.
+    Dot { color: Color32, radius: f32 },
     /// A link drawn as Map > Styling draws it.
     Line { color: Color32, width: f32 },
 }
@@ -1060,22 +1077,29 @@ fn draw_legends(app: &mut EpanetApp, ui: &mut Ui, rect: Rect, node: Legend, link
         }
     };
     let nt = app.prefs.node_theme;
-    if app.prefs.node_legend_visible
-        && nt != crate::style::NodeTheme::None
-        && (!nt.is_result() || app.results.is_some())
-    {
-        let title = titled(app.node_theme_name(nt), app.node_theme_units(nt));
-        items.push((theme_legend(title, &node, true), true));
+    let node_styled = app.prefs.node_style.active();
+    if app.prefs.node_legend_visible {
+        if node_styled {
+            if let Some(b) = app.prefs.node_style.legend(
+                crate::styling::theme_title(app, crate::styling::Layer::Nodes),
+                crate::styling::Layer::Nodes,
+            ) {
+                items.push((b, true));
+            }
+        } else if nt != crate::style::NodeTheme::None && (!nt.is_result() || app.results.is_some())
+        {
+            let title = titled(app.node_theme_name(nt), app.node_theme_units(nt));
+            items.push((theme_legend(title, &node, true), true));
+        }
     }
     let lt = app.prefs.link_theme;
     let styled = app.prefs.link_style.active();
     if app.prefs.link_legend_visible {
         if styled {
-            if let Some(b) = app
-                .prefs
-                .link_style
-                .legend(crate::styling::theme_title(app))
-            {
+            if let Some(b) = app.prefs.link_style.legend(
+                crate::styling::theme_title(app, crate::styling::Layer::Links),
+                crate::styling::Layer::Links,
+            ) {
                 items.push((b, false));
             }
         } else if lt != crate::style::LinkTheme::None && (!lt.is_result() || app.results.is_some())
@@ -1202,6 +1226,9 @@ fn draw_legends(app: &mut EpanetApp, ui: &mut Ui, rect: Rect, node: Legend, link
                         painter.hline(bar.x_range(), bar.bottom(), rule);
                     }
                 }
+                Swatch::Dot { color, radius } => {
+                    painter.circle(c, radius.min(row / 2.0 - 1.5), color, rule);
+                }
                 Swatch::Line { color, width } => {
                     painter.line_segment(
                         [c - vec2(9.0, 0.0), c + vec2(9.0, 0.0)],
@@ -1220,7 +1247,8 @@ fn draw_legends(app: &mut EpanetApp, ui: &mut Ui, rect: Rect, node: Legend, link
         }
     }
     match edit {
-        Some(false) if styled => crate::styling::open(app),
+        Some(false) if styled => crate::styling::open(app, crate::styling::Layer::Links),
+        Some(true) if node_styled => crate::styling::open(app, crate::styling::Layer::Nodes),
         Some(nodes) => crate::dialogs::open_legend_editor(app, nodes),
         None => {}
     }

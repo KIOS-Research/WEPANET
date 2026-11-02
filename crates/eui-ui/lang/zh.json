@@ -692,9 +692,14 @@
   "No link has a value to classify (run an analysis for results).": "没有可分级的管段数值（请运行分析以获得结果）。",
   "From": "从",
   "To": "到",
-  "Link Styling": "管段样式",
   "Styling": "样式",
-  "Color and size the links by type or value, as in QGIS": "按类型或数值设置管段的颜色和宽度，与 QGIS 相同",
+  "Color and size the nodes and links by type or value, as in QGIS": "按类型或数值设置节点和管段的颜色和大小，与 QGIS 相同",
+  "Layer": "图层",
+  "Size": "大小",
+  "Symbol Size": "符号大小",
+  "The nodes are colored by the map theme chosen in the Map Viewer, with EPANET-UI's legend.": "节点按地图查看器中选择的专题着色，使用 EPANET-UI 的图例。",
+  "Choose the value to color the nodes by.": "选择用于给节点着色的数值。",
+  "No node has a value to classify (run an analysis for results).": "没有可分级的节点数值（请运行分析以获得结果）。",
   "To SVG File": "导出为 SVG 文件",
   "A vector picture of the map (without the basemap), for print and editing": "地图的矢量图（不含底图），用于打印和编辑"
 }
