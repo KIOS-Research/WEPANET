@@ -233,7 +233,12 @@ fn hit_vertex(app: &EpanetApp, rect: Rect, link: usize, p: Pos2) -> Option<usize
 
 pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
     let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
+    // where the map's shapes start, for Export > To SVG File
+    let first_shape = ui
+        .ctx()
+        .graphics(|g| g.get(ui.layer_id()).map_or(0, |l| l.next_idx().0));
     let painter = ui.painter_at(rect);
+    crate::styling::prepare(app);
     let pal = app.map_palette();
     painter.rect_filled(rect, 0.0, pal.map_bg);
     app.export.map_rect = Some(rect);
@@ -276,7 +281,7 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
         let arrows =
             app.prefs.show_arrows && app.results.is_some() && zoomed_to(app.prefs.arrow_zoom);
         // Pump and valve symbols grow with the link width, as in EPANET-UI.
-        let symbol = app.prefs.link_width + 3.0;
+        let base_symbol = app.prefs.link_width + 3.0;
         // The world box on screen: links outside it are skipped unprojected.
         let a = app.view.to_world(rect, rect.left_top() - vec2(4.0, 4.0));
         let b = app
@@ -311,6 +316,8 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
             };
             let bb = Rect::from_points(&pts);
             let value = app.link_theme_value(i);
+            // Map > Styling, else the EPANET-UI theme
+            let styled = app.prefs.link_style.symbol(kind, value);
             let color = if let Some(c) =
                 crate::group::shade(app, false, i).or_else(|| crate::multi::shade(app, false, i))
             {
@@ -319,15 +326,24 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
                 style::SELECTED
             } else if highlight(false, i) {
                 style::SELECTED.gamma_multiply(0.8)
+            } else if let Some(s) = styled {
+                s.color
             } else {
                 value.map_or(pal.link, |v| link_legend.color(v))
             };
-            let mut width = app.prefs.link_width;
-            if app.prefs.link_proportional
-                && let Some(v) = value
-            {
-                width += link_legend.class(v) as f32;
-            }
+            let mut width = match styled {
+                Some(s) => s.width,
+                None => {
+                    let mut w = app.prefs.link_width;
+                    if app.prefs.link_proportional
+                        && let Some(v) = value
+                    {
+                        w += link_legend.class(v) as f32;
+                    }
+                    w
+                }
+            };
+            let symbol = styled.map_or(base_symbol, |s| (s.width + 3.0).max(base_symbol));
             if selected || highlight(false, i) {
                 width += 2.0;
             }
@@ -540,6 +556,7 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
 
     // ---- overlays ----
     draw_legends(app, ui, rect, node_legend, link_legend);
+    crate::export::take_svg(app, ui, rect, first_shape);
     // only on a map with nothing on it: no network, basemap or map layers
     let bare = app.prefs.basemap == crate::basemap::BasemapKind::None || !app.prefs.show_basemap;
     if app.net.nodes.is_empty() && bare && !app.prefs.map_layers.iter().any(|l| l.visible) {
@@ -973,55 +990,126 @@ fn map_text(
     painter.galley(r.min, galley, color);
 }
 
+/// What a legend row shows beside its text.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Swatch {
+    /// A node class: a dot.
+    Circle(Color32),
+    /// A link class of EPANET-UI's theme: a piece of a vertical color bar,
+    /// closed at the top of the first and the bottom of the last.
+    Bar {
+        color: Color32,
+        first: bool,
+        last: bool,
+    },
+    /// A link drawn as Map > Styling draws it.
+    Line { color: Color32, width: f32 },
+}
+
+/// A map legend: a title above rows of a swatch and a text.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct LegendBox {
+    pub title: String,
+    pub rows: Vec<(Swatch, String)>,
+}
+
+/// EPANET-UI's legend of a theme: five classes below, between and above
+/// the four breaks.
+fn theme_legend(title: String, legend: &Legend, node: bool) -> LegendBox {
+    let b = legend.breaks;
+    let rows = (0..5)
+        .map(|k| {
+            let label = match k {
+                0 => format!("< {}", style::fmt_break(b[0])),
+                4 => format!("> {}", style::fmt_break(b[3])),
+                _ => format!(
+                    "{} - {}",
+                    style::fmt_break(b[k - 1]),
+                    style::fmt_break(b[k])
+                ),
+            };
+            let c = legend.colors[k];
+            let swatch = if node {
+                Swatch::Circle(c)
+            } else {
+                Swatch::Bar {
+                    color: c,
+                    first: k == 0,
+                    last: k == 4,
+                }
+            };
+            (swatch, label)
+        })
+        .collect();
+    LegendBox { title, rows }
+}
+
 /// Legends drawn as EPANET-UI does: a white box with the theme name and units;
-/// node classes as dots, link classes as a vertical color bar. They start at
-/// the top left, one under the other; dragged, each stays where it is let go
-/// (kept as a fraction of the map, inside it). A right click opens its
-/// Legend Editor and a double click hides it.
+/// node classes as dots, link classes as a vertical color bar (or, with a
+/// Map > Styling style, as the links are drawn). They start at the top
+/// left, one under the other; dragged, each stays where it is let go (kept
+/// as a fraction of the map, inside it). A right click opens its Legend
+/// Editor (or the Styling window) and a double click hides it.
 fn draw_legends(app: &mut EpanetApp, ui: &mut Ui, rect: Rect, node: Legend, link: Legend) {
-    let mut items: Vec<(String, Legend, bool)> = Vec::new();
+    let mut items: Vec<(LegendBox, bool)> = Vec::new();
+    let titled = |name: String, units: String| {
+        if units.is_empty() {
+            name
+        } else {
+            format!("{name} ({units})")
+        }
+    };
     let nt = app.prefs.node_theme;
     if app.prefs.node_legend_visible
         && nt != crate::style::NodeTheme::None
         && (!nt.is_result() || app.results.is_some())
     {
-        let u = app.node_theme_units(nt);
-        items.push((
-            if u.is_empty() {
-                app.node_theme_name(nt)
-            } else {
-                format!("{} ({u})", app.node_theme_name(nt))
-            },
-            node,
-            true,
-        ));
+        let title = titled(app.node_theme_name(nt), app.node_theme_units(nt));
+        items.push((theme_legend(title, &node, true), true));
     }
     let lt = app.prefs.link_theme;
-    if app.prefs.link_legend_visible
-        && lt != crate::style::LinkTheme::None
-        && (!lt.is_result() || app.results.is_some())
-    {
-        let u = app.link_theme_units(lt);
-        items.push((
-            if u.is_empty() {
-                app.link_theme_name(lt)
-            } else {
-                format!("{} ({u})", app.link_theme_name(lt))
-            },
-            link,
-            false,
-        ));
+    let styled = app.prefs.link_style.active();
+    if app.prefs.link_legend_visible {
+        if styled {
+            if let Some(b) = app
+                .prefs
+                .link_style
+                .legend(crate::styling::theme_title(app))
+            {
+                items.push((b, false));
+            }
+        } else if lt != crate::style::LinkTheme::None && (!lt.is_result() || app.results.is_some())
+        {
+            let title = titled(app.link_theme_name(lt), app.link_theme_units(lt));
+            items.push((theme_legend(title, &link, false), false));
+        }
     }
     let painter = ui.painter_at(rect);
     let font = FontId::proportional(12.5);
     let row = 19.0;
     let ink = Color32::from_gray(30);
+    let rule = Stroke::new(0.8, Color32::from_gray(90));
     // at first in the top-left corner, clear of the toolbars there
     let inset = crate::toolbars::map_insets(app);
     let mut top = rect.top() + inset.y + 10.0;
     let mut edit = None;
-    for (title, legend, is_node) in items {
-        let size = vec2(150.0, row * 6.0 + 12.0);
+    for (legend, is_node) in items {
+        // wide enough for its texts
+        let text_w = |t: &str| {
+            painter
+                .layout_no_wrap(t.to_string(), font.clone(), ink)
+                .size()
+                .x
+        };
+        let widest = legend
+            .rows
+            .iter()
+            .map(|(_, t)| text_w(t) + 46.0)
+            .fold(text_w(&legend.title) + 20.0, f32::max);
+        let size = vec2(
+            widest.max(150.0).ceil(),
+            row * (legend.rows.len() + 1) as f32 + 12.0,
+        );
         let default = pos2(rect.left() + inset.x + 10.0, top);
         top += size.y + 8.0;
         // a place in the map, the legend whole inside it
@@ -1091,55 +1179,33 @@ fn draw_legends(app: &mut EpanetApp, ui: &mut Ui, rect: Rect, node: Legend, link
         painter.text(
             pos2(frame.left() + 10.0, y),
             Align2::LEFT_TOP,
-            title,
+            legend.title,
             font.clone(),
             ink,
         );
         y += row + 2.0;
-        for k in 0..5 {
-            let b = legend.breaks;
-            let label = match k {
-                0 => format!("< {}", style::fmt_break(b[0])),
-                4 => format!("> {}", style::fmt_break(b[3])),
-                _ => format!(
-                    "{} - {}",
-                    style::fmt_break(b[k - 1]),
-                    style::fmt_break(b[k])
-                ),
-            };
+        for (swatch, label) in legend.rows {
             let c = pos2(frame.left() + 20.0, y + row / 2.0 - 2.0);
-            if is_node {
-                painter.circle(
-                    c,
-                    5.5,
-                    legend.colors[k],
-                    Stroke::new(0.8, Color32::from_gray(90)),
-                );
-            } else {
-                let bar = Rect::from_min_size(pos2(c.x - 4.0, y - 1.0), vec2(9.0, row));
-                painter.rect_filled(bar, 0.0, legend.colors[k]);
-                painter.vline(
-                    bar.left(),
-                    bar.y_range(),
-                    Stroke::new(0.8, Color32::from_gray(90)),
-                );
-                painter.vline(
-                    bar.right(),
-                    bar.y_range(),
-                    Stroke::new(0.8, Color32::from_gray(90)),
-                );
-                if k == 0 {
-                    painter.hline(
-                        bar.x_range(),
-                        bar.top(),
-                        Stroke::new(0.8, Color32::from_gray(90)),
-                    );
+            match swatch {
+                Swatch::Circle(color) => {
+                    painter.circle(c, 5.5, color, rule);
                 }
-                if k == 4 {
-                    painter.hline(
-                        bar.x_range(),
-                        bar.bottom(),
-                        Stroke::new(0.8, Color32::from_gray(90)),
+                Swatch::Bar { color, first, last } => {
+                    let bar = Rect::from_min_size(pos2(c.x - 4.0, y - 1.0), vec2(9.0, row));
+                    painter.rect_filled(bar, 0.0, color);
+                    painter.vline(bar.left(), bar.y_range(), rule);
+                    painter.vline(bar.right(), bar.y_range(), rule);
+                    if first {
+                        painter.hline(bar.x_range(), bar.top(), rule);
+                    }
+                    if last {
+                        painter.hline(bar.x_range(), bar.bottom(), rule);
+                    }
+                }
+                Swatch::Line { color, width } => {
+                    painter.line_segment(
+                        [c - vec2(9.0, 0.0), c + vec2(9.0, 0.0)],
+                        Stroke::new(width.min(row - 5.0), color),
                     );
                 }
             }
@@ -1153,8 +1219,10 @@ fn draw_legends(app: &mut EpanetApp, ui: &mut Ui, rect: Rect, node: Legend, link
             y += row;
         }
     }
-    if let Some(nodes) = edit {
-        crate::dialogs::open_legend_editor(app, nodes);
+    match edit {
+        Some(false) if styled => crate::styling::open(app),
+        Some(nodes) => crate::dialogs::open_legend_editor(app, nodes),
+        None => {}
     }
 }
 

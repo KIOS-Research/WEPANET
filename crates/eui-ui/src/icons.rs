@@ -38,6 +38,8 @@ pub enum Icon {
     Export,
     Query,
     Settings,
+    /// Map > Styling: lines of three widths, in a ramp of shades.
+    Styling,
     // project
     Setup,
     Add,
@@ -207,6 +209,7 @@ fn image_of(icon: Icon) -> Option<(&'static Sheet, usize)> {
         | Icon::Pencil
         | Icon::Python
         | Icon::Layers
+        | Icon::Styling
         | Icon::Identify
         | Icon::Filter
         | Icon::Pointer
@@ -314,6 +317,15 @@ pub fn paint(p: &Painter, icon: Icon, c: Pos2, size: f32, fg: Color32) {
                 fg,
                 Stroke::NONE,
             ));
+        }
+        Icon::Styling => {
+            for (k, (y, w)) in [(-0.55, 1.0), (0.0, 1.8), (0.6, 2.8)]
+                .into_iter()
+                .enumerate()
+            {
+                let shade = fg.gamma_multiply(0.45 + 0.27 * k as f32);
+                p.line_segment([at(-0.85, y), at(0.85, y)], Stroke::new(s.width * w, shade));
+            }
         }
         Icon::Layers => {
             // sheets one above the other: the top one whole, the edges of

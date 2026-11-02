@@ -196,6 +196,9 @@ pub struct SetupEdit {
     confirm: Option<String>,
     roughness: Roughness,
     old: [String; 3],
+    /// The options and map values as the dialog showed them at first: only
+    /// the ones changed since are written back.
+    start: Option<Box<([String; 9], [String; 6])>>,
     /// The Coordinate Reference System Selector, while open for the CRS row.
     crs_selector: Option<crate::basemap::CrsSelector>,
 }
@@ -273,8 +276,12 @@ pub fn open(app: &mut EpanetApp) {
         confirm: None,
         roughness: Roughness::Formula,
         old,
+        start: None,
         crs_selector: None,
     });
+    if let Some(e) = app.setup_edit.as_mut() {
+        e.start = Some(Box::new((e.options.clone(), e.map.clone())));
+    }
     app.dialog = crate::app::Dialog::Setup;
 }
 
@@ -697,11 +704,23 @@ pub fn dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
     close
 }
 
-/// Puts the dialog's choices into the project.
+/// Puts the dialog's choices into the project. Like EPANET-UI 1.0.5, the
+/// project is marked changed (with an undo point) only if something changed.
 fn apply(app: &mut EpanetApp, ctx: &egui::Context) {
-    let Some(mut e) = app.setup_edit.take() else {
+    let Some(e) = app.setup_edit.take() else {
         return;
     };
+    let before = app.net.clone();
+    let (dirty, generation) = (app.dirty, app.generation);
+    apply_edit(app, e, ctx);
+    if app.setup_job.is_some() || app.net != before {
+        app.checkpoint_from(before);
+    } else {
+        (app.dirty, app.generation) = (dirty, generation);
+    }
+}
+
+fn apply_edit(app: &mut EpanetApp, mut e: SetupEdit, ctx: &egui::Context) {
     // numbers typed with a decimal comma are stored with a point
     for v in e.options[3..]
         .iter_mut()
@@ -710,10 +729,25 @@ fn apply(app: &mut EpanetApp, ctx: &egui::Context) {
     {
         *v = eui_core::num::normalize(v);
     }
-    app.checkpoint();
-    for (key, value) in OPTION_KEYS.iter().zip(&e.options).skip(3) {
-        app.net.set_option("OPTIONS", key, value.trim());
+    // a value is written back only if it was edited (or the dialog has no
+    // record of how it started)
+    let start = e.start.take();
+    let edited = |new: &str, old: Option<&String>| {
+        old.is_none_or(|old| {
+            let (new, old) = (new.trim(), eui_core::num::normalize(old));
+            let old = old.trim();
+            match (new.parse::<f64>(), old.parse::<f64>()) {
+                (Ok(a), Ok(b)) => a != b,
+                _ => !new.eq_ignore_ascii_case(old),
+            }
+        })
+    };
+    for (k, (key, value)) in OPTION_KEYS.iter().zip(&e.options).enumerate().skip(3) {
+        if edited(value, start.as_ref().map(|s| &s.0[k])) {
+            app.net.set_option("OPTIONS", key, value.trim());
+        }
     }
+    let map_edited = |k: usize| edited(&e.map[k], start.as_ref().map(|s| &s.1[k]));
     app.setup.prefixes = e.prefixes.clone();
     app.setup.properties = e.properties.clone();
     if e.save_defaults {
@@ -728,20 +762,25 @@ fn apply(app: &mut EpanetApp, ctx: &egui::Context) {
         .iter()
         .filter_map(|s| s.trim().parse().ok())
         .collect();
-    if ext.len() == 4 {
-        let dims = format!("{:.6} {:.6} {:.6} {:.6}", ext[0], ext[1], ext[2], ext[3]);
+    if ext.len() == 4 && (0..4).any(map_edited) {
+        // written in full (EPANET-UI 1.0.5 keeps 12 significant digits)
+        let dims = format!("{} {} {} {}", ext[0], ext[1], ext[2], ext[3]);
         if app.net.option("BACKDROP", "DIMENSIONS").as_deref() != Some(dims.as_str()) {
             app.net.set_option("BACKDROP", "DIMENSIONS", &dims);
         }
     }
-    app.net
-        .set_option("BACKDROP", "UNITS", &e.map[4].to_ascii_uppercase());
-    let crs = e.map[5].trim();
-    match crs.parse::<u32>() {
-        Ok(code) if code > 0 => app.set_project_crs(format!("EPSG:{code}")),
-        _ if crs.starts_with('+') => app.set_project_crs(crs.to_string()),
-        _ if e.map[4] == "Degrees" => app.set_project_crs("EPSG:4326".into()),
-        _ => {}
+    if map_edited(4) {
+        app.net
+            .set_option("BACKDROP", "UNITS", &e.map[4].to_ascii_uppercase());
+    }
+    if map_edited(4) || map_edited(5) {
+        let crs = e.map[5].trim();
+        match crs.parse::<u32>() {
+            Ok(code) if code > 0 => app.set_project_crs(format!("EPSG:{code}")),
+            _ if crs.starts_with('+') => app.set_project_crs(crs.to_string()),
+            _ if e.map[4] == "Degrees" => app.set_project_crs("EPSG:4326".into()),
+            _ => {}
+        }
     }
     // units and head loss formula, converted by EPANET
     let index = |list: &[&str], v: &str| {
@@ -938,5 +977,38 @@ mod tests {
         for (a, b) in before.iter().zip(&after) {
             assert!((a - b).abs() < 0.01, "{a} vs {b}");
         }
+    }
+
+    /// OK without a change leaves the project unchanged (EPANET-UI 1.0.5);
+    /// a change marks it changed, with an undo point.
+    #[test]
+    fn ok_marks_the_project_changed_only_after_a_change() {
+        let mut app = EpanetApp::new(&eframe::CreationContext::_new_kittest(
+            egui::Context::default(),
+        ));
+        let ctx = app.ctx.clone();
+        app.load_example("Net1", eui_core::examples::NET1);
+        let net = app.net.clone();
+        assert!(!app.can_undo());
+        open(&mut app);
+        apply(&mut app, &ctx);
+        assert!(!app.dirty);
+        assert_eq!(app.net, net);
+        assert!(!app.can_undo());
+        open(&mut app);
+        app.setup_edit.as_mut().unwrap().options[5] = "250".into();
+        apply(&mut app, &ctx);
+        assert!(app.dirty);
+        assert_eq!(
+            app.net.option("OPTIONS", OPTION_KEYS[5]).as_deref(),
+            Some("250")
+        );
+        assert!(app.can_undo());
+        // the map's extent, edited, is kept in full
+        open(&mut app);
+        app.setup_edit.as_mut().unwrap().map[2] = "123456.123456789".into();
+        apply(&mut app, &ctx);
+        let dims = app.net.option("BACKDROP", "DIMENSIONS").unwrap();
+        assert!(dims.contains("123456.123456789"), "{dims}");
     }
 }

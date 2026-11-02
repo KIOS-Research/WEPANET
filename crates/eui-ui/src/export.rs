@@ -31,6 +31,8 @@ pub struct ExportState {
     pub report_rect: Option<egui::Rect>,
     subject: Subject,
     pending: Option<ExportTarget>,
+    /// An SVG file is to be written from the map's next drawing.
+    pub svg: bool,
     /// Frames to wait (for the map to be shown) before taking the screenshot.
     wait: u8,
     requested: bool,
@@ -130,6 +132,242 @@ pub fn poll(app: &mut EpanetApp, ctx: &egui::Context) {
             Err(e) => app.status = format!("Could not make the image: {e}"),
         },
     }
+}
+
+/// Starts Export > To SVG File: the map is drawn once more and what it
+/// draws is written as SVG (see [`take_svg`]).
+pub fn request_svg(app: &mut EpanetApp) {
+    app.export.svg = true;
+    app.view_mode = ViewMode::Map;
+    app.status = "Exporting the map…".into();
+}
+
+/// Called at the end of the map's drawing: when an SVG export was asked
+/// for, the shapes drawn on the map since `first` are written as SVG and
+/// saved.
+pub fn take_svg(app: &mut EpanetApp, ui: &egui::Ui, rect: egui::Rect, first: usize) {
+    if !app.export.svg {
+        return;
+    }
+    app.export.svg = false;
+    let shapes = map_shapes(ui, first);
+    let svg = to_svg(&shapes, rect);
+    let name = format!("{}.svg", app.file_name);
+    use crate::i18n::trf;
+    app.status =
+        match crate::io::save_bytes(svg.as_bytes(), &name, "SVG image", "svg", "image/svg+xml") {
+            Ok(()) => trf("Saved {}", &[&name]),
+            Err(e) => format!("Could not save the image: {e}"),
+        };
+}
+
+/// The shapes drawn on `ui`'s layer from the `first` on.
+fn map_shapes(ui: &egui::Ui, first: usize) -> Vec<egui::epaint::ClippedShape> {
+    let layer = ui.layer_id();
+    ui.ctx().graphics_mut(|g| {
+        let Some(list) = g.get_mut(layer) else {
+            return Vec::new();
+        };
+        let end = list.next_idx().0;
+        let mut out = Vec::with_capacity(end.saturating_sub(first));
+        for k in first..end {
+            list.mutate_shape(egui::layers::ShapeIdx(k), |c| out.push(c.clone()));
+        }
+        out
+    })
+}
+
+/// An SVG color attribute, e.g. `fill="#ff0000"`, with its opacity when
+/// see-through; `none` for transparent.
+fn paint(attr: &str, c: egui::Color32) -> String {
+    if c.a() == 0 {
+        return format!(r#"{attr}="none""#);
+    }
+    let [r, g, b, a] = c.to_srgba_unmultiplied();
+    let mut s = format!(r##"{attr}="#{r:02x}{g:02x}{b:02x}""##);
+    if a < 255 {
+        s += &format!(r#" {attr}-opacity="{:.3}""#, a as f32 / 255.0);
+    }
+    s
+}
+
+fn stroke_attrs(width: f32, color: egui::Color32) -> String {
+    if width <= 0.0 || color.a() == 0 {
+        r#"stroke="none""#.into()
+    } else {
+        format!(r#"{} stroke-width="{width:.2}""#, paint("stroke", color))
+    }
+}
+
+fn solid(c: &egui::epaint::ColorMode) -> egui::Color32 {
+    match c {
+        egui::epaint::ColorMode::Solid(c) => *c,
+        _ => egui::Color32::TRANSPARENT,
+    }
+}
+
+fn escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// One shape (and those inside it) as SVG elements, moved by `-o`.
+fn svg_shape(out: &mut String, shape: &egui::Shape, o: egui::Vec2) {
+    use egui::Shape;
+    use std::fmt::Write as _;
+    let p = |q: egui::Pos2| {
+        let q = q - o;
+        format!("{:.2},{:.2}", q.x, q.y)
+    };
+    match shape {
+        Shape::Vec(v) => {
+            for s in v {
+                svg_shape(out, s, o);
+            }
+        }
+        Shape::Circle(c) => {
+            let at = c.center - o;
+            let _ = writeln!(
+                out,
+                r#"<circle cx="{:.2}" cy="{:.2}" r="{:.2}" {} {}/>"#,
+                at.x,
+                at.y,
+                c.radius,
+                paint("fill", c.fill),
+                stroke_attrs(c.stroke.width, c.stroke.color)
+            );
+        }
+        Shape::Ellipse(e) => {
+            let at = e.center - o;
+            let _ = writeln!(
+                out,
+                r#"<ellipse cx="{:.2}" cy="{:.2}" rx="{:.2}" ry="{:.2}" {} {}/>"#,
+                at.x,
+                at.y,
+                e.radius.x,
+                e.radius.y,
+                paint("fill", e.fill),
+                stroke_attrs(e.stroke.width, e.stroke.color)
+            );
+        }
+        Shape::LineSegment { points, stroke } => {
+            let _ = writeln!(
+                out,
+                r#"<polyline points="{} {}" fill="none" {}/>"#,
+                p(points[0]),
+                p(points[1]),
+                stroke_attrs(stroke.width, stroke.color)
+            );
+        }
+        Shape::Path(path) => {
+            if path.points.len() < 2 {
+                return;
+            }
+            let pts: Vec<String> = path.points.iter().map(|&q| p(q)).collect();
+            let (tag, fill) = if path.closed {
+                ("polygon", paint("fill", path.fill))
+            } else {
+                ("polyline", r#"fill="none""#.to_string())
+            };
+            let _ = writeln!(
+                out,
+                r#"<{tag} points="{}" {fill} {}/>"#,
+                pts.join(" "),
+                stroke_attrs(path.stroke.width, solid(&path.stroke.color))
+            );
+        }
+        Shape::Rect(r) => {
+            let min = r.rect.min - o;
+            let _ = writeln!(
+                out,
+                r#"<rect x="{:.2}" y="{:.2}" width="{:.2}" height="{:.2}" rx="{}" {} {}/>"#,
+                min.x,
+                min.y,
+                r.rect.width(),
+                r.rect.height(),
+                r.corner_radius.nw,
+                paint("fill", r.fill),
+                stroke_attrs(r.stroke.width, r.stroke.color)
+            );
+        }
+        Shape::Text(t) => {
+            let job = &t.galley.job;
+            let first = job.sections.first();
+            let size = first.map_or(12.5, |s| s.format.font_id.size);
+            let color = t
+                .override_text_color
+                .or(first.map(|s| s.format.color))
+                .filter(|&c| c != egui::Color32::PLACEHOLDER)
+                .unwrap_or(t.fallback_color);
+            for placed in &t.galley.rows {
+                let text = placed.row.text();
+                let Some(g) = placed.row.glyphs.first() else {
+                    continue;
+                };
+                if text.trim().is_empty() {
+                    continue;
+                }
+                // glyph positions are at the baseline
+                let at = t.pos + placed.pos.to_vec2() + g.pos.to_vec2() - o;
+                let _ = writeln!(
+                    out,
+                    r#"<text x="{:.2}" y="{:.2}" font-size="{size:.1}" {} xml:space="preserve">{}</text>"#,
+                    at.x,
+                    at.y,
+                    paint("fill", color),
+                    escape(&text)
+                );
+            }
+        }
+        Shape::QuadraticBezier(b) => {
+            let [a, c, d] = b.points;
+            let _ = writeln!(
+                out,
+                r#"<path d="M{} Q{} {}" fill="none" {}/>"#,
+                p(a),
+                p(c),
+                p(d),
+                stroke_attrs(b.stroke.width, solid(&b.stroke.color))
+            );
+        }
+        Shape::CubicBezier(b) => {
+            let [a, c1, c2, d] = b.points;
+            let _ = writeln!(
+                out,
+                r#"<path d="M{} C{} {} {}" fill="none" {}/>"#,
+                p(a),
+                p(c1),
+                p(c2),
+                p(d),
+                stroke_attrs(b.stroke.width, solid(&b.stroke.color))
+            );
+        }
+        // images (basemaps, map layers) and callbacks are left out
+        _ => {}
+    }
+}
+
+/// Writes shapes as an SVG picture of `rect`. Images (basemap tiles, map
+/// layers) are left out; everything else stays vectors and text.
+pub(crate) fn to_svg(shapes: &[egui::epaint::ClippedShape], rect: egui::Rect) -> String {
+    let (w, h) = (rect.width(), rect.height());
+    let mut out = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="{w:.0}" height="{h:.0}" viewBox="0 0 {w:.2} {h:.2}" font-family="Segoe UI, Selawik, Helvetica, Arial, sans-serif">
+<defs><clipPath id="map"><rect width="{w:.2}" height="{h:.2}"/></clipPath></defs>
+<g clip-path="url(#map)" stroke-linecap="round" stroke-linejoin="round">
+"#
+    );
+    let o = rect.min.to_vec2();
+    for c in shapes {
+        if c.clip_rect.intersects(rect) {
+            svg_shape(&mut out, &c.shape, o);
+        }
+    }
+    out += "</g>\n</svg>\n";
+    out
 }
 
 /// Encodes an image as PNG.

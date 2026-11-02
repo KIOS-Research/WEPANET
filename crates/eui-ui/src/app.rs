@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use eui_core::props::{Element, OptionCategory};
+use eui_core::props::{Element, OptionCategory, PropKey};
 use eui_core::{LinkKind, Network, NodeKind, SimResults};
 use eui_engine::RunHandle;
 
@@ -169,6 +169,7 @@ pub enum Dialog {
     ConfirmReplace,
     /// F5 / Ctrl+R in the browser with changes not saved.
     ConfirmReload,
+    LinkStyling,
 }
 
 /// User preferences, persisted between sessions.
@@ -258,6 +259,8 @@ pub struct Prefs {
     /// fraction of the map's width and height (none: the top left, stacked).
     pub node_legend_pos: Option<[f32; 2]>,
     pub link_legend_pos: Option<[f32; 2]>,
+    /// Map > Styling: how the links are drawn.
+    pub link_style: crate::styling::LinkStyle,
     /// Project Setup defaults for new objects and projects.
     pub setup: crate::setup::SetupDefaults,
     /// Loaded user plugins: (file name, Rhai source).
@@ -355,6 +358,7 @@ impl Default for Prefs {
             node_legend_framed: true,
             node_legend_pos: None,
             link_legend_pos: None,
+            link_style: Default::default(),
             link_legend_framed: true,
             setup: Default::default(),
             user_plugins: Vec::new(),
@@ -392,6 +396,44 @@ pub(crate) fn color([r, g, b]: [u8; 3]) -> egui::Color32 {
 /// Bumped when the map display defaults change, so saved settings pick them up.
 const MAP_STYLE: u32 = 1;
 const MAX_UNDO: usize = 100;
+
+/// Copied properties: the element, its INP fields and its [`pasted_props`].
+pub(crate) type Copied = (Selection, Vec<String>, Vec<(PropKey, String)>);
+
+/// Properties pasted with an element's INP fields that live in other
+/// sections, as EPANET-UI's PasteNodeProps / PasteLinkProps (1.0.5) paste
+/// them: the mixing model and reaction coefficient of a tank, the initial
+/// quality of a node, the reaction and leakage of a pipe, a pump's energy.
+pub(crate) fn pasted_props(net: &Network, e: Element) -> &'static [PropKey] {
+    use PropKey::*;
+    match e {
+        Element::Node(i) => match net.nodes[i].kind {
+            NodeKind::Junction => &[Keyed("EMITTERS", 1), Keyed("QUALITY", 1)],
+            NodeKind::Reservoir => &[Keyed("QUALITY", 1)],
+            NodeKind::Tank => &[
+                Keyed("MIXING", 1),
+                Keyed("MIXING", 2),
+                Reaction("TANK"),
+                Keyed("QUALITY", 1),
+            ],
+        },
+        Element::Link(i) => match net.links[i].kind {
+            LinkKind::Pipe => &[
+                Reaction("BULK"),
+                Reaction("WALL"),
+                Keyed("LEAKAGE", 1),
+                Keyed("LEAKAGE", 2),
+            ],
+            LinkKind::Pump => &[
+                PumpEnergy("EFFIC"),
+                PumpEnergy("PRICE"),
+                PumpEnergy("PATTERN"),
+            ],
+            LinkKind::Valve => &[],
+        },
+    }
+}
+
 pub(crate) const MAX_RECENT: usize = 8;
 
 /// What the Map Query found.
@@ -485,7 +527,9 @@ pub struct EpanetApp {
     pub(crate) buffer_owner: Option<(Option<Selection>, ExplorerItem, u64)>,
     pub(crate) prop_hint: String,
     pub(crate) section_buffer: Option<(ExplorerItem, String)>,
-    pub(crate) copied: Option<(Selection, Vec<String>)>,
+    /// Copied properties: the element, its INP fields and the properties kept
+    /// in other sections (see [`pasted_props`]).
+    pub(crate) copied: Option<Copied>,
 
     pub(crate) prefs: Prefs,
     pub(crate) status: String,
@@ -1022,9 +1066,23 @@ impl EpanetApp {
         self.write_project(ask);
     }
 
-    fn write_project(&mut self, ask: bool) {
+    /// Whether the document's file can not be written to (EPANET-UI 1.0.5
+    /// turns a Save of a read-only file into a Save As).
+    fn read_only(&self) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(p) = &self.path {
+            return std::fs::metadata(p).is_ok_and(|m| m.permissions().readonly());
+        }
+        false
+    }
+
+    fn write_project(&mut self, mut ask: bool) {
         if self.saving.is_some() {
             return;
+        }
+        if !ask && self.read_only() {
+            ask = true;
+            self.status = "The file is read-only: save it under another name".into();
         }
         let bytes = match crate::project::write(self) {
             Ok(b) => b,
@@ -1074,9 +1132,13 @@ impl EpanetApp {
         }
     }
 
-    pub(crate) fn save(&mut self, save_as: bool) {
+    pub(crate) fn save(&mut self, mut save_as: bool) {
         if self.saving.is_some() {
             return;
+        }
+        if !save_as && !self.project && self.read_only() {
+            save_as = true;
+            self.status = "The file is read-only: save it under another name".into();
         }
         // a project's Save saves the project (Save As, an INP file)
         if self.project && !save_as {
@@ -1193,6 +1255,10 @@ impl EpanetApp {
             match item {
                 Ok((name, bytes)) => {
                     let path = self.pending_path.take();
+                    if name.to_ascii_lowercase().ends_with(".wstyle") {
+                        crate::styling::load(self, &name, &bytes);
+                        continue;
+                    }
                     if name.to_ascii_lowercase().ends_with(".msx") {
                         // an MSX file dropped on the window joins the project
                         crate::msx::take_file(self, &name, &bytes);
@@ -1216,7 +1282,12 @@ impl EpanetApp {
 
     /// Records an undo point before a change.
     pub(crate) fn checkpoint(&mut self) {
-        self.undo.push(self.net.clone());
+        self.checkpoint_from(self.net.clone());
+    }
+
+    /// Records `before` as the undo point of a change already made.
+    pub(crate) fn checkpoint_from(&mut self, before: Network) {
+        self.undo.push(before);
         if self.undo.len() > MAX_UNDO {
             self.undo.remove(0);
         }
@@ -1395,16 +1466,20 @@ impl EpanetApp {
             Element::Node(i) => self.net.nodes[i].fields.clone(),
             Element::Link(i) => self.net.links[i].fields.clone(),
         };
-        self.copied = Some((sel, fields));
+        let extras = pasted_props(&self.net, sel)
+            .iter()
+            .map(|&k| (k, self.net.get_prop(sel, k)))
+            .collect();
+        self.copied = Some((sel, fields, extras));
         self.status = "Properties copied".into();
     }
 
     pub(crate) fn can_paste(&self) -> bool {
         match (self.copied.as_ref(), self.selection) {
-            (Some((Element::Node(a), _)), Some(Element::Node(b))) => {
+            (Some((Element::Node(a), ..)), Some(Element::Node(b))) => {
                 self.net.nodes.get(*a).map(|n| n.kind) == Some(self.net.nodes[b].kind)
             }
-            (Some((Element::Link(a), _)), Some(Element::Link(b))) => {
+            (Some((Element::Link(a), ..)), Some(Element::Link(b))) => {
                 self.net.links.get(*a).map(|l| l.kind) == Some(self.net.links[b].kind)
             }
             _ => false,
@@ -1415,7 +1490,7 @@ impl EpanetApp {
         if !self.can_paste() {
             return;
         }
-        let (Some((_, fields)), Some(sel)) = (self.copied.clone(), self.selection) else {
+        let (Some((_, fields, extras)), Some(sel)) = (self.copied.clone(), self.selection) else {
             return;
         };
         self.checkpoint();
@@ -1430,6 +1505,13 @@ impl EpanetApp {
                     self.net.links[i].fields[0] = len;
                 }
             }
+        }
+        for (key, value) in extras {
+            // an empty first value has already removed the whole entry
+            if value.trim().is_empty() && matches!(key, PropKey::Keyed(_, c) if c > 1) {
+                continue;
+            }
+            let _ = self.net.set_prop(sel, key, &value);
         }
         self.buffer_owner = None;
         self.status = "Properties pasted".into();
@@ -2112,6 +2194,66 @@ mod document_tests {
         EpanetApp::new(&eframe::CreationContext::_new_kittest(
             egui::Context::default(),
         ))
+    }
+
+    /// Copy/Paste of a tank's properties brings its mixing model, reaction
+    /// coefficient and initial quality too (EPANET-UI 1.0.5).
+    #[test]
+    fn pasting_a_tank_brings_its_mixing_and_quality() {
+        let mut a = app();
+        a.load_example("Net1", eui_core::examples::NET1);
+        let tank = a.net.node_index("2").unwrap();
+        let n = a.net.add_node(NodeKind::Tank, [0.0, 0.0]);
+        let (src, dst) = (Element::Node(tank), Element::Node(n));
+        for (k, v) in [
+            (PropKey::Keyed("MIXING", 1), "2COMP"),
+            (PropKey::Keyed("MIXING", 2), "0.4"),
+            (PropKey::Reaction("TANK"), "-0.3"),
+            (PropKey::Keyed("QUALITY", 1), "1.5"),
+        ] {
+            a.net.set_prop(src, k, v).unwrap();
+        }
+        a.selection = Some(src);
+        a.copy_selection();
+        a.selection = Some(dst);
+        assert!(a.can_paste());
+        a.paste_selection();
+        assert_eq!(a.net.get_prop(dst, PropKey::Keyed("MIXING", 1)), "2COMP");
+        assert_eq!(a.net.get_prop(dst, PropKey::Keyed("MIXING", 2)), "0.4");
+        assert_eq!(a.net.get_prop(dst, PropKey::Reaction("TANK")), "-0.3");
+        assert_eq!(a.net.get_prop(dst, PropKey::Keyed("QUALITY", 1)), "1.5");
+        // a tank without them clears them on the one pasted to
+        a.net
+            .set_prop(src, PropKey::Keyed("MIXING", 1), "")
+            .unwrap();
+        a.net.set_prop(src, PropKey::Reaction("TANK"), "").unwrap();
+        a.selection = Some(src);
+        a.copy_selection();
+        a.selection = Some(dst);
+        a.paste_selection();
+        assert_eq!(a.net.get_prop(dst, PropKey::Keyed("MIXING", 1)), "");
+        assert_eq!(a.net.get_prop(dst, PropKey::Reaction("TANK")), "");
+        assert!(!a.net.to_inp().contains(" T2 \t"), "{}", a.net.to_inp());
+    }
+
+    /// Save of a read-only file asks for another name, as EPANET-UI 1.0.5.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_read_only_file_is_read_only() {
+        let mut a = app();
+        assert!(!a.read_only());
+        let p = std::env::temp_dir().join(format!("wepanet-ro-{}.inp", std::process::id()));
+        std::fs::write(&p, "x").unwrap();
+        a.path = Some(p.clone());
+        assert!(!a.read_only());
+        let mut perm = std::fs::metadata(&p).unwrap().permissions();
+        perm.set_readonly(true);
+        std::fs::set_permissions(&p, perm.clone()).unwrap();
+        assert!(a.read_only());
+        #[allow(clippy::permissions_set_readonly_false)]
+        perm.set_readonly(false);
+        std::fs::set_permissions(&p, perm).unwrap();
+        let _ = std::fs::remove_file(&p);
     }
 
     /// Reset All to Defaults: the preferences as on a new install and a new

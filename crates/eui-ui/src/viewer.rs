@@ -181,7 +181,11 @@ fn contents(app: &mut EpanetApp, ui: &mut Ui) {
                 .on_hover_text(crate::i18n::tr("Edit the link legend"))
                 .clicked()
             {
-                crate::dialogs::open_legend_editor(app, false);
+                if app.prefs.link_style.active() {
+                    crate::styling::open(app);
+                } else {
+                    crate::dialogs::open_legend_editor(app, false);
+                }
             }
         });
     });

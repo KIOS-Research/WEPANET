@@ -28,7 +28,10 @@ pub fn show(app: &mut EpanetApp, ctx: &egui::Context) {
         ctx.data_mut(|d| d.insert_temp(shown, (dialog, center, false)));
     }
     // A dialog with Cancel was left some other way (another dialog took its place).
-    if !matches!(dialog, Dialog::MapSettings | Dialog::Preferences) {
+    if !matches!(
+        dialog,
+        Dialog::MapSettings | Dialog::Preferences | Dialog::LinkStyling
+    ) {
         app.prefs_backup = None;
     }
     if dialog == Dialog::ConfirmReload {
@@ -125,6 +128,7 @@ pub fn show(app: &mut EpanetApp, ctx: &egui::Context) {
         Dialog::ConfirmDelete => "Confirm Deletion",
         Dialog::ConfirmReplace => "Unsaved Changes",
         Dialog::ConfirmReload => "Unsaved Changes",
+        Dialog::LinkStyling => "Link Styling",
     };
     // Message boxes are all white and can only be closed with their buttons.
     let message = matches!(
@@ -170,6 +174,7 @@ pub fn show(app: &mut EpanetApp, ctx: &egui::Context) {
         Dialog::About => 470.0,
         Dialog::Preferences => 330.0,
         Dialog::Benchmarks => 880.0,
+        Dialog::LinkStyling => 460.0,
         Dialog::PluginManager => 800.0,
         _ => 320.0,
     }
@@ -219,6 +224,7 @@ pub fn show(app: &mut EpanetApp, ctx: &egui::Context) {
                     Dialog::MapSettings => map_settings(app, ui),
                     Dialog::NodeLegend => legend_editor(app, ui, true),
                     Dialog::LinkLegend => legend_editor(app, ui, false),
+                    Dialog::LinkStyling => crate::styling::panel(app, ui),
                     Dialog::Units => units(app, ui),
                     Dialog::ErrorCodes => error_codes(ui),
                     Dialog::About => about(ui),
@@ -292,6 +298,9 @@ pub fn show(app: &mut EpanetApp, ctx: &egui::Context) {
         if closable && (clicked.close || escape) {
             if dialog == Dialog::MapSettings {
                 cancel_map_settings(app);
+            }
+            if dialog == Dialog::LinkStyling {
+                crate::styling::cancel(app);
             }
             close = true;
         }

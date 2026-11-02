@@ -525,6 +525,15 @@ fn map_toolbar(app: &mut EpanetApp, ui: &mut Ui) {
             crate::export::request(app, crate::export::ExportTarget::File);
             ui.close();
         }
+        if icons::menu_item(ui, Icon::Save, "To SVG File", true)
+            .on_hover_text(crate::i18n::tr(
+                "A vector picture of the map (without the basemap), for print and editing",
+            ))
+            .clicked()
+        {
+            crate::export::request_svg(app);
+            ui.close();
+        }
     });
     if tool_button(
         ui,
@@ -577,6 +586,18 @@ fn map_toolbar(app: &mut EpanetApp, ui: &mut Ui) {
         app.view.fit_pending = true;
     }
     separator(ui);
+    if tool_button(
+        ui,
+        Icon::Styling,
+        "Styling",
+        true,
+        app.prefs.link_style.active(),
+        "Color and size the links by type or value, as in QGIS",
+    )
+    .clicked()
+    {
+        crate::styling::open(app);
+    }
     if tool_button(
         ui,
         Icon::Settings,

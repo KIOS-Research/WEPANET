@@ -49,6 +49,7 @@ mod shapefile;
 mod source;
 mod status;
 mod style;
+mod styling;
 #[cfg(test)]
 mod test_plugins;
 mod toolbars;
