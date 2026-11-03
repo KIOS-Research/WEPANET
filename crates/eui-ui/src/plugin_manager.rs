@@ -842,17 +842,9 @@ pub fn dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
             if app.plugin_manager.tab == Tab::Settings {
                 ui.set_min_height(BODY_H);
                 settings(app, ui, &ctx);
-            } else if loading {
-                let (rect, _) = ui.allocate_exact_size(
-                    egui::vec2(PAGE_W + 2.0, BODY_H + 26.0),
-                    egui::Sense::hover(),
-                );
-                egui::Spinner::new().size(28.0).paint_at(
-                    ui,
-                    egui::Rect::from_center_size(rect.center(), egui::vec2(28.0, 28.0)),
-                );
             } else {
-                list(app, ui, &ctx, all);
+                // empty while loading, laid out the same
+                list(app, ui, &ctx, if loading { Vec::new() } else { all });
             }
             ui.add_space(6.0);
             ui.horizontal(|ui| {
@@ -953,7 +945,10 @@ fn list(app: &mut EpanetApp, ui: &mut Ui, ctx: &egui::Context, all: Vec<Row>) {
                     .show(ui, |ui| {
                         ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
                             ui.spacing_mut().item_spacing.y = 0.0;
-                            if shown.is_empty() {
+                            if app.plugin_manager.pending > 0 {
+                                ui.add_space(8.0);
+                                ui.vertical_centered(|ui| ui.spinner());
+                            } else if shown.is_empty() {
                                 ui.label(RichText::new("  No plugins here.").weak());
                             }
                             for (k, r) in shown.iter().enumerate() {
