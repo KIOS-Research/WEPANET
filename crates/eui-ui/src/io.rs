@@ -393,7 +393,7 @@ pub fn clear_local_storage() {
         return;
     };
     let Ok(remove) = js_sys::Reflect::get(&storage, &"removeItem".into())
-        .and_then(|f| f.dyn_into::<js_sys::Function>().map_err(Into::into))
+        .and_then(|f| f.dyn_into::<js_sys::Function>())
     else {
         return;
     };

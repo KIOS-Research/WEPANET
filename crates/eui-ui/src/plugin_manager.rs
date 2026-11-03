@@ -757,9 +757,19 @@ pub fn dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
     if !app.plugin_manager.synced {
         sync(app, &ctx);
     }
+    // until the repositories are read, the list would show only what is
+    // installed and then change, so it waits for them
+    let loading = app.plugin_manager.pending > 0;
     let all = rows(app);
     let upgradeable = all.iter().filter(|r| r.state == State::Upgradeable).count();
-    if app.plugin_manager.tab == Tab::Upgradeable && upgradeable == 0 {
+    let count = |n: usize| {
+        if loading {
+            String::new()
+        } else {
+            format!(" ({n})")
+        }
+    };
+    if !loading && app.plugin_manager.tab == Tab::Upgradeable && upgradeable == 0 {
         app.plugin_manager.tab = Tab::All;
     }
     let mut close = false;
@@ -776,25 +786,29 @@ pub fn dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
         side_ui.spacing_mut().item_spacing.y = 0.0;
         let tab = app.plugin_manager.tab;
         let mut items = vec![
-            (Tab::All, Icon::Summary, format!("All ({})", all.len())),
+            (Tab::All, Icon::Summary, format!("All{}", count(all.len()))),
             (
                 Tab::Installed,
                 Icon::Setup,
                 format!(
-                    "Installed ({})",
-                    all.iter()
-                        .filter(|r| r.state != State::NotInstalled)
-                        .count()
+                    "Installed{}",
+                    count(
+                        all.iter()
+                            .filter(|r| r.state != State::NotInstalled)
+                            .count()
+                    )
                 ),
             ),
             (
                 Tab::NotInstalled,
                 Icon::Import,
                 format!(
-                    "Not installed ({})",
-                    all.iter()
-                        .filter(|r| r.state == State::NotInstalled)
-                        .count()
+                    "Not installed{}",
+                    count(
+                        all.iter()
+                            .filter(|r| r.state == State::NotInstalled)
+                            .count()
+                    )
                 ),
             ),
         ];
@@ -828,6 +842,15 @@ pub fn dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
             if app.plugin_manager.tab == Tab::Settings {
                 ui.set_min_height(BODY_H);
                 settings(app, ui, &ctx);
+            } else if loading {
+                let (rect, _) = ui.allocate_exact_size(
+                    egui::vec2(PAGE_W + 2.0, BODY_H + 26.0),
+                    egui::Sense::hover(),
+                );
+                egui::Spinner::new().size(28.0).paint_at(
+                    ui,
+                    egui::Rect::from_center_size(rect.center(), egui::vec2(28.0, 28.0)),
+                );
             } else {
                 list(app, ui, &ctx, all);
             }
@@ -1662,6 +1685,35 @@ mod tests {
                 .any(|(s, _)| s.contains("raw.githubusercontent.com/KIOS-Research")),
             "{t:?}"
         );
+    }
+
+    /// While the repositories are read the list waits for them, rather than
+    /// showing the core plugins and then changing; the window keeps its size.
+    #[test]
+    fn list_waits_for_the_repositories() {
+        let ctx = egui::Context::default();
+        let mut app = EpanetApp::new(&eframe::CreationContext::_new_kittest(ctx.clone()));
+        app.plugin_manager.offers = core_offers();
+        app.plugin_manager.synced = true;
+        app.plugin_manager.pending = 1;
+        app.dialog = crate::app::Dialog::PluginManager;
+        let t = layout(&mut app, &ctx);
+        let has = |t: &[(String, egui::Pos2)], s: &str| t.iter().any(|(x, _)| x == s);
+        let close = |t: &[(String, egui::Pos2)]| t.iter().find(|(x, _)| x == "Close").unwrap().1;
+        assert!(has(&t, "All") && !has(&t, "Elevations"), "{t:?}");
+        assert!(has(&t, "Reading the repositories…"), "{t:?}");
+        let waiting = close(&t);
+        reply(
+            &app.plugin_manager.inbox,
+            Reply::Repository {
+                url: "u".into(),
+                result: Ok(Vec::new()),
+            },
+        );
+        let t = layout(&mut app, &ctx);
+        assert!(has(&t, "Elevations") && has(&t, "All (2)"), "{t:?}");
+        let read = close(&t);
+        assert!((read - waiting).length() < 1.0, "{waiting:?} {read:?}");
     }
 
     #[test]
