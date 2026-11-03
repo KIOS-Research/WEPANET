@@ -701,5 +701,7 @@
   "Choose the value to color the nodes by.": "选择用于给节点着色的数值。",
   "No node has a value to classify (run an analysis for results).": "没有可分级的节点数值（请运行分析以获得结果）。",
   "To SVG File": "导出为 SVG 文件",
-  "A vector picture of the map (without the basemap), for print and editing": "地图的矢量图（不含底图），用于打印和编辑"
+  "A vector picture of the map (without the basemap), for print and editing": "地图的矢量图（不含底图），用于打印和编辑",
+  "Only the {} that fit the network's coordinates": "仅显示符合管网坐标的 {} 个坐标系",
+  "Systems that place the network inside the area where they are used. Many may fit: type the country or region in the filter.": "将管网置于其适用区域内的坐标系。可能有很多符合：请在筛选框中输入国家或地区。"
 }

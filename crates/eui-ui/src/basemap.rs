@@ -172,7 +172,7 @@ fn epsg_name(code: u32) -> Option<String> {
     }
     if let Some(name) = CRS_NAMES.lines().find_map(|l| {
         let (c, n) = l.split_once('\t')?;
-        (c.parse() == Ok(code)).then_some(n)
+        (c.parse() == Ok(code)).then(|| n.split('\t').next().unwrap_or(n))
     }) {
         return Some(name.to_string());
     }
@@ -208,12 +208,14 @@ fn epsg_name(code: u32) -> Option<String> {
 }
 
 /// Names of the EPSG coordinate systems (code, tab, name; deprecated ones
-/// left out), taken from the WKT definitions of the `crs-definitions` crate.
+/// left out), taken from the WKT definitions of the `crs-definitions` crate,
+/// then a tab and the area where each is used (west,south,east,north in
+/// degrees) from the EPSG database.
 const CRS_NAMES: &str = include_str!("crs_names.tsv");
 
 /// A coordinate system of the list: code, name, "epsg:code name" in
-/// lower case for searching.
-type CrsEntry = (u32, String, String);
+/// lower case for searching, the area where it is used.
+type CrsEntry = (u32, String, String, Option<[f64; 4]>);
 
 /// The coordinate systems that can be used, for the list of the source dialog.
 fn crs_list() -> &'static [CrsEntry] {
@@ -222,12 +224,16 @@ fn crs_list() -> &'static [CrsEntry] {
         CRS_NAMES
             .lines()
             .filter_map(|l| {
-                let (code, name) = l.split_once('\t')?;
-                let code: u32 = code.parse().ok()?;
+                let mut cols = l.split('\t');
+                let code: u32 = cols.next()?.parse().ok()?;
+                let name = cols.next()?;
                 Geo::parse(&format!("EPSG:{code}")).ok()?;
-                let label = name.to_string();
+                let area = cols.next().and_then(|a| {
+                    let v: Vec<f64> = a.split(',').filter_map(|x| x.parse().ok()).collect();
+                    <[f64; 4]>::try_from(v).ok()
+                });
                 let lower = format!("epsg:{code} {name}").to_lowercase();
-                Some((code, label, lower))
+                Some((code, name.to_string(), lower, area))
             })
             .collect()
     })
@@ -331,6 +337,47 @@ fn fits(geo: &Geo, b: [f64; 4]) -> bool {
 
 fn valid_lonlat([lon, lat]: [f64; 2]) -> bool {
     (-180.0..=180.0).contains(&lon) && (-90.0..=90.0).contains(&lat)
+}
+
+/// Whether the point lies in `area` (west, south, east, north; west beyond
+/// east when the area crosses the 180th meridian), give or take a little.
+fn in_area([lon, lat]: [f64; 2], [w, s, e, n]: [f64; 4]) -> bool {
+    const M: f64 = 0.1;
+    let lon_in = if w <= e {
+        (w - M..=e + M).contains(&lon)
+    } else {
+        lon >= w - M || lon <= e + M
+    };
+    lon_in && (s - M..=n + M).contains(&lat)
+}
+
+/// The coordinate systems the network's extent `b` can be in: those that put
+/// its corners and middle inside the area where they are used. Projected
+/// coordinates fit many systems (every transverse Mercator zone at the same
+/// latitude, for one), so this narrows the choice rather than making it.
+pub(crate) fn fitting_crs(b: [f64; 4]) -> std::collections::HashSet<u32> {
+    if looks_lonlat(b) {
+        return [4326].into();
+    }
+    let points = [
+        [b[0], b[1]],
+        [b[2], b[3]],
+        [(b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0],
+    ];
+    crs_list()
+        .iter()
+        .filter_map(|e| {
+            let area = e.3?;
+            let geo = Geo::parse(&format!("EPSG:{}", e.0)).ok()?;
+            // coordinates in degrees are told apart above
+            let fits = !matches!(geo, Geo::LonLat)
+                && points.iter().all(|&p| {
+                    geo.to_lonlat(p)
+                        .is_some_and(|ll| valid_lonlat(ll) && in_area(ll, area))
+                });
+            fits.then_some(e.0)
+        })
+        .collect()
 }
 
 /// Whether coordinates within `b` can only be longitude/latitude.
@@ -486,7 +533,8 @@ pub fn open_crs(app: &mut EpanetApp) {
         .strip_prefix("EPSG:")
         .unwrap_or(&current)
         .to_string();
-    app.basemap.project_selector = Some(CrsSelector::new(&code));
+    app.basemap.project_selector =
+        Some(CrsSelector::new(&code).for_network(app.bounds(), &app.prefs.crs_recent));
 }
 
 /// The selector opened by [`open_crs`], while it is; what is chosen there
@@ -1060,6 +1108,7 @@ pub fn dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
         .map(|&k| (k, thumbnail(app, &ctx, k)))
         .collect();
     let recent = app.prefs.crs_recent.clone();
+    let bounds = app.bounds();
     let st = &mut app.basemap;
     let edit = st.crs_edit.as_mut().unwrap();
     let units = &mut st.units_edit;
@@ -1109,7 +1158,7 @@ pub fn dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
                     .on_hover_text("Select CRS (Coordinate Reference System Selector)")
                     .clicked()
                 {
-                    *selector = Some(CrsSelector::new(edit));
+                    *selector = Some(CrsSelector::new(edit).for_network(bounds, &recent));
                 }
             });
             ui.add_space(6.0);
@@ -1313,6 +1362,10 @@ pub struct CrsSelector {
     custom: bool,
     proj: String,
     selected: Option<u32>,
+    /// The systems the network's coordinates can be in (None: no network).
+    fitting: Option<std::collections::HashSet<u32>>,
+    /// Whether the lists show only those.
+    fitting_only: bool,
     /// Whether the list still has to scroll to the selected system.
     scroll: bool,
     /// Whether the window has been placed in the middle of the screen.
@@ -1329,10 +1382,31 @@ impl CrsSelector {
             custom,
             proj: if custom { c.to_string() } else { String::new() },
             selected: c.trim_start_matches("EPSG:").parse().ok(),
+            fitting: None,
+            fitting_only: false,
             scroll: true,
             placed: false,
             maximized: false,
         }
+    }
+
+    /// Lists only the systems the network's extent `b` can be in (with a
+    /// check box to list them all). With none chosen yet, the most recently
+    /// used of them is selected, or the only one.
+    pub(crate) fn for_network(mut self, b: Option<[f64; 4]>, recent: &[String]) -> Self {
+        let Some(fit) = b.map(fitting_crs).filter(|f| !f.is_empty()) else {
+            return self;
+        };
+        if self.selected.is_none() && !self.custom {
+            self.selected = recent
+                .iter()
+                .filter_map(|c| c.parse().ok())
+                .find(|c| fit.contains(c))
+                .or_else(|| (fit.len() == 1).then(|| *fit.iter().next().unwrap()));
+        }
+        self.fitting_only = true;
+        self.fitting = Some(fit);
+        self
     }
 }
 
@@ -1617,8 +1691,26 @@ pub(crate) fn crs_selector(
                                 .split_whitespace()
                                 .map(str::to_lowercase)
                                 .collect();
-                            let matches =
-                                |c: &CrsEntry| words.iter().all(|w| c.2.contains(w.as_str()));
+                            if let Some(fit) = &sel.fitting {
+                                ui.add_space(4.0);
+                                let text = crate::i18n::trf(
+                                    "Only the {} that fit the network's coordinates",
+                                    &[&fit.len()],
+                                );
+                                if crate::widgets::checkbox(ui, &mut sel.fitting_only, text)
+                                    .on_hover_text(crate::i18n::tr(
+                                        "Systems that place the network inside the area where they are used. Many may fit: type the country or region in the filter.",
+                                    ))
+                                    .changed()
+                                {
+                                    sel.scroll = true;
+                                }
+                            }
+                            let fit = sel.fitting.as_ref().filter(|_| sel.fitting_only);
+                            let matches = |c: &CrsEntry| {
+                                fit.is_none_or(|f| f.contains(&c.0))
+                                    && words.iter().all(|w| c.2.contains(w.as_str()))
+                            };
                             let all = crs_list();
                             ui.add_space(6.0);
                             ui.label(
@@ -2274,6 +2366,43 @@ mod tests {
             .filter(|&c| Geo::parse(&format!("EPSG:{c}")).is_ok())
             .count();
         assert!(ok > 4000, "{ok}");
+    }
+
+    /// The selector lists the systems the network's coordinates fit in: those
+    /// that place it inside the area where they are used.
+    #[test]
+    fn lists_the_systems_the_coordinates_fit() {
+        // Athens in the Greek Grid
+        let athens = [474_000.0, 4_200_000.0, 480_000.0, 4_206_000.0];
+        let fit = fitting_crs(athens);
+        // in UTM zone 34N the same numbers are in the Ionian Sea, still in its area
+        assert!(fit.contains(&2100) && fit.contains(&32634), "{}", fit.len());
+        // the Kentucky and Cyprus grids are elsewhere
+        assert!(!fit.contains(&3089) && !fit.contains(&6312), "{fit:?}");
+        assert_eq!(fitting_crs([33.0, 35.0, 33.1, 35.1]), [4326].into());
+        // the most recently used one that fits is selected
+        let recent = ["3089".to_string(), "2100".to_string()];
+        let mut sel = CrsSelector::new("").for_network(Some(athens), &recent);
+        assert_eq!(sel.selected, Some(2100));
+        // a system already chosen stays
+        let chosen = CrsSelector::new("32634").for_network(Some(athens), &recent);
+        assert_eq!(chosen.selected, Some(32634));
+        let (texts, _) = draw_selector(&mut sel, &recent);
+        let n = format!("({})", fit.len());
+        assert!(texts.contains(&n), "{texts:?}");
+        assert!(
+            texts.iter().any(|t| t.starts_with("Only the ")),
+            "{texts:?}"
+        );
+        // the recently used list leaves out what does not fit
+        assert!(!texts.iter().any(|t| *t == "EPSG:3089"), "{texts:?}");
+        sel.fitting_only = false;
+        let (texts, _) = draw_selector(&mut sel, &recent);
+        assert!(texts.iter().any(|t| *t == "EPSG:3089"), "{texts:?}");
+        assert_eq!(
+            epsg_name(3089).as_deref().map(|n| n.contains('\t')),
+            Some(false)
+        );
     }
 
     #[test]

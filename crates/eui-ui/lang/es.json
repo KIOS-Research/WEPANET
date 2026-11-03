@@ -701,5 +701,7 @@
   "Choose the value to color the nodes by.": "Elija el valor con el que colorear los nodos.",
   "No node has a value to classify (run an analysis for results).": "Ningún nodo tiene un valor que clasificar (ejecute un análisis para los resultados).",
   "To SVG File": "A Archivo SVG",
-  "A vector picture of the map (without the basemap), for print and editing": "Una imagen vectorial del mapa (sin el mapa base), para imprimir y editar"
+  "A vector picture of the map (without the basemap), for print and editing": "Una imagen vectorial del mapa (sin el mapa base), para imprimir y editar",
+  "Only the {} that fit the network's coordinates": "Solo los {} que encajan con las coordenadas de la red",
+  "Systems that place the network inside the area where they are used. Many may fit: type the country or region in the filter.": "Sistemas que sitúan la red dentro del área donde se usan. Pueden encajar muchos: escriba el país o la región en el filtro."
 }

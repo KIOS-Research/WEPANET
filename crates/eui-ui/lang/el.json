@@ -701,5 +701,7 @@
   "Choose the value to color the nodes by.": "Επιλέξτε την τιμή με την οποία θα χρωματιστούν οι κόμβοι.",
   "No node has a value to classify (run an analysis for results).": "Κανένας κόμβος δεν έχει τιμή για ταξινόμηση (τρέξτε ανάλυση για αποτελέσματα).",
   "To SVG File": "Σε Αρχείο SVG",
-  "A vector picture of the map (without the basemap), for print and editing": "Διανυσματική εικόνα του χάρτη (χωρίς υπόβαθρο), για εκτύπωση και επεξεργασία"
+  "A vector picture of the map (without the basemap), for print and editing": "Διανυσματική εικόνα του χάρτη (χωρίς υπόβαθρο), για εκτύπωση και επεξεργασία",
+  "Only the {} that fit the network's coordinates": "Μόνο τα {} που ταιριάζουν στις συντεταγμένες του δικτύου",
+  "Systems that place the network inside the area where they are used. Many may fit: type the country or region in the filter.": "Συστήματα που τοποθετούν το δίκτυο μέσα στην περιοχή όπου χρησιμοποιούνται. Μπορεί να ταιριάζουν πολλά: γράψτε τη χώρα ή την περιοχή στο φίλτρο."
 }
