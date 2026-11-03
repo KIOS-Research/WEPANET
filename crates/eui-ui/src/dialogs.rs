@@ -638,10 +638,14 @@ fn run_status(app: &mut EpanetApp, ui: &mut Ui) -> bool {
         }
     });
     ui.add_space(30.0);
-    let close = buttons(ui, &["OK"]).is_some()
-        || ui.input(|i| i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::Escape));
+    let ok = buttons(ui, &["OK"]).is_some() || ui.input(|i| i.key_pressed(egui::Key::Enter));
+    // the message points to the Status Report (warnings, errors): OK opens it
+    if ok && app.run_message.contains("See Status Report") {
+        app.view_mode = crate::app::ViewMode::Report;
+        app.report_kind = crate::app::ReportKind::Status;
+    }
     ui.add_space(8.0);
-    close
+    ok || ui.input(|i| i.key_pressed(egui::Key::Escape))
 }
 
 fn confirm_delete(app: &mut EpanetApp, ui: &mut Ui) -> bool {
@@ -1935,6 +1939,46 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// OK on a run message that points to the Status Report opens it; on
+    /// "Run was successful." the map stays.
+    #[test]
+    fn run_status_ok_opens_the_status_report() {
+        let size = egui::vec2(1200.0, 800.0);
+        for (message, report) in [
+            (
+                "Warning messages were generated.\nSee Status Report for details.",
+                true,
+            ),
+            ("Run was successful.", false),
+        ] {
+            let (ctx, mut app) = crate::msx::tests::new_app();
+            app.view_mode = crate::app::ViewMode::Map;
+            app.run_message = message.into();
+            app.dialog = Dialog::RunStatus;
+            frame(&mut app, &ctx, size, Vec::new());
+            let texts = frame(&mut app, &ctx, size, Vec::new());
+            let ok = find(&texts, "OK").center();
+            frame(&mut app, &ctx, size, vec![egui::Event::PointerMoved(ok)]);
+            let click = |pressed| egui::Event::PointerButton {
+                pos: ok,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            };
+            frame(&mut app, &ctx, size, vec![click(true)]);
+            frame(&mut app, &ctx, size, vec![click(false)]);
+            assert_eq!(app.dialog, Dialog::None, "{message}");
+            assert_eq!(
+                app.view_mode == crate::app::ViewMode::Report,
+                report,
+                "{message}"
+            );
+            if report {
+                assert_eq!(app.report_kind, crate::app::ReportKind::Status);
+            }
+        }
     }
 
     fn find<'a>(texts: &'a [(String, Rect)], text: &str) -> &'a Rect {
