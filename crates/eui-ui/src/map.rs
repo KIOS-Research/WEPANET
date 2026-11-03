@@ -332,7 +332,8 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
             } else if let Some(s) = styled {
                 s.color
             } else {
-                value.map_or(pal.link, |v| link_legend.color(v))
+                // by magnitude: flows run either way
+                value.map_or(pal.link, |v| link_legend.color(v.abs()))
             };
             let mut width = match styled {
                 Some(s) => s.width,
@@ -341,7 +342,7 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
                     if app.prefs.link_proportional
                         && let Some(v) = value
                     {
-                        w += link_legend.class(v) as f32;
+                        w += link_legend.class(v.abs()) as f32;
                     }
                     w
                 }

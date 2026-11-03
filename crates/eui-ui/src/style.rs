@@ -318,10 +318,11 @@ impl Legend {
         }
     }
 
-    /// The color class (0 to 4) that `value` falls in.
+    /// The color class (0 to 4) that `value` falls in, with its sign: a
+    /// negative pressure is below every break. Links pass the magnitude
+    /// (flows run either way).
     pub fn class(&self, value: f32) -> usize {
-        let v = value.abs();
-        self.breaks.iter().position(|&b| v < b).unwrap_or(4)
+        self.breaks.iter().position(|&b| value < b).unwrap_or(4)
     }
 
     pub fn color(&self, value: f32) -> Color32 {
@@ -658,7 +659,7 @@ mod tests {
         assert_eq!(l.color(10.0), RAMP[0]);
         assert_eq!(l.color(60.0), RAMP[2]);
         assert_eq!(l.color(150.0), RAMP[4]);
-        assert_eq!(l.color(-60.0), RAMP[2], "flows are colored by magnitude");
+        assert_eq!(l.color(-60.0), RAMP[0], "a negative pressure is the lowest");
     }
 
     #[test]
