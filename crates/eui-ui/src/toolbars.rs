@@ -286,6 +286,8 @@ fn items(bar: Bar) -> &'static [Item] {
             Separator,
             Button(Icon::Label, "Map Label"),
             Separator,
+            Button(Icon::FullExtent, "Full Extent"),
+            Separator,
             Button(Icon::Undo, "Undo (Ctrl+Z)"),
             Button(Icon::Redo, "Redo (Ctrl+Y)"),
         ],

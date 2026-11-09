@@ -21,6 +21,8 @@ pub enum Service {
     #[default]
     Wms,
     ArcGis,
+    /// A layer of a DXF drawing, its lines kept with the layer.
+    Dxf,
 }
 
 impl Service {
@@ -28,9 +30,12 @@ impl Service {
         match self {
             Service::Wms => "WMS",
             Service::ArcGis => "ArcGIS REST map service",
+            Service::Dxf => "DXF drawing",
         }
     }
 }
+
+pub use crate::dxf_layer::{LineSet, Lines};
 
 /// A layer the user added.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -53,6 +58,14 @@ pub struct MapLayer {
     pub group: String,
     /// The form a WMS answers Identify in (GetFeatureInfo's INFO_FORMAT).
     pub info_format: String,
+    /// A DXF layer's line color.
+    pub color: [u8; 3],
+    /// Whether a DXF layer's polygons (closed lines) are filled, in a light
+    /// shade of its color.
+    pub fill: bool,
+    /// A DXF layer's lines (kept in the project file beside project.json).
+    #[serde(skip)]
+    pub lines: Lines,
 }
 
 impl Default for MapLayer {
@@ -68,9 +81,24 @@ impl Default for MapLayer {
             opacity: 1.0,
             group: String::new(),
             info_format: String::new(),
+            color: [0x40, 0x40, 0x40],
+            fill: true,
+            lines: Lines::default(),
         }
     }
 }
+
+/// Colors given to the layers of a DXF drawing in turn.
+pub const DXF_COLORS: [[u8; 3]; 8] = [
+    [0x1f, 0x77, 0xb4],
+    [0xd6, 0x27, 0x28],
+    [0x2c, 0xa0, 0x2c],
+    [0xff, 0x7f, 0x0e],
+    [0x94, 0x67, 0xbd],
+    [0x8c, 0x56, 0x4b],
+    [0xe3, 0x77, 0xc2],
+    [0x7f, 0x7f, 0x7f],
+];
 
 const WEB_MERCATOR: &str = "EPSG:3857";
 /// The coordinate systems pictures can be asked in, best first.
@@ -113,6 +141,7 @@ impl MapLayer {
     /// coordinate system), pixel `ij` of a `w` x `h` picture of `b`.
     fn identify_url(&self, b: [f64; 4], w: u32, h: u32, xy: [f64; 2], ij: [i64; 2]) -> String {
         match self.service {
+            Service::Dxf => String::new(),
             Service::ArcGis => format!(
                 "{}/identify?geometry={},{}&geometryType=esriGeometryPoint&sr=3857&layers={}\
                  &tolerance=6&mapExtent={},{},{},{}&imageDisplay={w},{h},96\
@@ -154,6 +183,7 @@ impl MapLayer {
 
     fn image_url(&self, b: [f64; 4], w: u32, h: u32) -> String {
         match self.service {
+            Service::Dxf => String::new(),
             Service::ArcGis => {
                 let mut u = format!(
                     "{}/export?bbox={},{},{},{}&bboxSR=3857&imageSR=3857&size={w},{h}\
@@ -288,7 +318,7 @@ fn arcgis_base(url: &str) -> String {
 fn caps_url(service: Service, url: &str) -> String {
     match service {
         Service::ArcGis => format!("{}?f=json", arcgis_base(url)),
-        Service::Wms => format!(
+        Service::Wms | Service::Dxf => format!(
             "{}SERVICE=WMS&REQUEST=GetCapabilities",
             with_query(&without_params(url, &["service", "request", "version"]))
         ),
@@ -531,6 +561,15 @@ pub struct LayersState {
     adding: Adding,
     /// The name being edited in the Map Layers panel, and its new text.
     renaming: Option<(Rename, String)>,
+    /// The Map Layers panel's search text.
+    search: String,
+    /// The attribute table open, of a DXF layer.
+    pub(crate) table: Option<crate::dxf_layer::Table>,
+    /// The pictures of the runs of visible DXF layers, bottom first.
+    dxf_pictures: Vec<crate::dxf_layer::Picture>,
+    /// The Identify box being dragged: where it started and its other
+    /// corner, on screen.
+    dragging: Option<(Pos2, Pos2)>,
     /// What Identify found where the map was clicked last.
     identified: Option<Identified>,
     answers: Answers,
@@ -698,7 +737,9 @@ fn request(st: &mut LayersState, ctx: &egui::Context, key: String, url: String, 
 pub fn draw(app: &mut EpanetApp, ui: &Ui, painter: &egui::Painter, rect: Rect) {
     take_answers(&mut app.layers);
     draw_pictures(app, ui, painter, rect);
+    crate::dxf_layer::draw_table_selection(app, painter, rect);
     draw_identified(app, painter, rect);
+    crate::dxf_layer::table_window(app, ui.ctx());
 }
 
 /// Draws the visible layers over `rect`, bottom one first, asking for new
@@ -706,17 +747,46 @@ pub fn draw(app: &mut EpanetApp, ui: &Ui, painter: &egui::Painter, rect: Rect) {
 fn draw_pictures(app: &mut EpanetApp, ui: &Ui, painter: &egui::Painter, rect: Rect) {
     let ctx = ui.ctx().clone();
     poll(app, &ctx);
-    if !app.prefs.map_layers.iter().any(|l| l.visible) || crate::basemap::geo(app).is_err() {
+    if !app.prefs.map_layers.iter().any(|l| l.visible) {
         return;
     }
+    // pictures need the coordinate system; DXF lines are in the network's
+    let has_geo = crate::basemap::geo(app).is_ok();
     let mut st = std::mem::take(&mut app.layers);
-    let Ok(geo) = crate::basemap::geo_ref(app) else {
-        app.layers = st;
-        return;
-    };
+    let geo = crate::basemap::geo_ref(app).ok().filter(|_| has_geo);
     let now = ui.input(|i| i.time);
     let ppp = ctx.pixels_per_point();
-    for layer in app.prefs.map_layers.iter().filter(|l| l.visible) {
+    let visible: Vec<&MapLayer> = app.prefs.map_layers.iter().filter(|l| l.visible).collect();
+    let mut runs = 0;
+    let mut i = 0;
+    while i < visible.len() {
+        let layer = visible[i];
+        if layer.service == Service::Dxf {
+            // the DXF layers that follow one another, drawn as one picture
+            let mut j = i + 1;
+            while j < visible.len() && visible[j].service == Service::Dxf {
+                j += 1;
+            }
+            if st.dxf_pictures.len() <= runs {
+                st.dxf_pictures.push(Default::default());
+            }
+            crate::dxf_layer::draw_run(
+                &mut st.dxf_pictures[runs],
+                &visible[i..j],
+                &app.view,
+                painter,
+                rect,
+                now,
+                &ctx,
+            );
+            runs += 1;
+            i = j;
+            continue;
+        }
+        i += 1;
+        let Some(geo) = geo else {
+            continue;
+        };
         let key = layer.key();
         let merc = mercator(&layer.crs);
         if let Some((b, w, h)) = wanted_area(geo, &app.view, rect, ppp, merc) {
@@ -743,6 +813,7 @@ fn draw_pictures(app: &mut EpanetApp, ui: &Ui, painter: &egui::Painter, rect: Re
             }
         }
     }
+    st.dxf_pictures.truncate(runs);
     app.layers = st;
 }
 
@@ -768,6 +839,14 @@ pub(crate) fn pane(app: &mut EpanetApp, ui: &mut Ui) {
                         open_add(app);
                     }
                     ui.add_space(8.0);
+                    if !app.prefs.map_layers.is_empty() {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut app.layers.search)
+                                .hint_text(crate::i18n::tr("Search layers"))
+                                .desired_width(ui.available_width()),
+                        );
+                        ui.add_space(6.0);
+                    }
                     let layers = &app.prefs.map_layers;
                     if layers.is_empty() {
                         ui.label(
@@ -778,7 +857,9 @@ pub(crate) fn pane(app: &mut EpanetApp, ui: &mut Ui) {
                         );
                         return;
                     }
-                    if crate::basemap::crs_def(app).is_none() {
+                    if crate::basemap::crs_def(app).is_none()
+                        && layers.iter().any(|l| l.service != Service::Dxf)
+                    {
                         ui.label(
                             RichText::new(crate::i18n::tr(
                                 "Set the project's coordinate reference system (CRS in the status bar) to show these layers.",
@@ -798,6 +879,24 @@ enum Change {
     /// Up (1) or down (-1) one place.
     Move(usize, i32),
     RemoveGroup(String),
+    /// Show this box (map coordinates).
+    Zoom([f64; 4]),
+    /// Open the attribute table of a DXF layer.
+    Table(usize),
+}
+
+/// The box of the lines of the layers `ls` (DXF layers have one).
+fn layers_bounds<'a>(ls: impl IntoIterator<Item = &'a MapLayer>) -> Option<[f64; 4]> {
+    ls.into_iter()
+        .filter_map(|l| l.lines.0.bounds)
+        .reduce(|a, b| {
+            [
+                a[0].min(b[0]),
+                a[1].min(b[1]),
+                a[2].max(b[2]),
+                a[3].max(b[3]),
+            ]
+        })
 }
 
 /// The layers, the top one first as they are drawn, under the names of
@@ -807,6 +906,10 @@ fn list(app: &mut EpanetApp, ui: &mut Ui, red: Color32) {
     let mut change = None;
     let mut renaming = std::mem::take(&mut app.layers.renaming);
     let mut renamed = None;
+    // the search: layers whose names (or whose group's) hold the text
+    let q = app.layers.search.trim().to_lowercase();
+    let found = |s: &str| q.is_empty() || s.to_lowercase().contains(&q);
+    let mut any = false;
     let mut k = n;
     while k > 0 {
         // the run of layers of one group, from the top
@@ -816,6 +919,18 @@ fn list(app: &mut EpanetApp, ui: &mut Ui, red: Color32) {
             first -= 1;
         }
         let members = first..k;
+        let whole_group = !group.is_empty() && found(&group);
+        let shown: Vec<usize> = members
+            .clone()
+            .rev()
+            .filter(|&j| whole_group || found(&app.prefs.map_layers[j].name))
+            .collect();
+        if shown.is_empty() {
+            k = first;
+            continue;
+        }
+        any = true;
+        let group_box = layers_bounds(&app.prefs.map_layers[members.clone()]);
         egui::Frame::group(ui.style())
             .inner_margin(egui::Margin::symmetric(6, 4))
             .show(ui, |ui| {
@@ -825,6 +940,12 @@ fn list(app: &mut EpanetApp, ui: &mut Ui, red: Color32) {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if glyph_button(ui, true, Glyph::Remove, "Remove the group").clicked() {
                                 change = Some(Change::RemoveGroup(group.clone()));
+                            }
+                            if let Some(b) = group_box
+                                && glyph_button(ui, true, Glyph::Zoom, "Zoom to the group")
+                                    .clicked()
+                            {
+                                change = Some(Change::Zoom(b));
                             }
                             ui.with_layout(
                                 egui::Layout::left_to_right(egui::Align::Center),
@@ -854,7 +975,7 @@ fn list(app: &mut EpanetApp, ui: &mut Ui, red: Color32) {
                         });
                     });
                 }
-                for j in members.clone().rev() {
+                for &j in &shown {
                     let key = app.prefs.map_layers[j].key();
                     let view = app.layers.views.get(&key);
                     let loading = view.is_some_and(|v| v.loading.is_some());
@@ -872,6 +993,19 @@ fn list(app: &mut EpanetApp, ui: &mut Ui, red: Color32) {
                             }
                             if glyph_button(ui, j + 1 < n, Glyph::Up, "Move up").clicked() {
                                 change = Some(Change::Move(j, 1));
+                            }
+                            if l.service == Service::Dxf {
+                                if glyph_button(ui, true, Glyph::Table, "Open Attribute Table")
+                                    .clicked()
+                                {
+                                    change = Some(Change::Table(j));
+                                }
+                                if let Some(b) = l.lines.0.bounds
+                                    && glyph_button(ui, true, Glyph::Zoom, "Zoom to Layer")
+                                        .clicked()
+                                {
+                                    change = Some(Change::Zoom(b));
+                                }
                             }
                             if loading {
                                 ui.spinner();
@@ -899,6 +1033,15 @@ fn list(app: &mut EpanetApp, ui: &mut Ui, red: Color32) {
                     });
                     ui.horizontal(|ui| {
                         ui.add_space(indent);
+                        if l.service == Service::Dxf {
+                            ui.color_edit_button_srgb(&mut l.color)
+                                .on_hover_text(crate::i18n::tr("Line color"));
+                            if l.lines.0.has_polygons {
+                                crate::widgets::checkbox(ui, &mut l.fill, "Fill").on_hover_text(
+                                    crate::i18n::tr("Fill the polygons (closed lines)"),
+                                );
+                            }
+                        }
                         ui.label(crate::i18n::tr("Opacity"));
                         let mut o = l.opacity as f64;
                         crate::widgets::slider(ui, true, &mut o, 0.0..=1.0, false, None);
@@ -914,6 +1057,9 @@ fn list(app: &mut EpanetApp, ui: &mut Ui, red: Color32) {
             });
         ui.add_space(4.0);
         k = first;
+    }
+    if !any {
+        ui.label(RichText::new(crate::i18n::tr("No layers match the search.")).weak());
     }
     app.layers.renaming = renaming;
     let layers = &mut app.prefs.map_layers;
@@ -942,6 +1088,14 @@ fn list(app: &mut EpanetApp, ui: &mut Ui, red: Color32) {
                 .partition(|l| l.group == g);
             *layers = keep;
             out
+        }
+        Some(Change::Zoom(b)) => {
+            crate::dxf_layer::zoom_to(app, b);
+            Vec::new()
+        }
+        Some(Change::Table(j)) => {
+            crate::dxf_layer::open_table(app, j);
+            Vec::new()
         }
         None => Vec::new(),
     };
@@ -1021,6 +1175,10 @@ enum Glyph {
     Up,
     Down,
     Remove,
+    /// Zoom to the extent (the toolbar's Full Extent icon).
+    Zoom,
+    /// A small table.
+    Table,
 }
 
 /// A small button with a drawn arrow or cross (the interface font has no
@@ -1060,6 +1218,20 @@ fn glyph_button(ui: &mut Ui, enabled: bool, glyph: Glyph, tip: &str) -> Response
                 color,
                 egui::Stroke::NONE,
             ));
+        }
+        Glyph::Zoom => {
+            // the toolbar's Full Extent icon
+            crate::icons::paint(ui.painter(), crate::icons::Icon::FullExtent, c, 17.0, color);
+        }
+        Glyph::Table => {
+            let s = egui::Stroke::new(1.2, color);
+            let r = Rect::from_center_size(c, vec2(12.0, 10.0));
+            ui.painter()
+                .rect_stroke(r, 1.0, s, egui::StrokeKind::Middle);
+            ui.painter().hline(r.x_range(), r.top() + 3.5, s);
+            ui.painter().hline(r.x_range(), r.top() + 6.8, s);
+            ui.painter()
+                .vline(r.left() + 4.5, r.top() + 3.5..=r.bottom(), s);
         }
         Glyph::Remove => {
             let s = egui::Stroke::new(1.6, color);
@@ -1112,7 +1284,7 @@ fn connect(app: &mut EpanetApp, ctx: &egui::Context) {
                 let text = crate::io::decode_text(&r.bytes);
                 match service {
                     Service::ArcGis => parse_arcgis(&text, &source),
-                    Service::Wms => parse_wms(&text, &source),
+                    Service::Wms | Service::Dxf => parse_wms(&text, &source),
                 }
             }
             Ok(r) => Err(format!("{} {}", r.status, r.status_text)),
@@ -1142,7 +1314,7 @@ fn suggested_group(c: &Caps) -> String {
             .position(|s| s.eq_ignore_ascii_case("MapServer"))
             .and_then(|i| i.checked_sub(1))
             .map(|i| segments[i]),
-        Service::Wms => segments
+        Service::Wms | Service::Dxf => segments
             .iter()
             .rev()
             .find(|s| {
@@ -1340,7 +1512,7 @@ pub fn dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
         ui.label(RichText::new(&caps.title).strong());
         ui.label(
             RichText::new(match caps.service {
-                Service::Wms => format!("WMS {} · {}", caps.version, caps.crs),
+                Service::Wms | Service::Dxf => format!("WMS {} · {}", caps.version, caps.crs),
                 Service::ArcGis => crate::i18n::tr("ArcGIS REST map service").to_string(),
             })
             .weak(),
@@ -1423,6 +1595,9 @@ struct Feature {
     closed: bool,
     /// Its layer's place in the Map Layers panel, the top one 0.
     rank: usize,
+    /// Whether its shape is in map coordinates (a DXF layer's) rather than
+    /// in Web Mercator.
+    world: bool,
 }
 
 /// The answers of the layers asked: (the click, the layer, its features).
@@ -1442,6 +1617,8 @@ struct Identified {
     chosen: Option<usize>,
     /// Whether the user chose it (else the top layer's first is shown).
     picked: bool,
+    /// The box selected in, when a box was dragged (map coordinates).
+    boxed: Option<[f64; 4]>,
 }
 
 fn value_text(v: &serde_json::Value) -> String {
@@ -1556,6 +1733,7 @@ fn parse_identify(layer: &str, text: &str) -> Result<Vec<Feature>, String> {
                     shape,
                     closed,
                     rank: 0,
+                    world: false,
                 }
             })
             .collect());
@@ -1602,32 +1780,147 @@ fn strip_tags(s: &str) -> String {
         .join("\n")
 }
 
+/// The features of the visible DXF layers that `find` picks out of each.
+fn dxf_features(app: &EpanetApp, find: impl Fn(&LineSet) -> Vec<usize>) -> Vec<Feature> {
+    let n = app.prefs.map_layers.len();
+    let mut features = Vec::new();
+    for (k, l) in app.prefs.map_layers.iter().enumerate() {
+        if !l.visible || l.service != Service::Dxf {
+            continue;
+        }
+        let set = &l.lines.0;
+        for i in find(set) {
+            let e = &set.entities[i];
+            let kind = e.kind.name();
+            features.push(Feature {
+                layer: l.name.clone(),
+                name: if e.handle.is_empty() {
+                    format!("{kind} {}", i + 1)
+                } else {
+                    format!("{kind} {}", e.handle)
+                },
+                fields: set.fields(i),
+                shape: vec![set.lines[i].clone()],
+                closed: false,
+                rank: n - 1 - k,
+                world: true,
+            });
+        }
+    }
+    features
+}
+
+/// The most features one box selection lists.
+const MAX_BOX_FEATURES: usize = 1000;
+
+/// Identify with a box dragged on the map (from `a` to `b`, on screen): the
+/// features of the visible DXF layers in it (web layers answer only about a
+/// point).
+pub fn identify_box(app: &mut EpanetApp, rect: Rect, a: Pos2, b: Pos2) {
+    let (p, q) = (app.view.to_world(rect, a), app.view.to_world(rect, b));
+    let bx = [
+        p[0].min(q[0]),
+        p[1].min(q[1]),
+        p[0].max(q[0]),
+        p[1].max(q[1]),
+    ];
+    if !app
+        .prefs
+        .map_layers
+        .iter()
+        .any(|l| l.visible && l.service == Service::Dxf)
+    {
+        app.status = crate::i18n::tr(
+            "Select with a box in DXF map layers; click to identify in web map layers",
+        )
+        .to_string();
+        return;
+    }
+    let mut features = dxf_features(app, |set| set.in_box(bx, MAX_BOX_FEATURES));
+    features.sort_by_key(|f| f.rank);
+    let more = features.len() > MAX_BOX_FEATURES;
+    features.truncate(MAX_BOX_FEATURES);
+    app.status = if more {
+        crate::i18n::trf("Showing the first {} features", &[&MAX_BOX_FEATURES])
+    } else {
+        crate::i18n::trf("{} features selected", &[&features.len()])
+    };
+    show_identify_results(app);
+    let st = &mut app.layers;
+    st.next += 1;
+    st.identified = Some(Identified {
+        id: st.next,
+        at: [(bx[0] + bx[2]) / 2.0, (bx[1] + bx[3]) / 2.0],
+        chosen: (!features.is_empty()).then_some(0),
+        features,
+        boxed: Some(bx),
+        ..Default::default()
+    });
+}
+
+/// The Identify tool's box: dragged on the map, it selects what is in it.
+/// Returns whether it took the pointer (the map is not panned then).
+pub fn identify_drag(app: &mut EpanetApp, rect: Rect, response: &egui::Response) -> bool {
+    if app.tool != crate::app::Tool::Identify {
+        return false;
+    }
+    let (origin, latest) = response
+        .ctx
+        .input(|i| (i.pointer.press_origin(), i.pointer.latest_pos()));
+    if response.drag_started_by(egui::PointerButton::Primary)
+        && let Some(a) = origin
+    {
+        app.layers.dragging = Some((a, latest.unwrap_or(a)));
+    }
+    let Some((a, mut b)) = app.layers.dragging else {
+        return false;
+    };
+    if let Some(p) = latest {
+        b = p;
+    }
+    if response.drag_stopped() {
+        app.layers.dragging = None;
+        identify_box(app, rect, a, b);
+    } else {
+        app.layers.dragging = Some((a, b));
+    }
+    true
+}
+
 /// Asks the visible map layers for their features at screen point `p`.
 pub fn identify(app: &mut EpanetApp, rect: Rect, p: Pos2) {
     let world = app.view.to_world(rect, p);
-    if !app.prefs.map_layers.iter().any(|l| l.visible) {
+    // web layers are asked; DXF layers' lines are looked at here
+    let asked = |l: &MapLayer| l.visible && l.service != Service::Dxf;
+    let dxf = |l: &MapLayer| l.visible && l.service == Service::Dxf;
+    let any_dxf = app.prefs.map_layers.iter().any(dxf);
+    if !app.prefs.map_layers.iter().any(asked) && !any_dxf {
         app.status = "There is no map layer shown to identify (Map > Layers > Add Layer)".into();
         return;
     }
-    if crate::basemap::geo(app).is_err() {
+    let n = app.prefs.map_layers.len();
+    let tol = 6.0 / app.view.scale;
+    let mut features = dxf_features(app, |set| set.hits(world, tol, 20));
+    let web = app.prefs.map_layers.iter().any(asked);
+    let geo_ok = crate::basemap::geo(app).is_ok();
+    if web && !geo_ok && !any_dxf {
         app.status =
             "Set the project's coordinate reference system (CRS in the status bar) to identify features"
                 .into();
         return;
     }
-    let Ok(geo) = crate::basemap::geo_ref(app) else {
-        return;
-    };
     let ppp = app.ctx.pixels_per_point();
     let mut asks = Vec::new();
-    let n = app.prefs.map_layers.len();
-    for (k, l) in app
-        .prefs
-        .map_layers
-        .iter()
-        .enumerate()
-        .filter(|(_, l)| l.visible)
-    {
+    let geo = crate::basemap::geo_ref(app).ok().filter(|_| geo_ok && web);
+    let web_layers = if geo.is_some() {
+        &app.prefs.map_layers[..]
+    } else {
+        &[]
+    };
+    for (k, l) in web_layers.iter().enumerate().filter(|(_, l)| asked(l)) {
+        let Some(geo) = geo else {
+            break;
+        };
         let merc = mercator(&l.crs);
         let (Some((b, w, h)), Some([lon, lat])) = (
             wanted_area(geo, &app.view, rect, ppp, merc),
@@ -1649,6 +1942,14 @@ pub fn identify(app: &mut EpanetApp, rect: Rect, p: Pos2) {
         ];
         asks.push((l.name.clone(), n - 1 - k, l.identify_url(b, w, h, xy, ij)));
     }
+    let mut errors = Vec::new();
+    if web && !geo_ok {
+        errors.push(crate::i18n::tr(
+            "Set the project's coordinate reference system (CRS in the status bar) to identify features",
+        )
+        .to_string());
+    }
+    features.sort_by_key(|f| f.rank);
     show_identify_results(app);
     let st = &mut app.layers;
     st.next += 1;
@@ -1657,6 +1958,9 @@ pub fn identify(app: &mut EpanetApp, rect: Rect, p: Pos2) {
         id,
         at: world,
         waiting: asks.len(),
+        chosen: (!features.is_empty()).then_some(0),
+        features,
+        errors,
         ..Default::default()
     });
     for (layer, rank, url) in asks {
@@ -1732,10 +2036,14 @@ pub(crate) fn identify_pane(app: &mut EpanetApp, ui: &mut Ui) {
     take_answers(&mut app.layers);
     let red = Color32::from_rgb(0xc0, 0x39, 0x2b);
     let mut clear = false;
+    // the feature to add to the network as a pipe, or all of them
+    let mut add_pipe = None;
+    let mut add_all = false;
     egui::Frame::NONE
         .inner_margin(egui::Margin::symmetric(8, 6))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
+            let map_layers = &mut app.prefs.map_layers;
             let Some(found) = app.layers.identified.as_mut() else {
                 ui.label(
                     RichText::new(crate::i18n::tr(
@@ -1752,6 +2060,20 @@ pub(crate) fn identify_pane(app: &mut EpanetApp, ui: &mut Ui) {
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     clear = ui.button(crate::i18n::tr("Clear")).clicked();
+                    let lines = found
+                        .features
+                        .iter()
+                        .filter(|f| f.shape.iter().any(|p| p.len() >= 2))
+                        .count();
+                    if lines >= 2 {
+                        add_all = ui
+                            .button(crate::i18n::tr("Add All as Pipes"))
+                            .on_hover_text(crate::i18n::trf(
+                                "Add the {} lines found to the network as pipes, joined where their ends meet",
+                                &[&lines],
+                            ))
+                            .clicked();
+                    }
                 });
             });
             for e in &found.errors {
@@ -1764,20 +2086,36 @@ pub(crate) fn identify_pane(app: &mut EpanetApp, ui: &mut Ui) {
                 .id_salt("identify_list")
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    let mut layers: Vec<&str> = Vec::new();
+                    // the features' layers, each with the map layer it is of
+                    let mut layers: Vec<(&str, usize)> = Vec::new();
                     for f in &found.features {
-                        if !layers.contains(&f.layer.as_str()) {
-                            layers.push(&f.layer);
+                        if !layers.contains(&(f.layer.as_str(), f.rank)) {
+                            layers.push((&f.layer, f.rank));
                         }
                     }
+                    let n = map_layers.len();
                     let mut choose = None;
-                    for layer in layers {
-                        egui::CollapsingHeader::new(RichText::new(layer).strong())
-                            .id_salt(("identify_layer", layer))
-                            .default_open(true)
-                            .show(ui, |ui| {
+                    for (layer, rank) in layers {
+                        let id = ui.make_persistent_id(("identify_layer", layer, rank));
+                        egui::collapsing_header::CollapsingState::load_with_default_open(
+                            ui.ctx(),
+                            id,
+                            true,
+                        )
+                        .show_header(ui, |ui| {
+                            // the map layer shown or not, as in the Map Layers panel
+                            if let Some(l) = n
+                                .checked_sub(rank + 1)
+                                .and_then(|k| map_layers.get_mut(k))
+                            {
+                                ui.add(crate::widgets::Checkbox::new(&mut l.visible, ""))
+                                    .on_hover_text(crate::i18n::tr("Show the layer on the map"));
+                            }
+                            ui.label(RichText::new(layer).strong());
+                        })
+                        .body(|ui| {
                                 for (k, f) in found.features.iter().enumerate() {
-                                    if f.layer != layer {
+                                    if f.layer != layer || f.rank != rank {
                                         continue;
                                     }
                                     let on = found.chosen == Some(k);
@@ -1791,6 +2129,16 @@ pub(crate) fn identify_pane(app: &mut EpanetApp, ui: &mut Ui) {
                                         .id_salt(("identify_feature", found.id, k))
                                         .default_open(on)
                                         .show(ui, |ui| {
+                                            if f.shape.iter().any(|p| p.len() >= 2)
+                                                && ui
+                                                    .button(crate::i18n::tr("Add as Pipe"))
+                                                    .on_hover_text(crate::i18n::tr(
+                                                        "Add this line to the network as a pipe, with junctions at its ends (or the nodes already there)",
+                                                    ))
+                                                    .clicked()
+                                            {
+                                                add_pipe = Some(k);
+                                            }
                                             egui::Grid::new(("identify_fields", found.id, k))
                                                 .num_columns(2)
                                                 .striped(true)
@@ -1822,15 +2170,134 @@ pub(crate) fn identify_pane(app: &mut EpanetApp, ui: &mut Ui) {
     if clear {
         app.layers.identified = None;
     }
+    if let Some(f) = add_pipe.and_then(|k| app.layers.identified.as_ref()?.features.get(k)) {
+        let parts = feature_lines(app, f);
+        add_as_pipe(app, parts);
+    } else if add_all && let Some(found) = app.layers.identified.as_ref() {
+        // the layers turned off are left out, as on the map
+        let n = app.prefs.map_layers.len();
+        let parts: Vec<Vec<[f64; 2]>> = found
+            .features
+            .iter()
+            .filter(|f| {
+                n.checked_sub(f.rank + 1)
+                    .and_then(|k| app.prefs.map_layers.get(k))
+                    .is_none_or(|l| l.visible)
+            })
+            .flat_map(|f| feature_lines(app, f))
+            .collect();
+        add_as_pipe(app, parts);
+    }
+}
+
+/// A feature's lines in map coordinates (a web layer's are in Web Mercator).
+fn feature_lines(app: &EpanetApp, f: &Feature) -> Vec<Vec<[f64; 2]>> {
+    if f.world {
+        return f.shape.clone();
+    }
+    let Ok(geo) = crate::basemap::geo_ref(app) else {
+        return Vec::new();
+    };
+    f.shape
+        .iter()
+        .map(|part| {
+            part.iter()
+                .filter_map(|&p| geo.lonlat_to(Geo::WebMercator.to_lonlat(p)?))
+                .collect()
+        })
+        .collect()
+}
+
+/// Adds lines to the network as pipes (one undo step): their inner points
+/// become the pipes' vertices, their ends join the nodes within a few pixels
+/// or new junctions, and the lengths are measured along them.
+fn add_as_pipe(app: &mut EpanetApp, parts: Vec<Vec<[f64; 2]>>) {
+    use crate::import::{BuildOptions, InLink, MapUnits};
+    let links: Vec<InLink> = parts
+        .into_iter()
+        .filter(|p| p.len() >= 2)
+        .map(|points| InLink {
+            points,
+            ..Default::default()
+        })
+        .collect();
+    if links.is_empty() {
+        app.status = crate::i18n::tr("The feature has no line to add").to_string();
+        return;
+    }
+    let units = MapUnits::of_project(&app.net);
+    let snap = 8.0 / app.view.scale * units.meters_per_unit();
+    let opt = BuildOptions {
+        units,
+        snap_m: snap,
+        compute_lengths: true,
+    };
+    app.checkpoint();
+    let setup = app.setup.clone();
+    let sum = crate::import::build(&mut app.net, &setup, &[], &links, &opt);
+    app.touch();
+    app.results = None;
+    app.status = if sum.links_added == 0 {
+        crate::i18n::tr("No pipe was added: the line's ends are the same node").to_string()
+    } else {
+        crate::i18n::trf(
+            "Added {} pipes and {} junctions",
+            &[&sum.links_added, &sum.nodes_added],
+        )
+    };
 }
 
 /// The point Identify asked about, and the feature chosen outlined.
 fn draw_identified(app: &mut EpanetApp, painter: &egui::Painter, rect: Rect) {
+    let accent = Color32::from_rgb(0xff, 0x2d, 0x55);
+    // the box being dragged
+    if let Some((a, b)) = app.layers.dragging {
+        let r = Rect::from_two_pos(a, b);
+        painter.rect(
+            r,
+            0.0,
+            accent.gamma_multiply(0.08),
+            egui::Stroke::new(1.5, accent),
+            egui::StrokeKind::Middle,
+        );
+    }
     let Some(found) = &app.layers.identified else {
         return;
     };
-    let accent = Color32::from_rgb(0xff, 0x2d, 0x55);
-    if let Some(f) = found.chosen.and_then(|k| found.features.get(k))
+    // a box selection: all it found, lightly, and the box
+    if let Some(b) = found.boxed {
+        let light = accent.gamma_multiply(0.55);
+        for f in found.features.iter().filter(|f| f.world) {
+            for part in &f.shape {
+                crate::dxf_layer::draw_outline(&app.view, painter, rect, part, light);
+            }
+        }
+        let r = Rect::from_two_pos(
+            app.view.to_screen(rect, [b[0], b[1]]),
+            app.view.to_screen(rect, [b[2], b[3]]),
+        );
+        painter.rect_stroke(
+            r,
+            0.0,
+            egui::Stroke::new(1.0, accent.gamma_multiply(0.6)),
+            egui::StrokeKind::Middle,
+        );
+    }
+    // not outlined while its map layer is turned off
+    let n = app.prefs.map_layers.len();
+    let chosen = found
+        .chosen
+        .and_then(|k| found.features.get(k))
+        .filter(|f| {
+            n.checked_sub(f.rank + 1)
+                .and_then(|k| app.prefs.map_layers.get(k))
+                .is_none_or(|l| l.visible)
+        });
+    if let Some(f) = chosen.filter(|f| f.world) {
+        for part in &f.shape {
+            crate::dxf_layer::draw_outline(&app.view, painter, rect, part, accent);
+        }
+    } else if let Some(f) = chosen
         && !f.shape.is_empty()
         && let Ok(geo) = crate::basemap::geo_ref(app)
     {
@@ -1858,15 +2325,72 @@ fn draw_identified(app: &mut EpanetApp, painter: &egui::Painter, rect: Rect) {
         }
     }
     // the point clicked
-    let c = app.view.to_screen(rect, found.at);
-    let s = egui::Stroke::new(2.0, accent);
-    painter.line_segment([c - vec2(7.0, 0.0), c + vec2(7.0, 0.0)], s);
-    painter.line_segment([c - vec2(0.0, 7.0), c + vec2(0.0, 7.0)], s);
+    if found.boxed.is_none() {
+        let c = app.view.to_screen(rect, found.at);
+        let s = egui::Stroke::new(2.0, accent);
+        painter.line_segment([c - vec2(7.0, 0.0), c + vec2(7.0, 0.0)], s);
+        painter.line_segment([c - vec2(0.0, 7.0), c + vec2(0.0, 7.0)], s);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A box selects the DXF lines in or across it (not those outside), and
+    /// all of them become pipes joined where their ends meet.
+    #[test]
+    fn a_box_selects_lines_that_become_pipes() {
+        let ctx = egui::Context::default();
+        let mut app = EpanetApp::new(&eframe::CreationContext::_new_kittest(ctx));
+        let lines = vec![
+            vec![[0.0, 0.0], [10.0, 0.0]],
+            vec![[10.0, 0.0], [20.0, 5.0], [30.0, 0.0]],
+            vec![[500.0, 500.0], [510.0, 500.0]],
+        ];
+        app.prefs.map_layers.push(MapLayer {
+            name: "PIPES".into(),
+            service: Service::Dxf,
+            lines: Lines(Arc::new(LineSet::new(lines, Vec::new()))),
+            ..Default::default()
+        });
+        app.view.scale = 1.0;
+        app.view.center = [0.0, 0.0];
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 1000.0));
+        // map (-5, -10) .. (15, 10): the first line in it, the second across
+        let a = app.view.to_screen(rect, [-5.0, 10.0]);
+        let b = app.view.to_screen(rect, [15.0, -10.0]);
+        identify_box(&mut app, rect, a, b);
+        let found = app.layers.identified.as_ref().unwrap();
+        assert_eq!(found.features.len(), 2);
+        assert!(found.boxed.is_some());
+        let parts: Vec<_> = found
+            .features
+            .iter()
+            .flat_map(|f| feature_lines(&app, f))
+            .collect();
+        add_as_pipe(&mut app, parts);
+        assert_eq!((app.net.nodes.len(), app.net.links.len()), (3, 2));
+    }
+
+    /// A line found by Identify becomes a pipe: its inner points vertices,
+    /// one end on the junction already there, the other a new junction.
+    #[test]
+    fn adds_a_found_line_as_a_pipe() {
+        let ctx = egui::Context::default();
+        let mut app = EpanetApp::new(&eframe::CreationContext::_new_kittest(ctx));
+        let setup = app.setup.clone();
+        setup.add_node(&mut app.net, eui_core::NodeKind::Junction, [0.0, 0.0]);
+        app.view.scale = 1.0;
+        add_as_pipe(&mut app, vec![vec![[2.0, 1.0], [50.0, 0.0], [100.0, 0.0]]]);
+        let net = &app.net;
+        assert_eq!((net.nodes.len(), net.links.len()), (2, 1));
+        let (a, b) = net.link_ends(&net.links[0]).unwrap();
+        assert_eq!((a, b), (0, 1));
+        assert_eq!(net.links[0].vertices, vec![[50.0, 0.0]]);
+        assert!(app.dirty);
+        assert_eq!(app.status, "Added 1 pipes and 1 junctions");
+    }
 
     const ARCGIS: &str = r#"{"currentVersion":10.91,"mapName":"ΤΕΜΑΧΙΑ","layers":[
         {"id":0,"name":"ΤΕΜΑΧΙΑ","parentLayerId":-1,"defaultVisibility":true},

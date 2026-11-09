@@ -362,15 +362,57 @@ pub fn records(ui: &mut Ui, id: &str, fields: &[String], records: &[Vec<String>]
 
 /// A drawing of the lines and points to import.
 pub fn preview(ui: &mut Ui, lines: &[&[[f64; 2]]], points: &[[f64; 2]], empty: &str, height: f32) {
+    let rect = preview_frame(ui, height);
+    let drawn = preview_paths(rect.size(), lines, points);
+    preview_draw(ui, rect, &drawn, empty);
+}
+
+/// [`preview`] for drawings with very many lines: they are laid out once
+/// for each `key` (which must change whenever the lines do) and size of the
+/// preview, not on every frame.
+pub fn preview_cached<'a>(
+    ui: &mut Ui,
+    key: u64,
+    lines: impl FnOnce() -> Vec<&'a [[f64; 2]]>,
+    empty: &str,
+    height: f32,
+) {
+    type Cached = std::sync::Arc<(u64, egui::Vec2, PreviewPaths)>;
+    let rect = preview_frame(ui, height);
+    let id = ui.id().with("preview_cached");
+    let size = rect.size();
+    let cached: Option<Cached> = ui.data(|d| d.get_temp(id));
+    let cached = match cached {
+        Some(c) if c.0 == key && c.1 == size => c,
+        _ => {
+            let c: Cached = std::sync::Arc::new((key, size, preview_paths(size, &lines(), &[])));
+            ui.data_mut(|d| d.insert_temp(id, c.clone()));
+            c
+        }
+    };
+    preview_draw(ui, rect, &cached.2, empty);
+}
+
+/// The lines and points of a preview, in points from its top left corner;
+/// `None` when there is nothing to draw.
+type PreviewPaths = Option<(Vec<Vec<egui::Pos2>>, Vec<egui::Pos2>)>;
+
+fn preview_frame(ui: &mut Ui, height: f32) -> egui::Rect {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
-    let p = ui.painter_at(rect);
-    p.rect(
+    ui.painter_at(rect).rect(
         rect,
         0.0,
         Color32::WHITE,
         border(ui),
         egui::StrokeKind::Inside,
     );
+    rect
+}
+
+/// Fits the lines and points into a preview of `size`. Points of a line
+/// closer than a pixel to the previous one are left out, so a drawing of a
+/// million lines stays a drawing of about as many segments as pixels.
+fn preview_paths(size: egui::Vec2, lines: &[&[[f64; 2]]], points: &[[f64; 2]]) -> PreviewPaths {
     let all = || lines.iter().flat_map(|l| l.iter()).chain(points.iter());
     let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
     for [x, y] in all() {
@@ -380,6 +422,46 @@ pub fn preview(ui: &mut Ui, lines: &[&[[f64; 2]]], points: &[[f64; 2]], empty: &
         y1 = y1.max(*y);
     }
     if x0 > x1 {
+        return None;
+    }
+    let inner = egui::Rect::from_min_size(egui::Pos2::ZERO, size).shrink(12.0);
+    let sc = (inner.width() as f64 / (x1 - x0).max(1e-9))
+        .min(inner.height() as f64 / (y1 - y0).max(1e-9));
+    let c = inner.center();
+    let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+    let at = |[x, y]: [f64; 2]| pos2(c.x + ((x - cx) * sc) as f32, c.y - ((y - cy) * sc) as f32);
+    let mut paths = Vec::new();
+    // lines shorter than a pixel: one dot for each pixel
+    let mut dots = std::collections::HashSet::new();
+    for l in lines.iter().filter(|l| !l.is_empty()) {
+        let mut path = vec![at(l[0])];
+        for &q in &l[1..] {
+            let q = at(q);
+            if path.last().is_some_and(|p| p.distance_sq(q) >= 1.0) {
+                path.push(q);
+            }
+        }
+        if path.len() == 1 {
+            dots.insert((path[0].x as i32, path[0].y as i32));
+            continue;
+        }
+        let end = at(l[l.len() - 1]);
+        if *path.last().unwrap() != end {
+            path.push(end);
+        }
+        paths.push(path);
+    }
+    // a dot is a path of a pixel's length
+    paths.extend(dots.into_iter().map(|(x, y)| {
+        let p = pos2(x as f32, y as f32 + 0.5);
+        vec![p, p + vec2(1.0, 0.0)]
+    }));
+    Some((paths, points.iter().map(|&q| at(q)).collect()))
+}
+
+fn preview_draw(ui: &Ui, rect: egui::Rect, drawn: &PreviewPaths, empty: &str) {
+    let p = ui.painter_at(rect);
+    let Some((paths, points)) = drawn else {
         p.text(
             rect.center(),
             Align2::CENTER_CENTER,
@@ -388,21 +470,17 @@ pub fn preview(ui: &mut Ui, lines: &[&[[f64; 2]]], points: &[[f64; 2]], empty: &
             Color32::from_gray(120),
         );
         return;
-    }
-    let inner = rect.shrink(12.0);
-    let sc = (inner.width() as f64 / (x1 - x0).max(1e-9))
-        .min(inner.height() as f64 / (y1 - y0).max(1e-9));
-    let c = inner.center();
-    let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
-    let at = |[x, y]: [f64; 2]| pos2(c.x + ((x - cx) * sc) as f32, c.y - ((y - cy) * sc) as f32);
-    for l in lines {
+    };
+    let o = rect.min.to_vec2();
+    let stroke = Stroke::new(1.0, Color32::from_gray(60));
+    for l in paths {
         p.add(egui::Shape::line(
-            l.iter().map(|&q| at(q)).collect(),
-            Stroke::new(1.0, Color32::from_gray(60)),
+            l.iter().map(|&q| q + o).collect(),
+            stroke,
         ));
     }
-    for q in points {
-        p.circle_filled(at(*q), 2.0, Color32::from_rgb(0x30, 0x60, 0xc0));
+    for &q in points {
+        p.circle_filled(q + o, 2.0, Color32::from_rgb(0x30, 0x60, 0xc0));
     }
 }
 

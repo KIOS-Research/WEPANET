@@ -15,6 +15,10 @@ pub struct DxfImport {
     tab: usize,
     name: String,
     drawing: Option<Drawing>,
+    /// The number of lines on each layer of the drawing.
+    counts: Vec<usize>,
+    /// Counts the drawings read, to tell the preview of one from another's.
+    generation: u64,
     /// The layers ticked for import.
     chosen: Vec<bool>,
     units: usize,
@@ -22,6 +26,9 @@ pub struct DxfImport {
     snap_feet: bool,
     compute_lengths: bool,
     add_to_project: bool,
+    /// Add the ticked layers to the map as map layers, in one group, rather
+    /// than import their lines as pipes.
+    as_map_layers: bool,
     error: Option<String>,
     inbox: Inbox,
 }
@@ -32,12 +39,15 @@ impl Default for DxfImport {
             tab: 0,
             name: String::new(),
             drawing: None,
+            counts: Vec::new(),
+            generation: 0,
             chosen: Vec::new(),
             units: 0,
             snap: "0.00".into(),
             snap_feet: false,
             compute_lengths: true,
             add_to_project: true,
+            as_map_layers: false,
             error: None,
             inbox: Inbox::default(),
         }
@@ -70,6 +80,19 @@ fn chosen_lines(s: &DxfImport) -> Vec<&[[f64; 2]]> {
     })
 }
 
+/// Whether a ticked layer has lines.
+fn any_chosen(s: &DxfImport) -> bool {
+    s.chosen.iter().zip(&s.counts).any(|(c, n)| *c && *n > 0)
+}
+
+/// Identifies the drawing and the ticked layers, for the preview.
+fn preview_key(s: &DxfImport) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (s.generation, &s.chosen).hash(&mut h);
+    h.finish()
+}
+
 fn layers_page(ui: &mut Ui, s: &mut DxfImport) {
     let ctx = ui.ctx().clone();
     wizard::note(ui, LAYERS_TEXT);
@@ -82,6 +105,7 @@ fn layers_page(ui: &mut Ui, s: &mut DxfImport) {
                 FileAction::Clear => {
                     s.name.clear();
                     s.drawing = None;
+                    s.counts.clear();
                     s.chosen.clear();
                 }
                 FileAction::None => {}
@@ -105,7 +129,7 @@ fn layers_page(ui: &mut Ui, s: &mut DxfImport) {
             );
             let mut list = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(6.0)));
             if let Some(d) = &s.drawing {
-                let counts = d.counts();
+                let counts = &s.counts;
                 egui::ScrollArea::vertical()
                     .id_salt("dxf_layers")
                     .auto_shrink(false)
@@ -123,8 +147,7 @@ fn layers_page(ui: &mut Ui, s: &mut DxfImport) {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 16.0;
                     if wizard::link_label(ui, "Select All", true) {
-                        let counts = s.drawing.as_ref().map(Drawing::counts).unwrap_or_default();
-                        for (c, n) in s.chosen.iter_mut().zip(counts) {
+                        for (c, n) in s.chosen.iter_mut().zip(s.counts.iter().copied()) {
                             *c = n > 0;
                         }
                     }
@@ -145,6 +168,18 @@ fn options_page(ui: &mut Ui, s: &mut DxfImport) {
         );
     });
     ui.add_space(4.0);
+    wizard::option_row(ui, "", 0.0, |ui| {
+        crate::widgets::checkbox(
+            ui,
+            &mut s.as_map_layers,
+            "Add as Map Layers (one group, a layer for each drawing layer)",
+        );
+    });
+    // the options below are for pipes
+    ui.add_enabled_ui(!s.as_map_layers, |ui| pipe_options(ui, s));
+}
+
+fn pipe_options(ui: &mut Ui, s: &mut DxfImport) {
     wizard::option_row(ui, "Drawing Units", 30.0, |ui| {
         egui::ComboBox::from_id_salt("dxf_units")
             .selected_text(tr(MapUnits::ALL[s.units].label()))
@@ -184,7 +219,9 @@ fn choose(s: &mut DxfImport, name: String, d: Drawing) {
     if let Some(u) = d.units {
         s.units = MapUnits::ALL.iter().position(|m| *m == u).unwrap_or(0);
     }
-    s.chosen = d.counts().iter().map(|n| *n > 0).collect();
+    s.counts = d.counts();
+    s.chosen = s.counts.iter().map(|n| *n > 0).collect();
+    s.generation += 1;
     s.name = name;
     s.drawing = Some(d);
     s.error = None;
@@ -218,17 +255,29 @@ pub fn dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
                 .inner_margin(egui::Margin::symmetric(14, 0))
                 .show(ui, |ui| {
                     let h = ui.available_height() - 14.0;
-                    let lines = chosen_lines(s);
-                    wizard::preview(ui, &lines, &[], "No layers were selected", h);
+                    let key = preview_key(s);
+                    let s = &*s;
+                    wizard::preview_cached(
+                        ui,
+                        key,
+                        || chosen_lines(s),
+                        "No layers were selected",
+                        h,
+                    );
                 });
         }
     });
     wizard::error(ui, &s.error);
     ui.add_space(20.0);
-    let can_import = !chosen_lines(s).is_empty();
+    let can_import = any_chosen(s);
     let nav = wizard::buttons(ui, &mut s.tab, 2, can_import);
     if nav == Nav::Import {
-        match run(app) {
+        let as_layers = app.dxf_import.as_ref().is_some_and(|s| s.as_map_layers);
+        match if as_layers {
+            add_map_layers(app)
+        } else {
+            run(app)
+        } {
             Ok(msg) => {
                 app.dxf_import = None;
                 app.finish_import(msg);
@@ -246,6 +295,73 @@ pub fn dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
         app.dxf_import = None;
     }
     close
+}
+
+/// Adds the ticked layers to the map as map layers, in a group named after
+/// the file, each in a color of its own. The drawing's lines move into them.
+fn add_map_layers(app: &mut EpanetApp) -> Result<String, String> {
+    use crate::layers::{DXF_COLORS, LineSet, Lines, MapLayer, Service};
+    let s = app.dxf_import.as_mut().ok_or("nothing to import")?;
+    if !any_chosen(s) {
+        return Err("Select one or more layers with lines".into());
+    }
+    let d = s.drawing.take().ok_or("Select a DXF file")?;
+    let group = s
+        .name
+        .rsplit_once('.')
+        .map_or(s.name.as_str(), |(stem, _)| stem)
+        .to_string();
+    // each layer's lines and their entities
+    type Parts = (Vec<Vec<[f64; 2]>>, Vec<crate::dxf::Entity>);
+    let mut per_layer: Vec<Parts> = vec![Default::default(); d.layers.len()];
+    let mut entities = d.entities.into_iter();
+    for (l, pts) in d.lines {
+        let e = entities.next().unwrap_or_default();
+        if s.chosen.get(l).copied().unwrap_or(false) {
+            per_layer[l].0.push(pts);
+            per_layer[l].1.push(e);
+        }
+    }
+    let mut added = Vec::new();
+    for (k, (name, (lines, entities))) in d.layers.into_iter().zip(per_layer).enumerate() {
+        if lines.is_empty() {
+            continue;
+        }
+        let set = LineSet::new(lines, entities);
+        added.push(MapLayer {
+            name,
+            service: Service::Dxf,
+            url: s.name.clone(),
+            group: group.clone(),
+            color: DXF_COLORS[k % DXF_COLORS.len()],
+            fill: set.fill_by_default(),
+            lines: Lines(std::sync::Arc::new(set)),
+            ..Default::default()
+        });
+    }
+    let bounds = added
+        .iter()
+        .filter_map(|l| l.lines.0.bounds)
+        .reduce(|a, b| {
+            [
+                a[0].min(b[0]),
+                a[1].min(b[1]),
+                a[2].max(b[2]),
+                a[3].max(b[3]),
+            ]
+        });
+    let msg = trf("Added {} map layers in {}", &[&added.len(), &group]);
+    // the panel lists the last layer on top: keep the drawing's order from the top
+    added.reverse();
+    app.prefs.map_layers.extend(added);
+    app.prefs.hide_layers = false;
+    app.prefs.docks.activate(crate::dock::Pane::Layers);
+    // a map with no network shows the drawing
+    if app.net.nodes.is_empty() {
+        app.view.fit_to = bounds;
+        app.view.fit_pending = true;
+    }
+    Ok(msg)
 }
 
 /// Imports the lines of the chosen layers.
@@ -321,6 +437,44 @@ pub(crate) mod tests {
             Some("METERS")
         );
         assert!(app.dirty && app.view.fit_pending);
+    }
+
+    /// With "Add as Map Layers" the ticked layers become map layers in a
+    /// group named after the file, the network stays as it was, and a
+    /// project file keeps their lines.
+    #[test]
+    fn adds_the_layers_as_a_group_of_map_layers() {
+        use crate::layers::Service;
+        let mut app = app();
+        open(&mut app);
+        set_tab(&mut app, 1);
+        app.dxf_import.as_mut().unwrap().as_map_layers = true;
+        let msg = add_map_layers(&mut app).unwrap();
+        assert_eq!(msg, "Added 2 map layers in network");
+        assert!(app.net.links.is_empty());
+        let layers = &app.prefs.map_layers;
+        // the drawing's first layer on top of the panel, i.e. last
+        let names: Vec<&str> = layers.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["MAINS", "PIPES"]);
+        assert!(
+            layers
+                .iter()
+                .all(|l| l.group == "network" && l.service == Service::Dxf)
+        );
+        assert_eq!(layers[1].lines.0.lines.len(), 2);
+        // each line keeps its entity
+        assert_eq!(layers[1].lines.0.cell(0, 0), "LINE");
+        assert_eq!(layers[1].lines.0.cell(1, 0), "LWPOLYLINE");
+        assert_eq!(layers[1].lines.0.bounds, Some([0.0, 0.0, 200.0, 80.0]));
+        assert_ne!(layers[0].color, layers[1].color);
+        assert!(app.unsaved());
+
+        let bytes = crate::project::write(&app).unwrap();
+        let o = crate::project::read(&bytes).unwrap();
+        let back = &o.project.map_layers;
+        assert_eq!(back.len(), 2);
+        assert_eq!(back[1].lines.0.lines, layers[1].lines.0.lines);
+        assert_eq!(back[0].lines.0.lines, layers[0].lines.0.lines);
     }
 
     fn app() -> EpanetApp {

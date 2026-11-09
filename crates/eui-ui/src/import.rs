@@ -55,6 +55,29 @@ impl MapUnits {
         MapUnits::Degrees,
     ];
 
+    /// The project's map units (Backdrop > Units).
+    pub fn of_project(net: &Network) -> MapUnits {
+        match net
+            .option("BACKDROP", "UNITS")
+            .map(|u| u.to_ascii_uppercase())
+            .as_deref()
+        {
+            Some("FEET") => MapUnits::Feet,
+            Some("METERS") => MapUnits::Meters,
+            Some("DEGREES") => MapUnits::Degrees,
+            _ => MapUnits::None,
+        }
+    }
+
+    /// Meters in one map unit, near enough for a snapping distance.
+    pub fn meters_per_unit(self) -> f64 {
+        match self {
+            MapUnits::Feet => 0.3048,
+            MapUnits::Degrees => 111_320.0,
+            _ => 1.0,
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             MapUnits::None => "None",

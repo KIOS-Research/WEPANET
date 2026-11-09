@@ -194,6 +194,20 @@ pub struct Network {
     pub crs: Option<String>,
     node_lookup: HashMap<String, usize>,
     link_lookup: HashMap<String, usize>,
+    id_hints: IdHints,
+}
+
+/// For each ID prefix of nodes (true) and links (false), a number below which
+/// every ID is taken, so that adding many elements does not search from 1
+/// each time. Cleared whenever the index is rebuilt, as IDs may have been
+/// freed. A cache only: it never makes two networks unequal.
+#[derive(Clone, Debug, Default)]
+struct IdHints(HashMap<(bool, String), u64>);
+
+impl PartialEq for IdHints {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -650,6 +664,7 @@ impl Network {
             .enumerate()
             .map(|(i, l)| (l.id.clone(), i))
             .collect();
+        self.id_hints.0.clear();
     }
 
     pub fn node_index(&self, id: &str) -> Option<usize> {
@@ -755,11 +770,25 @@ impl Network {
 
     // ----- editing -------------------------------------------------------
 
-    fn unique_id(&self, prefix: &str, taken: impl Fn(&str) -> bool) -> String {
-        (1..)
-            .map(|i| format!("{prefix}{i}"))
-            .find(|id| !taken(id))
-            .expect("infinite iterator")
+    /// `prefix` followed by the first free number, for a node or a link.
+    fn unique_id(&mut self, node: bool, prefix: &str) -> String {
+        let lookup = if node {
+            &self.node_lookup
+        } else {
+            &self.link_lookup
+        };
+        let hint = self
+            .id_hints
+            .0
+            .entry((node, prefix.to_string()))
+            .or_insert(1);
+        let (i, id) = (*hint..)
+            .map(|i| (i, format!("{prefix}{i}")))
+            .find(|(_, id)| !lookup.contains_key(id))
+            .expect("infinite iterator");
+        // the caller takes this one
+        *hint = i + 1;
+        id
     }
 
     pub fn add_node(&mut self, kind: NodeKind, pos: [f64; 2]) -> usize {
@@ -768,7 +797,7 @@ impl Network {
 
     /// Adds a node whose ID is `prefix` followed by the first free number.
     pub fn add_node_as(&mut self, kind: NodeKind, pos: [f64; 2], prefix: &str) -> usize {
-        let id = self.unique_id(prefix.trim(), |id| self.node_lookup.contains_key(id));
+        let id = self.unique_id(true, prefix.trim());
         self.nodes.push(Node {
             id: id.clone(),
             kind,
@@ -787,7 +816,7 @@ impl Network {
 
     /// Adds a link whose ID is `prefix` followed by the first free number.
     pub fn add_link_as(&mut self, kind: LinkKind, from: usize, to: usize, prefix: &str) -> usize {
-        let id = self.unique_id(prefix.trim(), |id| self.link_lookup.contains_key(id));
+        let id = self.unique_id(false, prefix.trim());
         let mut fields = kind.default_fields();
         if kind == LinkKind::Pipe
             && let (Some(a), Some(b)) = (self.nodes[from].pos, self.nodes[to].pos)
@@ -877,7 +906,7 @@ impl Network {
         }
         let node_id = n.id.clone();
 
-        let id = self.unique_id(prefix.trim(), |id| self.link_lookup.contains_key(id));
+        let id = self.unique_id(false, prefix.trim());
         let link = &mut self.links[idx];
         let mut rest = link.clone();
         rest.id = id.clone();
@@ -933,6 +962,34 @@ impl Network {
             }
         }
         self.rebuild_index();
+    }
+
+    /// Merges node `from` into node `into`: the links of `from` are joined to
+    /// `into` instead, the links between the two (which would start and end
+    /// at the same node) are deleted, and then `from` itself. Returns the
+    /// index `into` has afterwards, None if the two are the same node.
+    pub fn merge_node(&mut self, from: usize, into: usize) -> Option<usize> {
+        if from == into || from >= self.nodes.len() || into >= self.nodes.len() {
+            return None;
+        }
+        let (a, b) = (self.nodes[from].id.clone(), self.nodes[into].id.clone());
+        let between = |l: &Link| (l.from == a && l.to == b) || (l.from == b && l.to == a);
+        let dead: Vec<usize> = (0..self.links.len())
+            .filter(|&i| between(&self.links[i]))
+            .collect();
+        for &i in dead.iter().rev() {
+            self.delete_link(i);
+        }
+        for l in &mut self.links {
+            if l.from == a {
+                l.from = b.clone();
+            }
+            if l.to == a {
+                l.to = b.clone();
+            }
+        }
+        self.delete_node(from);
+        Some(if from < into { into - 1 } else { into })
     }
 
     pub fn delete_link(&mut self, idx: usize) {
@@ -1121,6 +1178,50 @@ fn write_record(out: &mut String, head: &[&str], fields: &[String], comment: &st
 mod tests {
     use super::*;
     use crate::examples;
+
+    /// A node merged into another: its links join the other, the link
+    /// between the two is gone, and so is the node.
+    #[test]
+    fn merges_a_node_into_another() {
+        let mut net = Network::default();
+        let a = net.add_node(NodeKind::Junction, [0.0, 0.0]);
+        let b = net.add_node(NodeKind::Junction, [10.0, 0.0]);
+        let c = net.add_node(NodeKind::Junction, [20.0, 0.0]);
+        let d = net.add_node(NodeKind::Junction, [0.0, 10.0]);
+        net.add_link(LinkKind::Pipe, a, b);
+        net.add_link(LinkKind::Pipe, b, c);
+        net.add_link(LinkKind::Pipe, d, b);
+        assert_eq!(net.merge_node(b, a), Some(0));
+        assert_eq!(net.nodes.len(), 3);
+        assert_eq!(net.links.len(), 2, "the link between them is gone");
+        let ends: Vec<(&str, &str)> = net
+            .links
+            .iter()
+            .map(|l| (l.from.as_str(), l.to.as_str()))
+            .collect();
+        assert_eq!(ends, [("J1", "J3"), ("J4", "J1")]);
+        assert!(net.links.iter().all(|l| net.link_ends(l).is_some()));
+        assert_eq!(net.merge_node(0, 0), None);
+    }
+
+    /// New IDs take the first free number, also one freed by a deletion
+    /// after many were added.
+    #[test]
+    fn new_ids_take_the_first_free_number() {
+        let mut net = Network::default();
+        for _ in 0..5 {
+            net.add_node_as(NodeKind::Junction, [0.0, 0.0], "J");
+        }
+        assert_eq!(net.nodes[4].id, "J5");
+        net.delete_node(1);
+        let i = net.add_node_as(NodeKind::Junction, [0.0, 0.0], "J");
+        assert_eq!(net.nodes[i].id, "J2");
+        let i = net.add_node_as(NodeKind::Junction, [0.0, 0.0], "J");
+        assert_eq!(net.nodes[i].id, "J6");
+        // another prefix starts from 1
+        let i = net.add_node_as(NodeKind::Junction, [0.0, 0.0], "N");
+        assert_eq!(net.nodes[i].id, "N1");
+    }
 
     /// A pipe split by a junction becomes two pipes that share its length in
     /// proportion to the map distance, keep its vertices on their side and

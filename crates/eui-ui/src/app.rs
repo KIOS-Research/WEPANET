@@ -42,6 +42,15 @@ pub enum MenuTab {
     Help,
 }
 
+/// What a node dragged on the map is snapped onto.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum DragSnap {
+    /// A pipe: its index, the segment and the point on it (split there).
+    Pipe(usize, usize, [f64; 2]),
+    /// Another node (the dragged junction merges into it).
+    Node(usize),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ViewMode {
     Map,
@@ -522,6 +531,9 @@ pub struct EpanetApp {
     /// A map label being typed: its position and text so far.
     pub(crate) label_edit: Option<([f64; 2], String)>,
     pub(crate) drag_node: Option<usize>,
+    /// What the dragged node is snapped onto; let go there, it splits the
+    /// pipe or merges into the node.
+    pub(crate) drag_snap: Option<DragSnap>,
     pub(crate) drag_vertex: Option<usize>,
 
     pub(crate) explorer: ExplorerItem,
@@ -654,6 +666,7 @@ impl EpanetApp {
             link_vertices: Vec::new(),
             label_edit: None,
             drag_node: None,
+            drag_snap: None,
             drag_vertex: None,
             explorer: ExplorerItem::Title,
             buffers: HashMap::new(),
@@ -788,6 +801,7 @@ impl EpanetApp {
         self.editor_shown = None;
         self.cancel_link();
         self.drag_node = None;
+        self.drag_snap = None;
         self.drag_vertex = None;
         self.label_edit = None;
         self.group = None;
@@ -1338,6 +1352,7 @@ impl EpanetApp {
         });
         self.cancel_link();
         self.drag_node = None;
+        self.drag_snap = None;
         self.buffer_owner = None;
         self.section_buffer = None;
     }

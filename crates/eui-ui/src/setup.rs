@@ -94,7 +94,7 @@ impl Default for SetupDefaults {
 }
 
 impl SetupDefaults {
-    fn prefix(&self, k: usize) -> &str {
+    pub(crate) fn prefix(&self, k: usize) -> &str {
         self.prefixes[k].trim()
     }
     fn property(&self, k: usize) -> String {

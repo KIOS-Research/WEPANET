@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::EpanetApp;
 use crate::basemap::BasemapKind;
-use crate::layers::MapLayer;
+use crate::layers::{LineSet, Lines, MapLayer, Service};
 use crate::style::{LinkTheme, NodeTheme};
 
 pub const EXT: &str = "wepanet";
@@ -18,6 +18,12 @@ const INP: &str = "network.inp";
 const MSX: &str = "network.msx";
 const IMAGE: &str = "basemap.png";
 const JSON: &str = "project.json";
+
+/// The file of the lines of the `k`th map layer, a DXF layer (see
+/// [`LineSet::to_bytes`]).
+fn lines_file(k: usize) -> String {
+    format!("layers/{k}.bin")
+}
 
 /// Whether `name` is a project file's.
 pub fn is_project(name: &str) -> bool {
@@ -84,6 +90,11 @@ pub fn write(app: &EpanetApp) -> Result<Vec<u8>, String> {
     if let Some((_, png, _)) = &image {
         put(IMAGE, png)?;
     }
+    for (k, l) in project.map_layers.iter().enumerate() {
+        if l.service == Service::Dxf {
+            put(&lines_file(k), &l.lines.0.to_bytes())?;
+        }
+    }
     put(JSON, json.as_bytes())?;
     z.finish().map_err(|e| e.to_string())?;
     Ok(buf.into_inner())
@@ -100,11 +111,19 @@ pub fn read(bytes: &[u8]) -> Result<Opened, String> {
         Some(out)
     };
     let inp = file(INP).ok_or("The project file holds no network (network.inp)")?;
-    let project = match file(JSON) {
+    let mut project: Project = match file(JSON) {
         Some(j) => serde_json::from_slice(&j)
             .map_err(|e| format!("The project file's project.json cannot be read: {e}"))?,
         None => Project::default(),
     };
+    for (k, l) in project.map_layers.iter_mut().enumerate() {
+        if l.service == Service::Dxf {
+            let set = file(&lines_file(k))
+                .and_then(|b| LineSet::from_bytes(&b))
+                .ok_or_else(|| format!("The lines of the map layer {} cannot be read", l.name))?;
+            l.lines = Lines(std::sync::Arc::new(set));
+        }
+    }
     Ok(Opened {
         inp: crate::io::decode_text(&inp),
         msx: file(MSX).map(|m| crate::io::decode_text(&m)),

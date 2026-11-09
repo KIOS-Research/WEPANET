@@ -7,7 +7,7 @@ use egui::{
 use eui_core::props::Element;
 use eui_core::{LinkKind, LinkVar, NodeKind};
 
-use crate::app::{EpanetApp, Tool};
+use crate::app::{DragSnap, EpanetApp, Tool};
 use crate::geometry::Occupancy;
 use crate::style::{self, Legend};
 
@@ -216,6 +216,118 @@ pub(crate) fn hit_link(app: &EpanetApp, rect: Rect, p: Pos2) -> Option<(usize, u
         })
         .min_by(|a, b| a.2.total_cmp(&b.2))
         .map(|(i, s, _)| (i, s))
+}
+
+/// The pipe a node dragged to `p` snaps onto: the nearest pipe within the
+/// hit distance that does not end at the node, its segment, and the point
+/// of it nearest `p` (on screen).
+fn snap_pipe(app: &EpanetApp, rect: Rect, p: Pos2, node: usize) -> Option<(usize, usize, Pos2)> {
+    if !app.prefs.show_links {
+        return None;
+    }
+    let w = app.view.to_world(rect, p);
+    let tol = HIT_RADIUS as f64 / app.view.scale;
+    (0..app.net.links.len())
+        .filter(|&i| {
+            app.net.links[i].kind == LinkKind::Pipe
+                && app
+                    .geom
+                    .ends
+                    .get(i)
+                    .copied()
+                    .flatten()
+                    .is_some_and(|(a, b)| a != node && b != node)
+                && app
+                    .geom
+                    .boxes
+                    .get(i)
+                    .copied()
+                    .flatten()
+                    .is_some_and(|b| near_box(b, w, tol))
+        })
+        .filter_map(|i| {
+            let pts = link_points(app, rect, i)?;
+            let (seg, d, at) = pts
+                .windows(2)
+                .enumerate()
+                .map(|(s, w)| {
+                    let at = nearest_on_segment(p, w[0], w[1]);
+                    (s, at.distance(p), at)
+                })
+                .min_by(|a, b| a.1.total_cmp(&b.1))?;
+            (d <= HIT_RADIUS).then_some((i, seg, d, at))
+        })
+        .min_by(|a, b| a.2.total_cmp(&b.2))
+        .map(|(i, s, _, at)| (i, s, at))
+}
+
+/// Splits pipe `l` at segment `seg` with the node `node` let go on it (in
+/// the undo step of the drag), as a node added on a pipe does; the node
+/// keeps its own elevation.
+pub(crate) fn split_with_node(app: &mut EpanetApp, l: usize, seg: usize, node: usize) {
+    let own = app.net.nodes[node].fields.first().cloned();
+    let prefix = app.setup.prefix(3).to_string();
+    if app.net.split_link(l, seg, node, &prefix).is_none() {
+        return;
+    }
+    if let Some(e) = own
+        && app.net.nodes[node].kind != NodeKind::Reservoir
+    {
+        app.net.nodes[node].fields[0] = e;
+    }
+    app.update_lengths(node);
+    app.touch();
+    app.results = None;
+    app.status = format!(
+        "{} split pipe {}",
+        app.net.nodes[node].id, app.net.links[l].id
+    );
+}
+
+/// The node a junction dragged to `p` snaps onto: the nearest other node
+/// within the hit distance (only a junction merges into another node, so
+/// that no tank or reservoir is lost).
+fn snap_node(app: &EpanetApp, rect: Rect, p: Pos2, node: usize) -> Option<usize> {
+    if app.net.nodes[node].kind != NodeKind::Junction {
+        return None;
+    }
+    let r = HIT_RADIUS.max(app.prefs.node_size + 4.0);
+    app.net
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(|&(j, n)| j != node && node_visible(app, n.kind))
+        .filter_map(|(j, n)| Some((j, app.view.to_screen(rect, n.pos?).distance(p))))
+        .filter(|&(_, d)| d <= r)
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(j, _)| j)
+}
+
+/// Merges the junction `node`, let go on node `into`, into it (in the undo
+/// step of the drag): its pipes join `into`, a pipe between the two goes.
+pub(crate) fn merge_nodes(app: &mut EpanetApp, node: usize, into: usize) {
+    let (gone, kept) = (
+        app.net.nodes[node].id.clone(),
+        app.net.nodes[into].id.clone(),
+    );
+    let Some(j) = app.net.merge_node(node, into) else {
+        return;
+    };
+    app.update_lengths(j);
+    app.touch();
+    app.results = None;
+    app.select(Some(Element::Node(j)));
+    app.status = format!("{gone} merged into {kept}");
+}
+
+fn nearest_on_segment(p: Pos2, a: Pos2, b: Pos2) -> Pos2 {
+    let ab = b - a;
+    let t = if ab.length_sq() > 0.0 {
+        ((p - a).dot(ab) / ab.length_sq()).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    a + ab * t
 }
 
 fn hit(app: &EpanetApp, rect: Rect, p: Pos2) -> Option<Element> {
@@ -571,6 +683,36 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
     }
 
     // ---- overlays ----
+    // the node a dragged junction merges into
+    if let Some(DragSnap::Node(j)) = app.drag_snap
+        && let Some(at) = app.net.nodes[j].pos
+    {
+        let accent = Color32::from_rgb(0x2e, 0xa0, 0x43);
+        let c = app.view.to_screen(rect, at);
+        let r = app.prefs.node_size + 7.0;
+        painter.circle(c, r, accent.gamma_multiply(0.25), Stroke::new(2.5, accent));
+    }
+    // the pipe a dragged node snaps onto, and where
+    if let Some(DragSnap::Pipe(l, _, at)) = app.drag_snap {
+        let accent = Color32::from_rgb(0xff, 0x8c, 0x00);
+        if let Some(pts) = link_points(app, rect, l) {
+            painter.add(Shape::line(
+                pts,
+                Stroke::new(app.prefs.link_width + 4.0, accent.gamma_multiply(0.45)),
+            ));
+        }
+        let c = app.view.to_screen(rect, at);
+        let r = app.prefs.node_size + 6.0;
+        painter.circle_stroke(c, r, Stroke::new(2.0, accent));
+        painter.line_segment(
+            [c - vec2(r + 4.0, 0.0), c + vec2(r + 4.0, 0.0)],
+            Stroke::new(1.5, accent),
+        );
+        painter.line_segment(
+            [c - vec2(0.0, r + 4.0), c + vec2(0.0, r + 4.0)],
+            Stroke::new(1.5, accent),
+        );
+    }
     draw_legends(app, ui, rect, node_legend, link_legend);
     crate::export::take_svg(app, ui, rect, first_shape);
     // only on a map with nothing on it: no network, basemap or map layers
@@ -619,10 +761,11 @@ fn handle_input(app: &mut EpanetApp, ui: &mut Ui, rect: Rect, response: &egui::R
         return;
     }
     // The fire flow Group Selector, and Group Edit or Delete, take clicks
-    // (and regions dragged) on the map.
+    // (and regions dragged) on the map; Identify takes a box dragged.
     if crate::fireflow::map_input(app, rect, response)
         || crate::group::map_input(app, rect, response)
         || crate::multi::map_input(app, rect, response)
+        || crate::layers::identify_drag(app, rect, response)
     {
         return;
     }
@@ -646,9 +789,13 @@ fn handle_input(app: &mut EpanetApp, ui: &mut Ui, rect: Rect, response: &egui::R
         }
     }
 
-    // Dragging: a vertex (Reshape), a node (Select) or the map.
+    // Dragging: a vertex (Reshape), a node (Select) or the map. What is
+    // dragged is what was under the pointer when it was pressed (a drag
+    // starts only once the pointer has moved on).
     if response.drag_started_by(egui::PointerButton::Primary)
-        && let Some(p) = response.interact_pointer_pos()
+        && let Some(p) = ui
+            .input(|i| i.pointer.press_origin())
+            .or(response.interact_pointer_pos())
     {
         if let Some(l) = reshape_link {
             if let Some(v) = hit_vertex(app, rect, l, p) {
@@ -669,7 +816,21 @@ fn handle_input(app: &mut EpanetApp, ui: &mut Ui, rect: Rect, response: &egui::R
         let primary = response.dragged_by(egui::PointerButton::Primary);
         match (app.drag_node, app.drag_vertex, reshape_link, pointer) {
             (Some(i), _, _, Some(p)) if primary => {
-                app.net.nodes[i].pos = Some(app.view.to_world(rect, p));
+                // a junction over another node snaps onto it (let go, it
+                // merges into it); a node over a pipe, onto the pipe (let
+                // go, it splits it)
+                let world = if let Some(j) = snap_node(app, rect, p, i) {
+                    app.drag_snap = Some(DragSnap::Node(j));
+                    app.net.nodes[j].pos.unwrap_or_default()
+                } else if let Some((l, seg, at)) = snap_pipe(app, rect, p, i) {
+                    let world = app.view.to_world(rect, at);
+                    app.drag_snap = Some(DragSnap::Pipe(l, seg, world));
+                    world
+                } else {
+                    app.drag_snap = None;
+                    app.view.to_world(rect, p)
+                };
+                app.net.nodes[i].pos = Some(world);
                 app.geom.mark_moved();
                 app.update_lengths(i);
                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
@@ -699,7 +860,13 @@ fn handle_input(app: &mut EpanetApp, ui: &mut Ui, rect: Rect, response: &egui::R
         {
             app.net.links[l].fields[0] = format!("{len:.2}");
         }
+        match (app.drag_node, app.drag_snap) {
+            (Some(node), Some(DragSnap::Pipe(l, seg, _))) => split_with_node(app, l, seg, node),
+            (Some(node), Some(DragSnap::Node(into))) => merge_nodes(app, node, into),
+            _ => {}
+        }
         app.drag_node = None;
+        app.drag_snap = None;
         app.drag_vertex = None;
     }
 
@@ -1426,6 +1593,108 @@ mod tests {
     /// A map legend is dragged to a new place (not the map under it) and
     /// stays inside the map; a right click opens its Legend Editor, a double
     /// click hides it.
+    #[test]
+    fn node_dragged_onto_a_pipe_splits_it() {
+        let (ctx, mut app) = crate::msx::tests::new_app();
+        let s = app.setup.clone();
+        let net = &mut app.net;
+        let a = s.add_node(net, NodeKind::Junction, [0.0, 0.0]);
+        let b = s.add_node(net, NodeKind::Junction, [100.0, 0.0]);
+        let c = s.add_node(net, NodeKind::Junction, [50.0, 40.0]);
+        let d = s.add_node(net, NodeKind::Junction, [50.0, 80.0]);
+        s.add_link(net, LinkKind::Pipe, a, b, false);
+        s.add_link(net, LinkKind::Pipe, c, d, false);
+        net.nodes[c].fields[0] = "12.5".into();
+        app.dialog = crate::app::Dialog::None;
+        app.view.fit_pending = true;
+        for _ in 0..4 {
+            frame(&mut app, &ctx, vec![]);
+        }
+        let rect = app.export.map_rect.unwrap();
+        let from = app.view.to_screen(rect, [50.0, 40.0]);
+        // just off the pipe: it snaps onto it
+        let to = app.view.to_screen(rect, [50.0, 0.0]) + vec2(2.0, 3.0);
+        frame(&mut app, &ctx, vec![egui::Event::PointerMoved(from)]);
+        frame(&mut app, &ctx, vec![button(from, true)]);
+        for k in 1..=5 {
+            let p = from + (to - from) * (k as f32 / 5.0);
+            frame(&mut app, &ctx, vec![egui::Event::PointerMoved(p)]);
+        }
+        assert!(
+            matches!(app.drag_snap, Some(DragSnap::Pipe(0, ..))),
+            "snapped onto the pipe"
+        );
+        assert!(app.net.nodes[c].pos.unwrap()[1].abs() < 1e-6, "on the pipe");
+        frame(&mut app, &ctx, vec![button(to, false)]);
+        frame(&mut app, &ctx, vec![]);
+
+        let net = &app.net;
+        assert_eq!(net.links.len(), 3, "the pipe was split");
+        let id = &net.nodes[c].id;
+        assert_eq!(
+            net.links
+                .iter()
+                .filter(|l| &l.from == id || &l.to == id)
+                .count(),
+            3
+        );
+        assert_eq!(
+            net.nodes[c].fields[0], "12.5",
+            "the node keeps its elevation"
+        );
+        assert!(app.drag_snap.is_none());
+        // one undo step puts it all back
+        app.undo();
+        assert_eq!(app.net.links.len(), 2);
+        assert_eq!(app.net.nodes[c].pos, Some([50.0, 40.0]));
+    }
+
+    /// A junction let go on another node merges into it: its pipes join that
+    /// node, and it is gone.
+    #[test]
+    fn junction_dragged_onto_a_node_merges_into_it() {
+        let (ctx, mut app) = crate::msx::tests::new_app();
+        let s = app.setup.clone();
+        let net = &mut app.net;
+        let a = s.add_node(net, NodeKind::Junction, [0.0, 0.0]);
+        let b = s.add_node(net, NodeKind::Junction, [100.0, 0.0]);
+        let c = s.add_node(net, NodeKind::Junction, [50.0, 40.0]);
+        let d = s.add_node(net, NodeKind::Junction, [50.0, 80.0]);
+        s.add_link(net, LinkKind::Pipe, a, b, false);
+        s.add_link(net, LinkKind::Pipe, c, d, false);
+        let (b_id, d_id) = (net.nodes[b].id.clone(), net.nodes[d].id.clone());
+        app.dialog = crate::app::Dialog::None;
+        app.view.fit_pending = true;
+        for _ in 0..4 {
+            frame(&mut app, &ctx, vec![]);
+        }
+        let rect = app.export.map_rect.unwrap();
+        let from = app.view.to_screen(rect, [50.0, 40.0]);
+        let to = app.view.to_screen(rect, [100.0, 0.0]) + vec2(3.0, -2.0);
+        frame(&mut app, &ctx, vec![egui::Event::PointerMoved(from)]);
+        frame(&mut app, &ctx, vec![button(from, true)]);
+        for k in 1..=5 {
+            let p = from + (to - from) * (k as f32 / 5.0);
+            frame(&mut app, &ctx, vec![egui::Event::PointerMoved(p)]);
+        }
+        assert_eq!(app.drag_snap, Some(DragSnap::Node(b)));
+        frame(&mut app, &ctx, vec![button(to, false)]);
+        frame(&mut app, &ctx, vec![]);
+
+        let net = &app.net;
+        assert_eq!((net.nodes.len(), net.links.len()), (3, 2));
+        assert_eq!(
+            (net.links[1].from.as_str(), net.links[1].to.as_str()),
+            (b_id.as_str(), d_id.as_str())
+        );
+        assert_eq!(
+            app.selection,
+            Some(Element::Node(net.node_index(&b_id).unwrap()))
+        );
+        app.undo();
+        assert_eq!(app.net.nodes.len(), 4);
+    }
+
     #[test]
     fn legends_are_dragged() {
         let (ctx, mut app) = crate::msx::tests::new_app();

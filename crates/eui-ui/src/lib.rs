@@ -12,6 +12,7 @@ mod data_view;
 mod dialogs;
 mod dock;
 mod dxf;
+mod dxf_layer;
 mod explorer;
 mod export;
 mod filters;
