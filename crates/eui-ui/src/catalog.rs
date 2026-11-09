@@ -13,7 +13,7 @@ use serde::Deserialize;
 
 use crate::app::EpanetApp;
 
-const SITE: &str = "https://waterfutures.github.io/WaterBenchmarkHub/";
+pub(crate) const SITE: &str = "https://waterfutures.github.io/WaterBenchmarkHub/";
 const RAW_BASE: &str =
     "https://raw.githubusercontent.com/WaterFutures/WaterBenchmarkHub/dev/docs/static/benchmarks/";
 const TREE_API: &str =

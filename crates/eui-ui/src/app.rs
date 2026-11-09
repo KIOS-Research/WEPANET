@@ -39,6 +39,7 @@ pub enum MenuTab {
     Map,
     Project,
     Plugins,
+    Benchmarks,
     Help,
 }
 

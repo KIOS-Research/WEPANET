@@ -575,19 +575,73 @@ impl Network {
         }
     }
 
-    /// Straight-line length of a link from its coordinates and vertices.
+    /// The length of a link along its coordinates and vertices, in the
+    /// project's length units (feet with US flow units, else meters), from
+    /// the map units (Backdrop > Units): degrees are measured on the earth,
+    /// feet and meters converted. Map units of None are taken as the
+    /// project's own.
     pub fn link_map_length(&self, i: usize) -> Option<f64> {
         let l = &self.links[i];
         let (a, b) = self.link_ends(l)?;
         let mut pts = vec![self.nodes[a].pos?];
         pts.extend(l.vertices.iter().copied());
         pts.push(self.nodes[b].pos?);
-        Some(
+        let planar = || -> f64 {
             pts.windows(2)
                 .map(|w| ((w[0][0] - w[1][0]).powi(2) + (w[0][1] - w[1][1]).powi(2)).sqrt())
-                .sum(),
-        )
+                .sum()
+        };
+        let meters = match self.map_units() {
+            MapLength::Degrees => pts.windows(2).map(|w| geodesic_m(w[0], w[1])).sum(),
+            MapLength::Feet => planar() * FOOT,
+            MapLength::Meters => planar(),
+            MapLength::Unknown => return Some(planar()),
+        };
+        Some(if self.is_si() { meters } else { meters / FOOT })
     }
+
+    /// What one unit of the map coordinates measures.
+    fn map_units(&self) -> MapLength {
+        let units = self
+            .option("BACKDROP", "UNITS")
+            .map(|u| u.trim().to_ascii_uppercase());
+        match units.as_deref() {
+            Some("DEGREES") => MapLength::Degrees,
+            Some("FEET") => MapLength::Feet,
+            Some("METERS") => MapLength::Meters,
+            // no map units, but longitude/latitude coordinates
+            _ if self.crs.as_deref().is_some_and(|c| {
+                let c = c.to_ascii_lowercase();
+                c == "epsg:4326" || c.contains("+proj=longlat") || c.contains("+proj=latlong")
+            }) =>
+            {
+                MapLength::Degrees
+            }
+            _ => MapLength::Unknown,
+        }
+    }
+}
+
+const FOOT: f64 = 0.3048;
+
+/// The unit of the map coordinates, for lengths.
+enum MapLength {
+    Degrees,
+    Feet,
+    Meters,
+    /// Not known: taken as the project's length unit.
+    Unknown,
+}
+
+/// The distance in meters between two longitude/latitude points
+/// (haversine, on a sphere of the earth's mean radius).
+fn geodesic_m(p: [f64; 2], q: [f64; 2]) -> f64 {
+    const R: f64 = 6_371_008.8;
+    let (la1, la2) = (p[1].to_radians(), q[1].to_radians());
+    let dla = la2 - la1;
+    let dlo = (q[0] - p[0]).to_radians();
+    let h = (dla / 2.0).sin().powi(2) + la1.cos() * la2.cos() * (dlo / 2.0).sin().powi(2);
+    2.0 * R * h.sqrt().min(1.0).asin()
 }
 
 /// The values a numeric property may take.

@@ -18,12 +18,13 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
         .show(ui, |ui| {
             ui.horizontal_centered(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
-                let tabs: [(Option<MenuTab>, &str); 6] = [
+                let tabs: [(Option<MenuTab>, &str); 7] = [
                     (None, "File"),
                     (Some(MenuTab::Edit), "Edit"),
                     (Some(MenuTab::Map), "Map"),
                     (Some(MenuTab::Project), "Project"),
                     (Some(MenuTab::Plugins), "Plugins"),
+                    (Some(MenuTab::Benchmarks), "Benchmarks"),
                     (Some(MenuTab::Help), "Help"),
                 ];
                 for (tab, name) in tabs {
@@ -107,6 +108,7 @@ pub fn ribbon(app: &mut EpanetApp, ui: &mut Ui) {
                     MenuTab::Map => map_toolbar(app, ui),
                     MenuTab::Project => project_toolbar(app, ui),
                     MenuTab::Plugins => plugins_toolbar(app, ui),
+                    MenuTab::Benchmarks => benchmarks_toolbar(app, ui),
                     MenuTab::Help => help_toolbar(app, ui),
                 }
                 // last, at the far end
@@ -792,6 +794,36 @@ fn project_toolbar(app: &mut EpanetApp, ui: &mut Ui) {
     });
 }
 
+/// Benchmark networks: the WaterFutures WaterBenchmarkHub catalog (see
+/// `catalog.rs`).
+fn benchmarks_toolbar(app: &mut EpanetApp, ui: &mut Ui) {
+    if tool_button(
+        ui,
+        Icon::Open,
+        "Open a Network",
+        true,
+        app.dialog == Dialog::Benchmarks,
+        "Open a network from the WaterFutures WaterBenchmarkHub catalog",
+    )
+    .clicked()
+    {
+        app.dialog = Dialog::Benchmarks;
+    }
+    if tool_button(
+        ui,
+        Icon::About,
+        "About",
+        true,
+        false,
+        "WaterBenchmarkHub: benchmark water distribution networks collected by the WaterFutures project",
+    )
+    .clicked()
+    {
+        ui.ctx()
+            .open_url(egui::OpenUrl::new_tab(crate::catalog::SITE));
+    }
+}
+
 /// Elad Salomons' EPANET plugins (see `plugins.rs`).
 fn plugins_toolbar(app: &mut EpanetApp, ui: &mut Ui) {
     let has_net = !app.net.nodes.is_empty();
@@ -1277,15 +1309,6 @@ pub fn file_menu(app: &mut EpanetApp, ctx: &egui::Context) {
                         app.load_example(name, inp);
                         close = true;
                     }
-                }
-                heading(&mut child, "Benchmark Networks");
-                if row(
-                    &mut child,
-                    "WaterBenchmarkHub catalog...",
-                    "Download a network from the WaterFutures WaterBenchmarkHub",
-                ) {
-                    app.dialog = Dialog::Benchmarks;
-                    close = true;
                 }
             }
 

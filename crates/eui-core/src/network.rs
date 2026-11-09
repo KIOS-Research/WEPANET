@@ -817,26 +817,23 @@ impl Network {
     /// Adds a link whose ID is `prefix` followed by the first free number.
     pub fn add_link_as(&mut self, kind: LinkKind, from: usize, to: usize, prefix: &str) -> usize {
         let id = self.unique_id(false, prefix.trim());
-        let mut fields = kind.default_fields();
-        if kind == LinkKind::Pipe
-            && let (Some(a), Some(b)) = (self.nodes[from].pos, self.nodes[to].pos)
-        {
-            let len = ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt();
-            if len > 0.0 {
-                fields[0] = format!("{len:.1}");
-            }
-        }
         self.links.push(Link {
             id: id.clone(),
             kind,
             from: self.nodes[from].id.clone(),
             to: self.nodes[to].id.clone(),
-            fields,
+            fields: kind.default_fields(),
             comment: String::new(),
             vertices: Vec::new(),
         });
         let i = self.links.len() - 1;
         self.link_lookup.insert(id, i);
+        // a pipe as long as the map shows it
+        if kind == LinkKind::Pipe
+            && let Some(len) = self.link_map_length(i).filter(|l| *l > 0.0)
+        {
+            self.links[i].fields[0] = format!("{len:.1}");
+        }
         i
     }
 
@@ -1178,6 +1175,32 @@ fn write_record(out: &mut String, head: &[&str], fields: &[String], comment: &st
 mod tests {
     use super::*;
     use crate::examples;
+
+    /// Pipe lengths from the map are in the project's units: longitude/
+    /// latitude measured on the earth, meters turned into feet for US units.
+    #[test]
+    fn map_lengths_follow_the_map_and_project_units() {
+        let mut net = Network::default();
+        net.set_option("OPTIONS", "UNITS", "GPM");
+        net.set_option("BACKDROP", "UNITS", "DEGREES");
+        let a = net.add_node(NodeKind::Junction, [-79.917, 43.325]);
+        let b = net.add_node(NodeKind::Junction, [-79.917, 43.326]);
+        let p = net.add_link(LinkKind::Pipe, a, b);
+        // a thousandth of a degree of latitude: about 111.2 m, 364.8 ft
+        let ft = net.link_map_length(p).unwrap();
+        assert!((ft - 364.8).abs() < 0.5, "{ft}");
+        assert_eq!(net.links[p].fields[0], "364.8");
+
+        net.set_option("BACKDROP", "UNITS", "METERS");
+        net.nodes[b].pos = Some([-79.917, 43.325 + 100.0]);
+        let ft = net.link_map_length(p).unwrap();
+        assert!((ft - 328.084).abs() < 1e-3, "{ft}");
+        net.set_option("OPTIONS", "UNITS", "LPS");
+        assert!((net.link_map_length(p).unwrap() - 100.0).abs() < 1e-9);
+        // no map units: the coordinates are taken as they are
+        net.set_option("BACKDROP", "UNITS", "NONE");
+        assert!((net.link_map_length(p).unwrap() - 100.0).abs() < 1e-9);
+    }
 
     /// A node merged into another: its links join the other, the link
     /// between the two is gone, and so is the node.
