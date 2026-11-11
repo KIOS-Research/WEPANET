@@ -1,0 +1,1 @@
+export function takeLaunchFile() { return window.euiTakeLaunchFile?.() ?? null; }

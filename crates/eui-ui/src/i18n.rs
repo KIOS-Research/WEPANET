@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 const FILES: &[(&str, &str)] = &[
     ("el", include_str!("../lang/el.json")),
     ("es", include_str!("../lang/es.json")),
+    ("pt-BR", include_str!("../lang/pt-BR.json")),
     ("zh", include_str!("../lang/zh.json")),
 ];
 
@@ -172,6 +173,7 @@ mod tests {
             ("en", "Project Explorer"),
             ("el", "Εξερεύνηση Έργου"),
             ("es", "Explorador del Proyecto"),
+            ("pt-BR", "Explorador do Projeto"),
             ("zh", "项目浏览器"),
         ];
         assert_eq!(all().len(), expected.len(), "a language without a test");

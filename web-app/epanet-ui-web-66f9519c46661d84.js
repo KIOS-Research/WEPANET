@@ -1,4 +1,4 @@
-import * as import1 from "./snippets/eui-ui-f449ccf9177b5721/inline0.js"
+import * as import1 from "./snippets/eui-ui-82908884a5b4f409/inline0.js"
 
 
 export class Point {
@@ -377,7 +377,7 @@ function __wbg_get_imports() {
         __wbg_cancelAnimationFrame_6d30ac112c49342a: function() { return handleError(function (arg0, arg1) {
             arg0.cancelAnimationFrame(arg1);
         }, arguments); },
-        __wbg_cancel_44ad7b683d54cebf: function() { return handleError(function () {
+        __wbg_cancel_7605fe42ee61998a: function() { return handleError(function () {
             euiEngine.cancel();
         }, arguments); },
         __wbg_changedTouches_df984754af5ef0fa: function(arg0) {
@@ -399,7 +399,7 @@ function __wbg_get_imports() {
         __wbg_clear_175cf3cb6d98d72b: function(arg0, arg1) {
             arg0.clear(arg1 >>> 0);
         },
-        __wbg_clear_459565c350cb6688: function() { return handleError(function () {
+        __wbg_clear_92ea306d7bab02a1: function() { return handleError(function () {
             const ret = euiRecent.clear();
             return ret;
         }, arguments); },
@@ -452,7 +452,7 @@ function __wbg_get_imports() {
         __wbg_compileShader_c2b53ff3a8851f60: function(arg0, arg1) {
             arg0.compileShader(arg1);
         },
-        __wbg_console_0678c10f024f93c0: function() { return handleError(function (arg0, arg1, arg2, arg3, arg4) {
+        __wbg_console_6abb51b84e275bb5: function() { return handleError(function (arg0, arg1, arg2, arg3, arg4) {
             const ret = euiPython.console(arg0, getStringFromWasm0(arg1, arg2), arg3 !== 0, arg4);
             return ret;
         }, arguments); },
@@ -464,7 +464,7 @@ function __wbg_get_imports() {
             const ret = arg0.contentRect;
             return ret;
         },
-        __wbg_convert_6601d617bacff2ba: function() { return handleError(function (arg0, arg1, arg2, arg3, arg4) {
+        __wbg_convert_69c36760928685e3: function() { return handleError(function (arg0, arg1, arg2, arg3, arg4) {
             const ret = euiEngine.convert(getStringFromWasm0(arg0, arg1), arg2, arg3, arg4);
             return ret;
         }, arguments); },
@@ -1174,7 +1174,7 @@ function __wbg_get_imports() {
         __wbg_linkProgram_acdc299c43d734a0: function(arg0, arg1) {
             arg0.linkProgram(arg1);
         },
-        __wbg_list_fd17a2ef3acf5dd7: function() { return handleError(function () {
+        __wbg_list_f380b718840add05: function() { return handleError(function () {
             const ret = euiRecent.list();
             return ret;
         }, arguments); },
@@ -1314,7 +1314,7 @@ function __wbg_get_imports() {
             const ret = arg0.ok;
             return ret;
         },
-        __wbg_open_762cc02bb720eaf9: function() { return handleError(function (arg0, arg1) {
+        __wbg_open_9797e5f45c5e2cbd: function() { return handleError(function (arg0, arg1) {
             const ret = euiRecent.open(getStringFromWasm0(arg0, arg1));
             return ret;
         }, arguments); },
@@ -1349,7 +1349,7 @@ function __wbg_get_imports() {
             const ret = arg0.performance;
             return isLikeNone(ret) ? 0 : addToExternrefTable0(ret);
         },
-        __wbg_pick_8208684deaf634a2: function() { return handleError(function () {
+        __wbg_pick_3cd3fcc2e5ae3038: function() { return handleError(function () {
             const ret = euiRecent.pick();
             return ret;
         }, arguments); },
@@ -1405,7 +1405,7 @@ function __wbg_get_imports() {
         __wbg_readPixels_eb030cd9976eeca5: function() { return handleError(function (arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
             arg0.readPixels(arg1, arg2, arg3, arg4, arg5 >>> 0, arg6 >>> 0, arg7);
         }, arguments); },
-        __wbg_remember_841976bfdc640dfe: function() { return handleError(function (arg0) {
+        __wbg_remember_e9c35d8b7b06acf3: function() { return handleError(function (arg0) {
             const ret = euiRecent.remember(arg0);
             return ret;
         }, arguments); },
@@ -1419,7 +1419,7 @@ function __wbg_get_imports() {
         __wbg_removeItem_f7b602722ed566dd: function() { return handleError(function (arg0, arg1, arg2) {
             arg0.removeItem(getStringFromWasm0(arg1, arg2));
         }, arguments); },
-        __wbg_remove_02ebc17e476a8127: function() { return handleError(function (arg0, arg1) {
+        __wbg_remove_24da721239ab903f: function() { return handleError(function (arg0, arg1) {
             const ret = euiRecent.remove(getStringFromWasm0(arg0, arg1));
             return ret;
         }, arguments); },
@@ -1445,7 +1445,7 @@ function __wbg_get_imports() {
             const ret = arg0.right;
             return ret;
         },
-        __wbg_run_03385331294c0fb1: function() { return handleError(function (arg0, arg1, arg2, arg3, arg4) {
+        __wbg_run_706c8b3a379004f1: function() { return handleError(function (arg0, arg1, arg2, arg3, arg4) {
             let v0;
             if (arg2 !== 0) {
                 v0 = getStringFromWasm0(arg2, arg3);
@@ -1454,7 +1454,7 @@ function __wbg_get_imports() {
             const ret = euiEngine.run(getStringFromWasm0(arg0, arg1), v0, arg4);
             return ret;
         }, arguments); },
-        __wbg_run_788e57e81864ceb7: function() { return handleError(function (arg0, arg1, arg2) {
+        __wbg_run_98980d5fe6fb329a: function() { return handleError(function (arg0, arg1, arg2) {
             const ret = euiPython.run(arg0, arg1, arg2);
             return ret;
         }, arguments); },
@@ -1634,7 +1634,7 @@ function __wbg_get_imports() {
             const ret = arg0.style;
             return ret;
         },
-        __wbg_supported_962f386f3d3cf183: function() { return handleError(function () {
+        __wbg_supported_9b29b786d4db4322: function() { return handleError(function () {
             const ret = euiRecent.supported();
             return ret;
         }, arguments); },
@@ -1860,7 +1860,7 @@ function __wbg_get_imports() {
     return {
         __proto__: null,
         "./epanet-ui-web_bg.js": import0,
-        "./snippets/eui-ui-f449ccf9177b5721/inline0.js": import1,
+        "./snippets/eui-ui-82908884a5b4f409/inline0.js": import1,
     };
 }
 
