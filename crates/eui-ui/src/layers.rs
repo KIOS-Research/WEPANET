@@ -66,6 +66,10 @@ pub struct MapLayer {
     /// A DXF layer's lines (kept in the project file beside project.json).
     #[serde(skip)]
     pub lines: Lines,
+    /// Where a WMS layer has data, as the server states it: west, south,
+    /// east, north in degrees.
+    #[serde(default)]
+    pub extent: Option<[f64; 4]>,
 }
 
 impl Default for MapLayer {
@@ -84,6 +88,7 @@ impl Default for MapLayer {
             color: [0x40, 0x40, 0x40],
             fill: true,
             lines: Lines::default(),
+            extent: None,
         }
     }
 }
@@ -355,6 +360,9 @@ struct CapLayer {
     depth: usize,
     /// Shown by default.
     default: bool,
+    /// Where it has data (west, south, east, north in degrees; a WMS layer
+    /// without its own takes its parent's).
+    extent: Option<[f64; 4]>,
 }
 
 /// An ArcGIS map service's address, without what follows `MapServer`.
@@ -416,6 +424,7 @@ fn parse_arcgis(json: &str, url: &str) -> Result<Caps, String> {
                     .get("defaultVisibility")
                     .and_then(|d| d.as_bool())
                     .unwrap_or(false),
+                extent: None,
             })
         })
         .collect();
@@ -463,6 +472,44 @@ fn parse_xml(xml: &str) -> Result<roxmltree::Document<'_>, roxmltree::Error> {
     roxmltree::Document::parse_with_options(xml, opt)
 }
 
+/// A WMS layer's own extent in degrees (west, south, east, north): WMS 1.3's
+/// EX_GeographicBoundingBox or 1.1's LatLonBoundingBox.
+fn geographic_box(layer: roxmltree::Node) -> Option<[f64; 4]> {
+    fn child<'a, 'i>(n: roxmltree::Node<'a, 'i>, name: &str) -> Option<roxmltree::Node<'a, 'i>> {
+        n.children().find(|c| c.tag_name().name() == name)
+    }
+    let b = if let Some(g) = child(layer, "EX_GeographicBoundingBox") {
+        let v = |name: &str| child(g, name)?.text()?.trim().parse::<f64>().ok();
+        [
+            v("westBoundLongitude")?,
+            v("southBoundLatitude")?,
+            v("eastBoundLongitude")?,
+            v("northBoundLatitude")?,
+        ]
+    } else {
+        let g = child(layer, "LatLonBoundingBox")?;
+        let v = |name: &str| g.attribute(name)?.trim().parse::<f64>().ok();
+        [v("minx")?, v("miny")?, v("maxx")?, v("maxy")?]
+    };
+    (b.iter().all(|x| x.is_finite()) && b[0] < b[2] && b[1] < b[3]).then_some(b)
+}
+
+/// `extent` (degrees) in the map's coordinates, through the project's
+/// coordinate system.
+fn extent_on_map(geo: &Geo, e: [f64; 4]) -> Option<[f64; 4]> {
+    let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+    for i in 0..=4 {
+        for j in 0..=4 {
+            let lon = e[0] + (e[2] - e[0]) * i as f64 / 4.0;
+            let lat = (e[1] + (e[3] - e[1]) * j as f64 / 4.0).clamp(-85.0, 85.0);
+            if let Some([x, y]) = geo.lonlat_to([lon, lat]) {
+                (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+            }
+        }
+    }
+    (x0 <= x1 && y0 <= y1).then_some([x0, y0, x1, y1])
+}
+
 fn parse_wms(xml: &str, url: &str) -> Result<Caps, String> {
     let doc = parse_xml(xml).map_err(|_| "Not a WMS (no capabilities)")?;
     let root = doc.root_element();
@@ -508,8 +555,15 @@ fn parse_wms(xml: &str, url: &str) -> Result<Caps, String> {
         .ok_or("Not a WMS (no Capability)")?;
     let mut layers = Vec::new();
     let mut crs: Vec<String> = Vec::new();
-    fn walk(n: roxmltree::Node, depth: usize, layers: &mut Vec<CapLayer>, crs: &mut Vec<String>) {
+    fn walk(
+        n: roxmltree::Node,
+        depth: usize,
+        parent: Option<[f64; 4]>,
+        layers: &mut Vec<CapLayer>,
+        crs: &mut Vec<String>,
+    ) {
         for c in n.children().filter(|c| c.tag_name().name() == "Layer") {
+            let extent = geographic_box(c).or(parent);
             for s in c
                 .children()
                 .filter(|s| matches!(s.tag_name().name(), "CRS" | "SRS"))
@@ -538,11 +592,12 @@ fn parse_wms(xml: &str, url: &str) -> Result<Caps, String> {
                 name,
                 depth,
                 default: false,
+                extent,
             });
-            walk(c, depth + 1, layers, crs);
+            walk(c, depth + 1, extent, layers, crs);
         }
     }
-    walk(capability, 0, &mut layers, &mut crs);
+    walk(capability, 0, None, &mut layers, &mut crs);
     if layers.iter().all(|l| l.name.is_empty()) {
         return Err("The WMS offers no layers".into());
     }
@@ -946,23 +1001,34 @@ enum Change {
 }
 
 /// The box of the lines of the layers `ls` (DXF layers have one).
-fn layers_bounds<'a>(ls: impl IntoIterator<Item = &'a MapLayer>) -> Option<[f64; 4]> {
-    ls.into_iter()
-        .filter_map(|l| l.lines.0.bounds)
-        .reduce(|a, b| {
-            [
-                a[0].min(b[0]),
-                a[1].min(b[1]),
-                a[2].max(b[2]),
-                a[3].max(b[3]),
-            ]
-        })
+/// Where a layer has data on the map: a DXF layer's lines, a WMS layer's
+/// extent (with the project's coordinate system).
+fn layer_bounds(l: &MapLayer, geo: Option<&Geo>) -> Option<[f64; 4]> {
+    l.lines.0.bounds.or_else(|| extent_on_map(geo?, l.extent?))
+}
+
+fn layers_bounds(bounds: impl IntoIterator<Item = Option<[f64; 4]>>) -> Option<[f64; 4]> {
+    bounds.into_iter().flatten().reduce(|a, b| {
+        [
+            a[0].min(b[0]),
+            a[1].min(b[1]),
+            a[2].max(b[2]),
+            a[3].max(b[3]),
+        ]
+    })
 }
 
 /// The layers, the top one first as they are drawn, under the names of
 /// their groups.
 fn list(app: &mut EpanetApp, ui: &mut Ui, red: Color32) {
     let n = app.prefs.map_layers.len();
+    let geo = crate::basemap::geo_ref(app).ok();
+    let bounds: Vec<Option<[f64; 4]>> = app
+        .prefs
+        .map_layers
+        .iter()
+        .map(|l| layer_bounds(l, geo))
+        .collect();
     let mut change = None;
     let mut renaming = std::mem::take(&mut app.layers.renaming);
     let mut renamed = None;
@@ -990,7 +1056,7 @@ fn list(app: &mut EpanetApp, ui: &mut Ui, red: Color32) {
             continue;
         }
         any = true;
-        let group_box = layers_bounds(&app.prefs.map_layers[members.clone()]);
+        let group_box = layers_bounds(bounds[members.clone()].iter().copied());
         egui::Frame::group(ui.style())
             .inner_margin(egui::Margin::symmetric(6, 4))
             .show(ui, |ui| {
@@ -1054,18 +1120,16 @@ fn list(app: &mut EpanetApp, ui: &mut Ui, red: Color32) {
                             if glyph_button(ui, j + 1 < n, Glyph::Up, "Move up").clicked() {
                                 change = Some(Change::Move(j, 1));
                             }
-                            if l.service == Service::Dxf {
-                                if glyph_button(ui, true, Glyph::Table, "Open Attribute Table")
+                            if l.service == Service::Dxf
+                                && glyph_button(ui, true, Glyph::Table, "Open Attribute Table")
                                     .clicked()
-                                {
-                                    change = Some(Change::Table(j));
-                                }
-                                if let Some(b) = l.lines.0.bounds
-                                    && glyph_button(ui, true, Glyph::Zoom, "Zoom to Layer")
-                                        .clicked()
-                                {
-                                    change = Some(Change::Zoom(b));
-                                }
+                            {
+                                change = Some(Change::Table(j));
+                            }
+                            if let Some(b) = bounds[j]
+                                && glyph_button(ui, true, Glyph::Zoom, "Zoom to Layer").clicked()
+                            {
+                                change = Some(Change::Zoom(b));
                             }
                             if loading {
                                 ui.spinner();
@@ -1476,6 +1540,7 @@ fn chosen(st: &Adding) -> Vec<MapLayer> {
             crs: caps.crs.clone(),
             info_format: caps.info_format.clone(),
             group: group.clone(),
+            extent: l.extent,
             ..Default::default()
         });
     }
@@ -2612,6 +2677,47 @@ mod tests {
         assert_eq!(c.version, "1.1.0");
         assert_eq!(c.crs, "EPSG:4326");
         assert!(c.layers.iter().any(|l| l.name == "BASEMAP"));
+    }
+
+    /// A WMS layer's extent comes from WMS 1.3's EX_GeographicBoundingBox or
+    /// 1.1's LatLonBoundingBox (inner layers take their parent's), goes with
+    /// the layer added, and turns into map coordinates for Zoom to Layer.
+    #[test]
+    fn wms_layers_keep_their_extent() {
+        let v13 = r#"<WMS_Capabilities version="1.3.0"><Capability>
+  <Request><GetMap><Format>image/png</Format></GetMap></Request>
+  <Layer><Title>All</Title><CRS>EPSG:3857</CRS>
+    <EX_GeographicBoundingBox><westBoundLongitude>19.3</westBoundLongitude>
+      <eastBoundLongitude>29.7</eastBoundLongitude><southBoundLatitude>34.8</southBoundLatitude>
+      <northBoundLatitude>41.8</northBoundLatitude></EX_GeographicBoundingBox>
+    <Layer><Name>roads</Name><Title>Roads</Title></Layer>
+  </Layer></Capability></WMS_Capabilities>"#;
+        let c = parse_wms(v13, "https://w.example/wms").unwrap();
+        let roads = c.layers.iter().find(|l| l.name == "roads").unwrap();
+        assert_eq!(roads.extent, Some([19.3, 34.8, 29.7, 41.8]));
+        let v11 = r#"<WMT_MS_Capabilities version="1.1.1"><Capability>
+  <Request><GetMap><Format>image/png</Format></GetMap></Request>
+  <Layer><Title>B</Title><SRS>EPSG:4326</SRS>
+    <Layer><Name>B</Name><Title>B</Title>
+      <LatLonBoundingBox minx="20" miny="35" maxx="28" maxy="41"/></Layer>
+  </Layer></Capability></WMT_MS_Capabilities>"#;
+        let c = parse_wms(v11, "https://w.example/wms").unwrap();
+        let mut st = Adding {
+            checked: c.layers.iter().map(|l| !l.name.is_empty()).collect(),
+            caps: Some(c),
+            ..Default::default()
+        };
+        st.name = "G".into();
+        let added = chosen(&st);
+        assert_eq!(added[0].extent, Some([20.0, 35.0, 28.0, 41.0]));
+        let b = layer_bounds(&added[0], Some(&Geo::WebMercator)).unwrap();
+        let [x0, y0] = Geo::WebMercator.lonlat_to([20.0, 35.0]).unwrap();
+        let [x1, y1] = Geo::WebMercator.lonlat_to([28.0, 41.0]).unwrap();
+        for (a, e) in b.iter().zip([x0, y0, x1, y1]) {
+            assert!((a - e).abs() < 1e-6, "{b:?}");
+        }
+        // without a coordinate system there is nowhere to zoom to
+        assert_eq!(layer_bounds(&added[0], None), None);
     }
 
     #[test]
