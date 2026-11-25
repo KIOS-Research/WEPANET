@@ -7,8 +7,8 @@
   <meta name="description" content="Open-source water distribution network modeling in your browser. Runs locally, no account needed.">
   
 <script type="module">
-import init, * as bindings from '/epanet-ui-web-f43edcf66967bf10.js';
-const wasm = await init({ module_or_path: '/epanet-ui-web-f43edcf66967bf10_bg.wasm' });
+import init, * as bindings from '/epanet-ui-web-71162b3fdb9ea359.js';
+const wasm = await init({ module_or_path: '/epanet-ui-web-71162b3fdb9ea359_bg.wasm' });
 
 
 window.wasmBindings = bindings;
@@ -78,7 +78,7 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
     async
     src="https://gc.zgo.at/count.js">
   </script>
-<link rel="modulepreload" href="/epanet-ui-web-f43edcf66967bf10.js" crossorigin="anonymous" integrity="sha384-VmAAGgyci/Zmf7s5jyOGkNDl06epf3NQkShKaZ9+UJAOxdKkiaUtneMYecMAP5pJ"><link rel="modulepreload" href="/snippets/eui-ui-3e6d3411aa7a95b7/inline0.js" crossorigin="anonymous" integrity="sha384-vENpzkqZbyB6gXe9nbNScDV32kLhQFsKEbAEu0acJDz4BM9DLPmZozi9d99C7Ozl"><link rel="modulepreload" href="/snippets/eui-ui-f449ccf9177b5721/inline0.js" crossorigin="anonymous" integrity="sha384-vENpzkqZbyB6gXe9nbNScDV32kLhQFsKEbAEu0acJDz4BM9DLPmZozi9d99C7Ozl"><link rel="modulepreload" href="/snippets/eui-ui-82908884a5b4f409/inline0.js" crossorigin="anonymous" integrity="sha384-vENpzkqZbyB6gXe9nbNScDV32kLhQFsKEbAEu0acJDz4BM9DLPmZozi9d99C7Ozl"><link rel="preload" href="/epanet-ui-web-f43edcf66967bf10_bg.wasm" crossorigin="anonymous" integrity="sha384-c6N9U0L0LAWYekhGzEO5PoZUjQeSg/bzUGXa+IEds57Cq1zcRTyAeNYudUorOyTd" as="fetch" type="application/wasm"></head>
+<link rel="modulepreload" href="/epanet-ui-web-71162b3fdb9ea359.js" crossorigin="anonymous" integrity="sha384-GwfGQkLykA5+amOnRp0KJ3Mg0AKDeP4FDa/5qOvxtQlXbJcrHeBKb527vl5TYV5u"><link rel="modulepreload" href="/snippets/eui-ui-82908884a5b4f409/inline0.js" crossorigin="anonymous" integrity="sha384-vENpzkqZbyB6gXe9nbNScDV32kLhQFsKEbAEu0acJDz4BM9DLPmZozi9d99C7Ozl"><link rel="modulepreload" href="/snippets/eui-ui-f449ccf9177b5721/inline0.js" crossorigin="anonymous" integrity="sha384-vENpzkqZbyB6gXe9nbNScDV32kLhQFsKEbAEu0acJDz4BM9DLPmZozi9d99C7Ozl"><link rel="modulepreload" href="/snippets/eui-ui-3e6d3411aa7a95b7/inline0.js" crossorigin="anonymous" integrity="sha384-vENpzkqZbyB6gXe9nbNScDV32kLhQFsKEbAEu0acJDz4BM9DLPmZozi9d99C7Ozl"><link rel="preload" href="/epanet-ui-web-71162b3fdb9ea359_bg.wasm" crossorigin="anonymous" integrity="sha384-QK/ctZCqbUu39RY9ZketI9OaM2LmAwjUtkN6iCE+bMfBX6yubi5pqjxExq/uJr1u" as="fetch" type="application/wasm"></head>
 <body>
   <div id="devbar">DEVELOPMENT VERSION: may be unstable. <a href="../">Open the stable version</a></div>
   <canvas id="epanet_ui_canvas"></canvas>

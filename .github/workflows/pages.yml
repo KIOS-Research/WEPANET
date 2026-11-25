@@ -42,9 +42,11 @@ jobs:
         run: cargo install trunk --locked
       - name: Build the web apps
         env:
-          # the map service proxy for servers without CORS (tools/wms-proxy)
-          WMS_PROXY: ${{ vars.WMS_PROXY }}
+          # the map service proxy for servers without CORS (tools/wms-proxy);
+          # the repository variable WMS_PROXY replaces the default
+          WMS_PROXY: ${{ vars.WMS_PROXY || 'https://wepanet-map-proxy.mariosmsk.workers.dev' }}
         run: |
+          echo "Map service proxy: $WMS_PROXY"
           for branch in main dev; do
             url="/${{ github.event.repository.name }}/"
             if [ "$branch" = dev ]; then url="${url}dev/"; fi

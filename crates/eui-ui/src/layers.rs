@@ -240,17 +240,28 @@ fn with_query(url: &str) -> String {
     }
 }
 
-/// Fetches `url`. In the web app a service whose server does not allow web
-/// pages to read it (no CORS), or that answers only over http, fails as a
-/// network error; the request then goes through the map service proxy
+/// Fetches `url`. In the web app an http address is asked over https first
+/// (an https page may not load http). A service whose server does not allow
+/// web pages to read it (no CORS), or that answers only over http, fails as
+/// a network error; the request then goes through the map service proxy
 /// (tools/wms-proxy, built in from `WMS_PROXY`), and so do later ones to that
 /// host. The desktop app always fetches directly.
 fn fetch(url: String, on_done: impl 'static + Send + FnOnce(ehttp::Result<ehttp::Response>)) {
     #[cfg(target_arch = "wasm32")]
-    if let Some(proxy) = option_env!("WMS_PROXY").filter(|p| !p.trim().is_empty()) {
+    {
         use std::collections::HashSet;
         use std::sync::LazyLock;
         static PROXIED: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Default::default);
+        let direct = match url.get(..7) {
+            Some(scheme) if scheme.eq_ignore_ascii_case("http://") => {
+                format!("https://{}", &url[7..])
+            }
+            _ => url.clone(),
+        };
+        let Some(proxy) = option_env!("WMS_PROXY").filter(|p| !p.trim().is_empty()) else {
+            ehttp::fetch(ehttp::Request::get(direct), on_done);
+            return;
+        };
         let host = host(&url);
         let via = format!(
             "{}?url={}",
@@ -261,7 +272,7 @@ fn fetch(url: String, on_done: impl 'static + Send + FnOnce(ehttp::Result<ehttp:
             ehttp::fetch(ehttp::Request::get(via), on_done);
             return;
         }
-        ehttp::fetch(ehttp::Request::get(url), move |res| match res {
+        ehttp::fetch(ehttp::Request::get(direct), move |res| match res {
             Err(_) => {
                 if let Ok(mut p) = PROXIED.lock() {
                     p.insert(host);
@@ -270,8 +281,8 @@ fn fetch(url: String, on_done: impl 'static + Send + FnOnce(ehttp::Result<ehttp:
             }
             ok => on_done(ok),
         });
-        return;
     }
+    #[cfg(not(target_arch = "wasm32"))]
     ehttp::fetch(ehttp::Request::get(url), on_done);
 }
 
