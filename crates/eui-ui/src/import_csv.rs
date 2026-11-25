@@ -350,13 +350,13 @@ pub fn dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
         match item.and_then(|(name, bytes)| read(&name, &bytes)) {
             Ok(f) => {
                 if nodes {
-                    for k in 0..NODE_PROPS.len() {
-                        s.node_map[k] = f.fields.iter().position(|c| guess(true, k, c));
+                    for (k, m) in s.node_map.iter_mut().enumerate() {
+                        *m = f.fields.iter().position(|c| guess(true, k, c));
                     }
                     s.nodes = Some(f);
                 } else {
-                    for k in 0..PIPE_PROPS.len() {
-                        s.pipe_map[k] = f.fields.iter().position(|c| guess(false, k, c));
+                    for (k, m) in s.pipe_map.iter_mut().enumerate() {
+                        *m = f.fields.iter().position(|c| guess(false, k, c));
                     }
                     s.pipes = Some(f);
                 }

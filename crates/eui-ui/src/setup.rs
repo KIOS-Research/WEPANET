@@ -447,9 +447,9 @@ fn validate(e: &SetupEdit) -> Result<(), (usize, String)> {
     if !crs.is_empty() && !crs.starts_with('+') && crs.parse::<u32>().is_err() {
         return Err((3, format!("{crs} is not a valid EPSG code")));
     }
-    for k in 3..9 {
-        if num(&e.options[k]).is_none() {
-            return Err((0, format!("{} is not a valid number", e.options[k].trim())));
+    for o in &e.options[3..] {
+        if num(o).is_none() {
+            return Err((0, format!("{} is not a valid number", o.trim())));
         }
     }
     if e.prefixes

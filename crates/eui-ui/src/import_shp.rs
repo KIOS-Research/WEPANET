@@ -413,13 +413,13 @@ pub fn dialog(app: &mut EpanetApp, ui: &mut Ui) -> bool {
                     .map(|d| d.fields.clone())
                     .unwrap_or_default();
                 if nodes {
-                    for k in 0..NODE_PROPS.len() {
-                        s.node_map[k] = fields.iter().position(|f| guess(true, k, f));
+                    for (k, m) in s.node_map.iter_mut().enumerate() {
+                        *m = fields.iter().position(|f| guess(true, k, f));
                     }
                     s.nodes = Some(layer);
                 } else {
-                    for k in 0..LINK_PROPS.len() {
-                        s.link_map[k] = fields.iter().position(|f| guess(false, k, f));
+                    for (k, m) in s.link_map.iter_mut().enumerate() {
+                        *m = fields.iter().position(|f| guess(false, k, f));
                     }
                     s.links = Some(layer);
                 }
