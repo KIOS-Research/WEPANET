@@ -41,6 +41,9 @@ jobs:
       - name: Install trunk
         run: cargo install trunk --locked
       - name: Build the web apps
+        env:
+          # the map service proxy for servers without CORS (tools/wms-proxy)
+          WMS_PROXY: ${{ vars.WMS_PROXY }}
         run: |
           for branch in main dev; do
             url="/${{ github.event.repository.name }}/"

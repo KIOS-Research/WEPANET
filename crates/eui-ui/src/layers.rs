@@ -101,14 +101,19 @@ pub const DXF_COLORS: [[u8; 3]; 8] = [
 ];
 
 const WEB_MERCATOR: &str = "EPSG:3857";
-/// The coordinate systems pictures can be asked in, best first.
+/// The Web Mercator codes a picture can be asked in.
+const MERCATOR_CODES: [&str; 4] = ["EPSG:3857", "EPSG:900913", "EPSG:102100", "EPSG:102113"];
+/// The coordinate systems pictures can be asked in, best first. The legacy
+/// Web Mercator aliases come after longitude/latitude: some servers list
+/// them but answer blank pictures (e.g. gis.ktimanet.gr with EPSG:900913),
+/// while EPSG:4326 works everywhere.
 const CRS_PREFERRED: [&str; 6] = [
     "EPSG:3857",
+    "CRS:84",
+    "EPSG:4326",
     "EPSG:900913",
     "EPSG:102100",
     "EPSG:102113",
-    "CRS:84",
-    "EPSG:4326",
 ];
 /// How long the view must stay still before a new picture is asked for (s).
 const SETTLE: f64 = 0.35;
@@ -118,7 +123,7 @@ const MAX_SIDE: f64 = 2048.0;
 const MAX_URLS: usize = 10;
 
 fn mercator(crs: &str) -> bool {
-    CRS_PREFERRED[..4]
+    MERCATOR_CODES
         .iter()
         .any(|c| c.eq_ignore_ascii_case(crs))
 }
@@ -235,6 +240,37 @@ fn with_query(url: &str) -> String {
     } else {
         format!("{url}&")
     }
+}
+
+/// Fetches `url`. In the web app a service whose server does not allow web
+/// pages to read it (no CORS), or that answers only over http, fails as a
+/// network error; the request then goes through the map service proxy
+/// (tools/wms-proxy, built in from `WMS_PROXY`), and so do later ones to that
+/// host. The desktop app always fetches directly.
+fn fetch(url: String, on_done: impl 'static + Send + FnOnce(ehttp::Result<ehttp::Response>)) {
+    #[cfg(target_arch = "wasm32")]
+    if let Some(proxy) = option_env!("WMS_PROXY").filter(|p| !p.trim().is_empty()) {
+        use std::collections::HashSet;
+        use std::sync::LazyLock;
+        static PROXIED: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Default::default);
+        let host = host(&url);
+        let via = format!("{}?url={}", proxy.trim().trim_end_matches('/'), encode(&url));
+        if PROXIED.lock().is_ok_and(|p| p.contains(&host)) {
+            ehttp::fetch(ehttp::Request::get(via), on_done);
+            return;
+        }
+        ehttp::fetch(ehttp::Request::get(url), move |res| match res {
+            Err(_) => {
+                if let Ok(mut p) = PROXIED.lock() {
+                    p.insert(host);
+                }
+                ehttp::fetch(ehttp::Request::get(via), on_done);
+            }
+            ok => on_done(ok),
+        });
+        return;
+    }
+    ehttp::fetch(ehttp::Request::get(url), on_done);
 }
 
 /// Percent-encodes a query value.
@@ -403,8 +439,19 @@ const INFO_PREFERRED: [&str; 6] = [
     "text/html",
 ];
 
+/// Parses XML that may carry a DOCTYPE: WMS 1.1 servers send
+/// `<!DOCTYPE WMT_MS_Capabilities SYSTEM "…dtd">`, which roxmltree refuses
+/// unless DTDs are allowed (they are never fetched).
+fn parse_xml(xml: &str) -> Result<roxmltree::Document<'_>, roxmltree::Error> {
+    let opt = roxmltree::ParsingOptions {
+        allow_dtd: true,
+        ..Default::default()
+    };
+    roxmltree::Document::parse_with_options(xml, opt)
+}
+
 fn parse_wms(xml: &str, url: &str) -> Result<Caps, String> {
-    let doc = roxmltree::Document::parse(xml).map_err(|_| "Not a WMS (no capabilities)")?;
+    let doc = parse_xml(xml).map_err(|_| "Not a WMS (no capabilities)")?;
     let root = doc.root_element();
     if !root.tag_name().name().contains("Capabilities") {
         let msg = root
@@ -705,7 +752,7 @@ fn request(st: &mut LayersState, ctx: &egui::Context, key: String, url: String, 
     st.views.entry(key.clone()).or_default().loading = Some((id, b, url.clone()));
     let delivered = st.delivered.clone();
     let ctx = ctx.clone();
-    ehttp::fetch(ehttp::Request::get(url), move |res| {
+    fetch(url, move |res| {
         let img = match res {
             Ok(r) if r.ok => image::load_from_memory(&r.bytes)
                 .map(|i| {
@@ -1278,7 +1325,7 @@ fn connect(app: &mut EpanetApp, ctx: &egui::Context) {
     st.reply = Some(reply.clone());
     let ctx = ctx.clone();
     let source = url.clone();
-    ehttp::fetch(ehttp::Request::get(caps_url(service, &url)), move |res| {
+    fetch(caps_url(service, &url), move |res| {
         let caps = match res {
             Ok(r) if r.ok => {
                 let text = crate::io::decode_text(&r.bytes);
@@ -1676,7 +1723,7 @@ fn parse_identify(layer: &str, text: &str) -> Result<Vec<Feature>, String> {
         // a WMS answering in text or HTML: its text, as one field
         let lower = text.to_ascii_lowercase();
         if lower.contains("serviceexception") {
-            let msg = roxmltree::Document::parse(text)
+            let msg = parse_xml(text)
                 .ok()
                 .and_then(|d| {
                     d.descendants()
@@ -1966,7 +2013,7 @@ pub fn identify(app: &mut EpanetApp, rect: Rect, p: Pos2) {
     for (layer, rank, url) in asks {
         let answers = st.answers.clone();
         let ctx = app.ctx.clone();
-        ehttp::fetch(ehttp::Request::get(url), move |res| {
+        fetch(url, move |res| {
             let found = match res {
                 Ok(r) if r.ok => parse_identify(&layer, &crate::io::decode_text(&r.bytes)),
                 Ok(r) => Err(format!("{} {}", r.status, r.status_text)),
@@ -2531,6 +2578,27 @@ mod tests {
         // a service that answers with an error
         let err = r#"<ServiceExceptionReport><ServiceException>Bad request</ServiceException></ServiceExceptionReport>"#;
         assert_eq!(parse_wms(err, url).unwrap_err(), "Bad request");
+    }
+
+    #[test]
+    fn reads_wms_1_1_capabilities_with_a_doctype() {
+        // as gis.ktimanet.gr answers: a DOCTYPE, and Web Mercator only as EPSG:900913
+        let xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
+<!DOCTYPE WMT_MS_Capabilities SYSTEM "http://schemas.opengis.net/wms/1.1.0/capabilities_1_1_0.dtd" >
+<WMT_MS_Capabilities version="1.1.0">
+  <Service><Name>KTIMATOLOGIO</Name><Title>BASEMAP</Title></Service>
+  <Capability>
+    <Request><GetMap><Format>image/png</Format></GetMap></Request>
+    <Layer><Title>BASEMAP</Title>
+      <SRS>EPSG:4326</SRS><SRS>EPSG:2100</SRS><SRS>EPSG:900913</SRS>
+      <Layer queryable="1"><Name>BASEMAP</Name><Title>BASEMAP</Title></Layer>
+    </Layer>
+  </Capability>
+</WMT_MS_Capabilities>"#;
+        let c = parse_wms(xml, "https://gis.ktimanet.gr/wms/wmsopen/wmsserver.aspx").unwrap();
+        assert_eq!(c.version, "1.1.0");
+        assert_eq!(c.crs, "EPSG:4326");
+        assert!(c.layers.iter().any(|l| l.name == "BASEMAP"));
     }
 
     #[test]
