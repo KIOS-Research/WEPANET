@@ -13,9 +13,25 @@ use serde::Deserialize;
 use super::{Msg, Response, backend, project_files};
 use crate::app::EpanetApp;
 
-const BANNER: &str = "Python Console. `wepanet` gives the project and its results \
-(help(wepanet)); each line sees the project as it is then. \
-`pip install <package>` installs a package.";
+const BANNER: &str = "Python Console: type Python and press Enter. `wepanet` gives the \
+project and its results; help(wepanet) lists what it offers, and Examples has lines \
+to run. `pip install <package>` installs a package.";
+
+/// Lines the Examples menu runs: they work on any project (the results ones
+/// after an analysis).
+const EXAMPLES: [&str; 10] = [
+    "help(wepanet)",
+    "len(wepanet.node_ids()), len(wepanet.link_ids())",
+    "wepanet.flow_units()",
+    "[(n, wepanet.node_type(n)) for n in wepanet.node_ids()[:10]]",
+    "wepanet.has_results(), wepanet.periods(), wepanet.current_period()",
+    "n = wepanet.node_ids()[0]; wepanet.node_result(n, 'Pressure', wepanet.current_period())",
+    "wepanet.link_series(wepanet.link_ids()[0], 'Flow')",
+    "p = wepanet.current_period(); wepanet.table('Pressures', ['Node', 'Pressure'], \
+[[n, wepanet.node_result(n, 'Pressure', p)] for n in wepanet.node_ids()])",
+    "wepanet.select_node(wepanet.node_ids()[0])",
+    "print(open(wepanet.inp_file).read()[:600])",
+];
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Kind {
@@ -60,7 +76,7 @@ pub fn toggle(app: &mut EpanetApp) {
     c.open = !c.open;
     if c.open {
         if c.log.is_empty() {
-            c.log.push((Kind::Note, BANNER.into()));
+            c.log.push((Kind::Note, crate::i18n::tr(BANNER).into()));
         }
         c.focus = true;
     } else {
@@ -200,13 +216,14 @@ pub fn show(app: &mut EpanetApp, ui: &mut Ui) {
 
 fn body(app: &mut EpanetApp, ui: &mut Ui) {
     // EPANET-UI's window chrome: the title and the red close button, with
-    // Clear (and the spinner while Python runs) left of it
+    // Clear, Examples (and the spinner while Python runs) left of it
     let (bar, _) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), crate::dialogs::TITLE_H),
         egui::Sense::hover(),
     );
     let fill = ui.visuals().panel_fill;
     let close = crate::dialogs::title_bar(ui, bar, "Python Console", fill, None, true).close;
+    let mut send = None;
     let tools = egui::Rect::from_min_max(
         egui::pos2(bar.center().x, bar.top()),
         egui::pos2(bar.right() - 52.0, bar.bottom()),
@@ -216,9 +233,21 @@ fn body(app: &mut EpanetApp, ui: &mut Ui) {
             .max_rect(tools)
             .layout(egui::Layout::right_to_left(egui::Align::Center)),
         |ui| {
-            if ui.button("Clear").clicked() {
+            if ui.button(crate::i18n::tr("Clear")).clicked() {
                 app.python.console.log.clear();
             }
+            let busy = app.python.console.busy;
+            let examples = ui.add_enabled(!busy, egui::Button::new(crate::i18n::tr("Examples")));
+            egui::Popup::menu(&examples).show(|ui| {
+                ui.label(RichText::new(crate::i18n::tr("Click a line to run it.")).weak());
+                for line in EXAMPLES {
+                    let text = RichText::new(line).font(egui::FontId::monospace(12.0));
+                    let button = egui::Button::new(text).wrap_mode(egui::TextWrapMode::Extend);
+                    if ui.add(button).clicked() {
+                        send = Some(line.to_string());
+                    }
+                }
+            });
             if app.python.console.busy {
                 ui.spinner();
             }
@@ -265,7 +294,6 @@ fn body(app: &mut EpanetApp, ui: &mut Ui) {
             }
         }
     }
-    let mut send = None;
     // From the bottom up: the prompt, then the lines filling the rest, so
     // the content is as tall as the panel (a shorter one shrank it).
     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
@@ -302,24 +330,27 @@ fn body(app: &mut EpanetApp, ui: &mut Ui) {
             .inner_margin(4)
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
-                egui::ScrollArea::vertical()
-                    .id_salt("python_console_log")
-                    .stick_to_bottom(true)
-                    .auto_shrink(false)
-                    .max_height(h.max(20.0))
-                    // never taller than the room left (it covered the prompt)
-                    .min_scrolled_height(h.clamp(0.0, 20.0))
-                    .show(ui, |ui| {
-                        for (k, text) in &app.python.console.log {
-                            ui.add(
-                                egui::Label::new(
-                                    RichText::new(text).font(mono.clone()).color(color(*k)),
-                                )
-                                .wrap()
-                                .selectable(true),
-                            );
-                        }
-                    });
+                // the lines go down from the top
+                ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("python_console_log")
+                        .stick_to_bottom(true)
+                        .auto_shrink(false)
+                        .max_height(h.max(20.0))
+                        // never taller than the room left (it covered the prompt)
+                        .min_scrolled_height(h.clamp(0.0, 20.0))
+                        .show(ui, |ui| {
+                            for (k, text) in &app.python.console.log {
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(text).font(mono.clone()).color(color(*k)),
+                                    )
+                                    .wrap()
+                                    .selectable(true),
+                                );
+                            }
+                        });
+                });
             });
     });
     if let Some(line) = send {
@@ -387,8 +418,84 @@ mod tests {
             "wepanet.set_network(open(wepanet.inp_file).read().replace('[JUNCTIONS]', '[JUNCTIONS]\\n J99 1 0', 1))",
         );
         assert_eq!(app.net.nodes.len(), before + 1);
+        // the Examples menu's lines run without errors, with results
+        app.dirty = false;
+        app.load_example("Net1", eui_core::examples::NET1);
+        let out = eui_engine::run_blocking(eui_core::examples::NET1).unwrap();
+        app.results = Some(eui_core::SimResults::from_out(&out.out).unwrap());
+        app.results_generation = app.generation;
+        for line in EXAMPLES {
+            let out = run(&mut app, line);
+            assert!(
+                out.iter().all(|(k, _)| *k != Kind::Error),
+                "{line}: {out:?}"
+            );
+            assert!(
+                out.len() > 1 || line.contains("select_node") || line.contains(".table("),
+                "{line}: {out:?}"
+            );
+        }
         toggle(&mut app);
         assert!(app.python.console.session.is_none());
+    }
+
+    /// The lines read down from the top, the last one shows, and the wheel
+    /// scrolls back to the first (they went up from the bottom, and the
+    /// view stayed empty).
+    #[test]
+    fn the_lines_read_down_and_scroll() {
+        let ctx = egui::Context::default();
+        let mut app = EpanetApp::new(&eframe::CreationContext::_new_kittest(ctx.clone()));
+        toggle(&mut app);
+        for k in 0..40 {
+            app.python
+                .console
+                .log
+                .push((Kind::Output, format!("line {k}")));
+        }
+        let shown = |out: &egui::FullOutput, want: &str| {
+            out.shapes.iter().find_map(|c| match &c.shape {
+                egui::Shape::Text(t) if t.galley.text() == want => {
+                    let r = t.visual_bounding_rect().intersect(c.clip_rect);
+                    (r.height() > 0.0).then_some(r.top())
+                }
+                _ => None,
+            })
+        };
+        let mut frame = |f: usize, wheel: bool| {
+            let mut events = vec![egui::Event::PointerMoved(egui::pos2(400.0, 700.0))];
+            if wheel {
+                events.push(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, 400.0),
+                    modifiers: Modifiers::NONE,
+                    phase: egui::TouchPhase::Move,
+                });
+            }
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(900.0, 800.0),
+                )),
+                events,
+                time: Some(f as f64 * 0.1),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| show(&mut app, ui));
+            out.textures_delta.clear();
+            out
+        };
+        let mut out = frame(0, false);
+        for f in 1..5 {
+            out = frame(f, false);
+        }
+        let (a, b) = (shown(&out, "line 38"), shown(&out, "line 39"));
+        assert!(a.zip(b).is_some_and(|(a, b)| a < b), "{a:?} {b:?}");
+        for f in 5..40 {
+            out = frame(f, true);
+        }
+        assert!(shown(&out, "line 0").is_some());
+        assert!(shown(&out, "line 39").is_none());
     }
 
     /// The panel shows the banner, the lines and the prompt, under the map.
@@ -432,7 +539,7 @@ mod tests {
         assert!(
             texts
                 .iter()
-                .any(|t| t.starts_with("Python Console. `wepanet`"))
+                .any(|t| t.starts_with("Python Console: type Python"))
         );
         // it takes the bottom of the window, leaving the rest to the map
         assert!(
@@ -485,7 +592,7 @@ mod tests {
                         })
                         .unwrap_or_else(|| panic!("no {want:?}"))
                 };
-                rects = (panel, at(">>>"), at("Python Console. "));
+                rects = (panel, at(">>>"), at("Python Console: "));
             }
             let (panel, prompt, banner) = rects;
             assert!(

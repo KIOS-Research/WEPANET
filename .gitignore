@@ -11,3 +11,4 @@
 
 # wrangler login cache (tools/wms-proxy)
 .wrangler/
+__pycache__/

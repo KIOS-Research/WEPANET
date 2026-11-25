@@ -14,7 +14,6 @@ version = "0.1.6"
 edition = "2024"
 license = "MIT"
 authors = ["Marios S. Kyriakou"]
-rust-version = "1.88"
 
 [workspace.dependencies]
 eui-core = { path = "crates/eui-core" }

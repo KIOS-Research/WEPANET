@@ -123,9 +123,7 @@ const MAX_SIDE: f64 = 2048.0;
 const MAX_URLS: usize = 10;
 
 fn mercator(crs: &str) -> bool {
-    MERCATOR_CODES
-        .iter()
-        .any(|c| c.eq_ignore_ascii_case(crs))
+    MERCATOR_CODES.iter().any(|c| c.eq_ignore_ascii_case(crs))
 }
 
 impl MapLayer {
@@ -254,7 +252,11 @@ fn fetch(url: String, on_done: impl 'static + Send + FnOnce(ehttp::Result<ehttp:
         use std::sync::LazyLock;
         static PROXIED: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Default::default);
         let host = host(&url);
-        let via = format!("{}?url={}", proxy.trim().trim_end_matches('/'), encode(&url));
+        let via = format!(
+            "{}?url={}",
+            proxy.trim().trim_end_matches('/'),
+            encode(&url)
+        );
         if PROXIED.lock().is_ok_and(|p| p.contains(&host)) {
             ehttp::fetch(ehttp::Request::get(via), on_done);
             return;

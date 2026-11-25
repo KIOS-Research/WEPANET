@@ -735,5 +735,8 @@
   "To SVG File": "Σε Αρχείο SVG",
   "A vector picture of the map (without the basemap), for print and editing": "Διανυσματική εικόνα του χάρτη (χωρίς υπόβαθρο), για εκτύπωση και επεξεργασία",
   "Only the {} that fit the network's coordinates": "Μόνο τα {} που ταιριάζουν στις συντεταγμένες του δικτύου",
-  "Systems that place the network inside the area where they are used. Many may fit: type the country or region in the filter.": "Συστήματα που τοποθετούν το δίκτυο μέσα στην περιοχή όπου χρησιμοποιούνται. Μπορεί να ταιριάζουν πολλά: γράψτε τη χώρα ή την περιοχή στο φίλτρο."
+  "Systems that place the network inside the area where they are used. Many may fit: type the country or region in the filter.": "Συστήματα που τοποθετούν το δίκτυο μέσα στην περιοχή όπου χρησιμοποιούνται. Μπορεί να ταιριάζουν πολλά: γράψτε τη χώρα ή την περιοχή στο φίλτρο.",
+  "Examples": "Παραδείγματα",
+  "Click a line to run it.": "Κάντε κλικ σε μια γραμμή για να εκτελεστεί.",
+  "Python Console: type Python and press Enter. `wepanet` gives the project and its results; help(wepanet) lists what it offers, and Examples has lines to run. `pip install <package>` installs a package.": "Κονσόλα Python: γράψτε Python και πατήστε Enter. Το `wepanet` δίνει το έργο και τα αποτελέσματά του· το help(wepanet) δείχνει τι προσφέρει και τα Παραδείγματα έχουν γραμμές για εκτέλεση. Το `pip install <πακέτο>` εγκαθιστά ένα πακέτο."
 }

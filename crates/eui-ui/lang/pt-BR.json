@@ -735,5 +735,8 @@
   "To SVG File": "Para Arquivo SVG",
   "A vector picture of the map (without the basemap), for print and editing": "Uma imagem vetorial do mapa (sem o mapa base), para impressão e edição",
   "Only the {} that fit the network's coordinates": "Apenas os {} compatíveis com as coordenadas da rede",
-  "Systems that place the network inside the area where they are used. Many may fit: type the country or region in the filter.": "Sistemas que situam a rede dentro da área onde são usados. Muitos podem servir: digite o país ou a região no filtro."
+  "Systems that place the network inside the area where they are used. Many may fit: type the country or region in the filter.": "Sistemas que situam a rede dentro da área onde são usados. Muitos podem servir: digite o país ou a região no filtro.",
+  "Examples": "Exemplos",
+  "Click a line to run it.": "Clique em uma linha para executá-la.",
+  "Python Console: type Python and press Enter. `wepanet` gives the project and its results; help(wepanet) lists what it offers, and Examples has lines to run. `pip install <package>` installs a package.": "Console Python: digite Python e pressione Enter. `wepanet` fornece o projeto e seus resultados; help(wepanet) mostra o que ele oferece e Exemplos tem linhas para executar. `pip install <pacote>` instala um pacote."
 }

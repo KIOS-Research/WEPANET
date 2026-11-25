@@ -735,5 +735,8 @@
   "To SVG File": "导出为 SVG 文件",
   "A vector picture of the map (without the basemap), for print and editing": "地图的矢量图（不含底图），用于打印和编辑",
   "Only the {} that fit the network's coordinates": "仅显示符合管网坐标的 {} 个坐标系",
-  "Systems that place the network inside the area where they are used. Many may fit: type the country or region in the filter.": "将管网置于其适用区域内的坐标系。可能有很多符合：请在筛选框中输入国家或地区。"
+  "Systems that place the network inside the area where they are used. Many may fit: type the country or region in the filter.": "将管网置于其适用区域内的坐标系。可能有很多符合：请在筛选框中输入国家或地区。",
+  "Examples": "示例",
+  "Click a line to run it.": "单击一行即可运行。",
+  "Python Console: type Python and press Enter. `wepanet` gives the project and its results; help(wepanet) lists what it offers, and Examples has lines to run. `pip install <package>` installs a package.": "Python 控制台：输入 Python 代码并按 Enter。`wepanet` 提供项目及其结果；help(wepanet) 列出其功能，示例菜单中有可运行的代码行。`pip install <包>` 安装一个包。"
 }

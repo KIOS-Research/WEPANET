@@ -132,7 +132,30 @@ def _link_at(p, v, r):
 
 
 wepanet = types.ModuleType("wepanet")
-wepanet.__doc__ = "WEPANET's project, its results, and what a plugin shows."
+wepanet.__doc__ = """WEPANET's project, its results, and what a plugin shows.
+
+Examples (type a line in the Python Console and press Enter; the console's
+Examples menu runs them too):
+
+    n = wepanet.node_ids()[0]                 # the first node's ID
+    len(wepanet.node_ids())                   # how many nodes
+    wepanet.node_type(n)                      # Junction, Reservoir or Tank
+    wepanet.has_results()                     # True after an analysis
+    wepanet.node_result(n, "Pressure", 0)     # a result at period 0
+    wepanet.node_series(n, "Pressure")        # a result at every period
+    wepanet.select_node(n)                    # selects it on the map
+    wepanet.table("Types", ["Node", "Type"],
+                  [[i, wepanet.node_type(i)] for i in wepanet.node_ids()])
+
+Node results: Demand, Head, Pressure, Quality.
+Link results: Flow, Velocity, Headloss, Quality, Status, Setting, Reaction,
+Friction.
+wepanet.inp_file is the project as an EPANET input file, e.g. for EPyT:
+
+    from epyt import epanet
+    d = epanet(wepanet.inp_file)
+
+help(wepanet.node_result) shows one function."""
 wepanet.in_browser = sys.platform == "emscripten"
 
 
@@ -229,6 +252,7 @@ def link_type(id):
 
 
 def flow_units():
+    """The project's flow units, e.g. GPM or LPS."""
     return request["flow_units"]
 
 
@@ -393,7 +417,9 @@ _console_dir = None
 
 
 def _help(*args, **kwargs):
-    """help(object) shows the documentation of an object, e.g. help(wepanet)."""
+    """help(object) shows the documentation of an object: help(wepanet) for
+    the project and its results, with examples; help(wepanet.node_result)
+    for one function."""
     if not args and not kwargs:
         print(_help.__doc__)
         return
