@@ -1,4 +1,4 @@
-"""WEPANET's Python: the runner of Python plugins and the Python Console.
+"""WEPANET's Python: the runner of Python plugins and the Python Notebook.
 
 WEPANET gives it a folder holding the project (network.inp), the request
 (request.json) and, after an analysis, its results (results.bin); for a
@@ -11,20 +11,22 @@ results and to show what it found.
                                                  answers in response.json (and
                                                  network_out.inp when the plugin
                                                  changed the project)
-    python python_runner.py --console <folder>   the Python Console: reads
-                                                 {"line", "reload"} JSON lines,
-                                                 answers "@@console {...}" lines
+    python python_runner.py --notebook <folder>  the Python Notebook: reads
+                                                 {"cell", "reload", "dpi"} JSON lines,
+                                                 answers "@@cell {...}" lines
 
 In the browser the module is loaded once and `run_plugin(folder)` and
-`console_push(folder, line, reload)` are called.
+`run_cell(folder, source, reload, fresh, dpi)` are called.
 """
 
 import array
-import code
+import ast
+import importlib.util
 import io
 import json
 import linecache
 import os
+import re
 import shutil
 import sys
 import traceback
@@ -134,8 +136,8 @@ def _link_at(p, v, r):
 wepanet = types.ModuleType("wepanet")
 wepanet.__doc__ = """WEPANET's project, its results, and what a plugin shows.
 
-Examples (type a line in the Python Console and press Enter; the console's
-Examples menu runs them too):
+Examples (type them in a cell of the Python Notebook and press Shift+Enter;
+the notebook's Examples menu adds them too):
 
     n = wepanet.node_ids()[0]                 # the first node's ID
     len(wepanet.node_ids())                   # how many nodes
@@ -182,7 +184,7 @@ def _text(*args):
 
 
 def message(*args):
-    """Shows a message when the plugin is over (in the console: at once)."""
+    """Shows a message when the plugin is over (in the notebook: under the cell)."""
     response["messages"].append(_text(*args))
 
 
@@ -410,10 +412,21 @@ def run_plugin(folder):
         json.dump(response, f)
 
 
-# ----- the Python Console -------------------------------------------------------
+# ----- the Python Notebook ------------------------------------------------------
 
-_console = None
-_console_dir = None
+_cells = None
+_cells_dir = None
+_runs = 0
+_PIP = re.compile(r"^(\s*)[%!]?pip install\s+(\S.*?)\s*$")
+_EPYT = re.compile(r"^\s*(from|import)\s+epyt\b", re.M)
+_PLOT = re.compile(r"plot|matplotlib")
+# the packages of the modules whose names differ
+_PACKAGES = {"PIL": "pillow", "cv2": "opencv-python", "sklearn": "scikit-learn", "yaml": "pyyaml"}
+#: What the cells' EPyT projects were, by object, when a cell last saw them.
+_epyt_seen = {}
+
+# figures are drawn into PNGs, shown under their cell, not in windows
+os.environ.setdefault("MPLBACKEND", "Agg")
 
 
 def _help(*args, **kwargs):
@@ -429,12 +442,15 @@ def _help(*args, **kwargs):
 
 
 def _no_input(*_):
-    raise RuntimeError("input() is not available in the console")
+    raise RuntimeError("input() is not available in the notebook")
 
 
 def _pip_install(packages):
-    """`pip install` typed in the console (in the browser, WEPANET installs
-    the packages before the line reaches Python)."""
+    """`%pip install` in a cell (in the browser, WEPANET installs the
+    packages before the cell reaches Python)."""
+    if wepanet.in_browser:
+        print("Installed " + ", ".join(packages))
+        return
     import subprocess
 
     r = subprocess.run(
@@ -445,25 +461,155 @@ def _pip_install(packages):
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     print((r.stdout + r.stderr).strip())
+    importlib.invalidate_caches()
 
 
-def console_push(folder, line, reload):
-    """Runs a line typed in the Python Console (a block ends with an empty
-    line). Returns JSON: what it printed, whether a block goes on, what it
-    asked WEPANET to show, and the project it left (or null)."""
-    global _console, _console_dir
-    if _console is None:
-        _console = code.InteractiveConsole(
-            {
-                "__name__": "__console__",
-                "wepanet": wepanet,
-                "help": _help,
-                "input": _no_input,
-            },
-            filename="<console>",
-        )
-    if reload or _console_dir != folder:
-        _console_dir = folder
+def _exec_cell(source, filename):
+    """Runs a cell: its `%pip install` lines install. Returns the value of
+    its last line, when it is an expression (and the cell does not end in ;)."""
+    lines = []
+    for line in source.splitlines():
+        m = _PIP.match(line)
+        lines.append(f"{m[1]}_pip_install({m[2].split()!r})" if m else line)
+    src = "\n".join(lines)
+    linecache.cache[filename] = (len(src), None, src.splitlines(True), filename)
+    tree = ast.parse(src, filename, "exec")
+    last = None
+    if tree.body and isinstance(tree.body[-1], ast.Expr) and not src.rstrip().endswith(";"):
+        last = ast.Expression(tree.body.pop().value)
+    exec(compile(tree, filename, "exec"), _cells)
+    if last is None:
+        return None
+    value = eval(compile(last, filename, "eval"), _cells)
+    if value is not None:
+        _cells["_"] = value
+    return value
+
+
+def _plots_ready():
+    """Matplotlib for a cell that plots: installed on the desktop when it is
+    missing, and given to EPyT when EPyT was imported without it."""
+    if importlib.util.find_spec("matplotlib") is None:
+        print("Installing matplotlib…")
+        _pip_install(["matplotlib"])
+    try:
+        import matplotlib
+        import matplotlib.pyplot as plt
+        from matplotlib import cm
+    except ImportError:
+        return
+    # the figures are shown under the cell: plt.show() has nothing to do
+    plt.show = lambda *args, **kwargs: None
+    m = sys.modules.get("epyt.epanet")
+    if m is not None and not hasattr(m, "plt"):
+        m.mpl, m.plt, m.cm = matplotlib, plt, cm
+
+
+def _figures(dpi):
+    """The figures the cell drew, as PNG in base64 at `dpi` (then closed)."""
+    plt = sys.modules.get("matplotlib.pyplot")
+    if plt is None:
+        return []
+    import base64
+
+    images = []
+    for n in plt.get_fignums():
+        buf = io.BytesIO()
+        # Matplotlib's own deprecation warnings, while it draws
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            plt.figure(n).savefig(buf, format="png", dpi=dpi, bbox_inches="tight")
+        images.append(base64.b64encode(buf.getvalue()).decode("ascii"))
+    plt.close("all")
+    return images
+
+
+def _epyt_changes():
+    """The network of an EPyT project of the cells that a cell changed (it
+    goes to WEPANET's map), or None. Only projects opened from WEPANET's
+    (`epanet(wepanet.inp_file)`) count: a notebook may open other networks
+    too (EPyT's examples open their own). EPyT projects opened without
+    `ph=True` share one EPANET project, the last one opened, so only that
+    one counts of them; and the cell that opens one changes nothing. A
+    project is compared with what it was when a cell last saw it."""
+    objs = {
+        id(o): (n, o)
+        for n, o in list(_cells.items())
+        if type(o).__name__ == "epanet" and type(o).__module__.startswith("epyt")
+    }
+
+    def shared(o):
+        return getattr(getattr(o, "api", None), "_ph", None) is None
+
+    opened = False
+    for k, (_, o) in objs.items():
+        if k not in _epyt_seen:
+            _epyt_seen[k] = None
+            opened = opened or shared(o)
+    # in the order they were first seen: the last shared one holds EPANET
+    live = [k for k in _epyt_seen if k in objs and shared(objs[k][1])][-1:]
+    project = os.path.normcase(os.path.abspath(wepanet.inp_file))
+    changed = None
+    for k, (name, obj) in objs.items():
+        file = getattr(obj, "InputFile", None)
+        if not file or os.path.normcase(os.path.abspath(file)) != project:
+            continue
+        if shared(obj) and [k] != live:
+            continue
+        path = os.path.join(work, f"_epyt_{name}.inp")
+        quiet = io.StringIO()
+        stdout = sys.stdout
+        sys.stdout = quiet
+        try:
+            obj.saveInputFile(path)
+            with open(path, encoding="utf-8", errors="replace") as f:
+                text = f.read()
+        except Exception:
+            continue
+        finally:
+            sys.stdout = stdout
+        before = _epyt_seen[k]
+        now = _inp_content(text)
+        _epyt_seen[k] = now
+        if before is not None and before != now and not opened:
+            changed = text
+    return changed
+
+
+def _inp_content(text):
+    """An input file without what an analysis changes in what EPANET saves:
+    the comments and the type of a curve (GENERIC becomes PUMP)."""
+    out = []
+    curves = False
+    for line in text.splitlines():
+        line = line.split(";", 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith("["):
+            curves = line.upper().startswith("[CURVES]")
+        elif curves:
+            line = " ".join(line.split()[:3])
+        out.append(line)
+    return "\n".join(out)
+
+
+def run_cell(folder, source, reload, fresh=False, dpi=192):
+    """Runs a cell of the Python Notebook. Returns JSON: what it printed, the
+    value of its last line, the figures it drew, whether it stopped with an
+    error, what it asked WEPANET to show, and the project it left (or null):
+    from `wepanet.set_network`, or an EPyT project it changed."""
+    global _cells, _cells_dir, _runs
+    if _cells is None or fresh:
+        _cells = {"__name__": "__main__", "wepanet": wepanet, "help": _help, "input": _no_input}
+        _cells["_pip_install"] = _pip_install
+        _epyt_seen.clear()
+        _runs = 0
+        # EPyT's Excel files are left out in the browser; figures are shown
+        # under the cell, not in a window
+        warnings.filterwarnings("ignore", message="(matplotlib|pandas) is not installed")
+        warnings.filterwarnings("ignore", message=".*non-interactive.*")
+    if reload or _cells_dir != folder:
+        _cells_dir = folder
         load(folder)
     # in the browser a plugin may have run in between, elsewhere
     os.chdir(os.path.abspath(folder))
@@ -472,22 +618,44 @@ def console_push(folder, line, reload):
     if os.path.exists(out_file):
         os.remove(out_file)
     _new_response()
+    _runs += 1
     printed = io.StringIO()
     stdout, stderr = sys.stdout, sys.stderr
     sys.stdout = sys.stderr = printed
-    try:
-        pip = line.strip().removeprefix("%").split()
-        if pip[:2] == ["pip", "install"] and len(pip) > 2 and not _console.buffer:
-            more = False
-            _pip_install(pip[2:])
-        else:
-            more = _console.push(line)
-    except SystemExit:
-        more = False
-        print("The console stays open: close it with its Close button.")
-    finally:
-        sys.stdout, sys.stderr = stdout, stderr
+    error = False
+    result = None
+    images = []
     network = None
+    try:
+        # EPyT (with what it needs: an epyt installed without numpy cannot
+        # open a network), the first time a cell imports it
+        needs = ("epyt", "numpy", "cffi")
+        if _EPYT.search(source) and any(importlib.util.find_spec(m) is None for m in needs):
+            print("Installing epyt…")
+            _pip_install(["epyt"])
+        if _PLOT.search(source):
+            _plots_ready()
+        value = _exec_cell(source, f"<cell {_runs}>")
+        if value is not None:
+            result = repr(value)
+    except SystemExit:
+        print("The notebook stays open: close it with its Close button.")
+    except BaseException as e:
+        error = True
+        # from the cell's own lines on
+        tb = e.__traceback__
+        while tb is not None and not tb.tb_frame.f_code.co_filename.startswith("<cell"):
+            tb = tb.tb_next
+        print("".join(traceback.format_exception(type(e), e, tb)), end="")
+        if isinstance(e, ModuleNotFoundError) and e.name:
+            print(f"Install it with a cell: %pip install {_PACKAGES.get(e.name, e.name)}")
+    finally:
+        try:
+            images = _figures(dpi)
+            network = _epyt_changes()
+        except Exception:
+            pass
+        sys.stdout, sys.stderr = stdout, stderr
     if os.path.exists(out_file):
         with open(out_file, encoding="utf-8") as f:
             network = f.read()
@@ -496,23 +664,36 @@ def console_push(folder, line, reload):
         output += "\n".join(response["messages"]) + "\n"
     response["messages"] = []
     return json.dumps(
-        {"output": output, "more": bool(more), "response": response, "network": network}
+        {
+            "output": output,
+            "result": result,
+            "images": images,
+            "error": error,
+            "response": response,
+            "network": network,
+        }
     )
 
 
-def _console_loop(folder):
+def _notebook_loop(folder):
     for raw in sys.stdin.buffer:
         try:
             msg = json.loads(raw.decode("utf-8"))
         except ValueError:
             continue
         _write_line(
-            "@@console " + console_push(folder, msg.get("line", ""), msg.get("reload", False))
+            "@@cell "
+            + run_cell(
+                folder,
+                msg.get("cell", ""),
+                msg.get("reload", False),
+                dpi=msg.get("dpi", 192),
+            )
         )
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 2 and sys.argv[1] == "--console":
-        _console_loop(sys.argv[2])
+    if len(sys.argv) > 2 and sys.argv[1] == "--notebook":
+        _notebook_loop(sys.argv[2])
     else:
         run_plugin(sys.argv[1] if len(sys.argv) > 1 else ".")

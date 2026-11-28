@@ -855,14 +855,14 @@ fn plugins_toolbar(app: &mut EpanetApp, ui: &mut Ui) {
     if tool_button(
         ui,
         Icon::Python,
-        "Python Console",
+        "Python Notebook",
         true,
-        app.python.console.open,
-        "Python, with the project in `wepanet`",
+        app.python.notebook.open,
+        "Cells of Python, with the project in `wepanet` and EPyT",
     )
     .clicked()
     {
-        crate::python::console::toggle(app);
+        crate::python::notebook::toggle(app);
     }
     // Installed plugins: the core ones (built in), then the scripts.
     let on = |app: &EpanetApp, name: &str| !app.prefs.disabled_plugins.contains(name);

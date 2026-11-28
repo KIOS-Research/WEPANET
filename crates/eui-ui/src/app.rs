@@ -2178,8 +2178,6 @@ impl eframe::App for EpanetApp {
             return;
         }
         crate::dock::show(self, ui);
-        // under the map, between the side panels
-        crate::python::console::show(self, ui);
         // The map sits inset in the window, framed, as in EPANET-UI.
         let form = self.palette().form;
         egui::CentralPanel::default()

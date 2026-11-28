@@ -74,7 +74,7 @@ pub enum Icon {
     FireFlow,
     // misc
     Pencil,
-    /// The Python Console: the Python logo, in its own colors.
+    /// The Python Notebook: the Python logo, in its own colors.
     Python,
     Layers,
     Identify,

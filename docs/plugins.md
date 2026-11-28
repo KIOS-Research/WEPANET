@@ -307,25 +307,59 @@ replaces the project as one step that **Undo** takes back.
 | `progress(text)` | shown on the status bar while the plugin runs |
 | `set_network(path_or_text)` | replaces the project with an input file |
 
-## The Python Console
+## The Python Notebook
 
-**Plugins > Python Console** opens a panel under the map, Python
-Console: Python lines run one after the other in one session, which keeps its
-variables, with `wepanet` already imported. Each line sees the project as it
-is then (an edit or an analysis since the last line is passed on first), and
-what it asks WEPANET to show (a table, a selection, a new project with
-`set_network`) is shown as for a plugin; what it prints is shown in the
-console. A block (`for`, `def`, …) goes on with the `...` prompt and ends
-with an empty line; Up and Down go through the lines typed before.
+**Plugins > Python Notebook** opens the Python Notebook under the map, a
+panel that moves by its title bar like the others: to the left, the right or
+the bottom of the window, onto another panel as a tab, or floating; its
+edges resize it. It holds cells of Python, which run one after the other in
+one session that keeps its variables, with `wepanet` already imported.
+Shift+Enter runs a cell and goes to the next one (a new one after the last),
+Ctrl+Enter runs it and stays; **Run All** runs them all from the first, and
+a cell that stops with an error stops the ones after it. Each cell shows
+`In [n]:`, its number in the session (`In [*]:` while it waits or runs), and
+under it what it printed, its errors, the value of its last line after
+`Out[n]:` (unless the cell ends with `;`), and the figures it drew with
+matplotlib (EPyT's plots too). The button at the right of what a cell showed
+copies it. A click on a figure opens it in a window of its own, where it
+zooms (its buttons, or Ctrl and the wheel) and is saved as PNG. Figures are
+drawn at twice the screen's resolution, so they stay sharp.
+
+Opening the notebook runs its first cell, which opens the project with
+EPyT; the next ones plot the pressures and change the project:
 
 ```python
->>> from epyt import epanet
->>> d = epanet(wepanet.inp_file, display_msg=False)
->>> d.getNodeCount()
-11
+from epyt import epanet
+d = epanet(wepanet.inp_file)
+d.getNodeCount(), d.getLinkCount()
 ```
 
-`pip install <package>` installs a package (in the browser from PyPI, with
-Pyodide's micropip). The console uses the same Python as the plugins: Pyodide
-in the browser, the local Python on the desktop, where closing the console
-ends its session.
+A cell that changes the EPyT project opened from `wepanet.inp_file`
+(`d.setNodeElevations(...)`, …) changes WEPANET's project too: the map shows
+it at once, and Undo takes it back. Other networks a cell opens with EPyT
+stay off the map; and since EPyT projects opened without `ph=True` share one
+EPANET project, opening another one leaves `d` behind until the first cell
+runs again.
+Each cell sees the project as it is then (an edit or an analysis since the
+last cell is passed on first; open it with EPyT again to read it there),
+and what it asks WEPANET to show (a table, a selection, a new project with
+`set_network`) is shown as for a plugin. **WEPANET Examples** adds a cell with an
+example and runs it (its first item, **Starter Notebook**, brings back the
+cells the notebook opens with), **Restart** starts the session again, **Clear** clears
+what the cells showed.
+
+The buttons at the left open a notebook file (`.ipynb`, e.g. from Jupyter),
+from this computer or from an address (a GitHub link such as
+`https://github.com/<owner>/<repo>/blob/<branch>/<file>.ipynb`, or a raw
+URL), and save the cells as one; **EPyT Examples** lists EPyT's example notebooks
+(from its repository on GitHub) and opens the one clicked. An opened
+notebook's cells replace these, in a new session; **Run All** runs them.
+Markdown cells are shown formatted (a double-click edits one, Shift+Enter
+shows it formatted again). A cell that imports a module that is not
+installed says how to install it (`%pip install <package>`).
+
+`%pip install <package>` in a cell installs a package (in the browser from
+PyPI, with Pyodide's micropip); EPyT and matplotlib are installed the first
+time a cell needs them. The notebook uses the same Python as the plugins:
+Pyodide in the browser, the local Python on the desktop, where closing the
+notebook ends its session.
