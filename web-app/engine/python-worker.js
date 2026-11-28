@@ -1,7 +1,7 @@
-// Runs WEPANET's Python plugins and its Python Console with Pyodide (CPython
+// Runs WEPANET's Python plugins and its Python Notebook with Pyodide (CPython
 // in WebAssembly), off the main thread. Each plugin run gets a fresh folder
 // with the files WEPANET sends, and python_runner.py runs the plugin there; the
-// console keeps one session of python_runner.py, fed line by line (see
+// notebook keeps one session of python_runner.py, fed cell by cell (see
 // crates/eui-ui/src/python.rs). Messages are handled one at a time.
 // A module worker: Pyodide 314's pyodide.js does not load with importScripts
 const PYODIDE = 'https://cdn.jsdelivr.net/pyodide/v314.0.7/full/';
@@ -68,37 +68,43 @@ function writeFiles(FS, dir, files) {
   }
 }
 
-// The console's session: python_runner.py loaded once, as a module.
-let consoleScope = null;
+// The notebook's session: python_runner.py loaded once, as a module.
+let notebookScope = null;
 
-// A line typed in the console; resolves to console_push's JSON answer.
-async function consoleLine(id, files, line, reload) {
+// A cell of the notebook; resolves to run_cell's JSON answer. Before it runs,
+// the packages it imports from Pyodide's distribution load, and its
+// `%pip install` lines (and EPyT, when it imports it) install with micropip.
+async function notebookCell(id, files, source, reload, fresh, dpi) {
   const py = await python(id);
-  const dir = '/home/pyodide/wepanet_console';
+  const dir = '/home/pyodide/wepanet_notebook';
   if (files) writeFiles(py.FS, dir, files);
-  if (!consoleScope) {
-    if (!files || !files['python_runner.py']) throw new Error('the console has no runner');
-    consoleScope = py.toPy({ __name__: 'wepanet_runner' });
-    py.runPython(new TextDecoder().decode(files['python_runner.py']), { globals: consoleScope });
+  if (!notebookScope) {
+    if (!files || !files['python_runner.py']) throw new Error('the notebook has no runner');
+    notebookScope = py.toPy({ __name__: 'wepanet_runner' });
+    py.runPython(new TextDecoder().decode(files['python_runner.py']), { globals: notebookScope });
   }
-  const answer = (output) => JSON.stringify({ output, more: false, response: null, network: null });
-  // pip install <packages>, outside a block: micropip
-  const words = line.trim().replace(/^%/, '').split(/\s+/);
-  const session = consoleScope.get('_console');
-  const inBlock = session && session.buffer.length > 0;
-  if (words[0] === 'pip' && words[1] === 'install' && words.length > 2 && !inBlock) {
-    try {
-      await install(py, id, '', words.slice(2));
-      return answer('Installed ' + words.slice(2).join(', ') + '\n');
-    } catch (err) {
-      return answer(String((err && err.message) || err) + '\n');
+  const packages = [];
+  for (const line of source.split('\n')) {
+    const m = line.match(/^\s*[%!]?pip install\s+(\S.*?)\s*$/);
+    if (m) packages.push(...m[1].split(/\s+/));
+  }
+  if (/^\s*(from|import)\s+epyt\b/m.test(source)) packages.push('epyt');
+  try { await py.loadPackagesFromImports(source, { messageCallback: () => {} }); } catch (_) {}
+  try {
+    // a cell that plots (EPyT's plots too) gets matplotlib; its figures are
+    // shown under the cell
+    if (/plot|matplotlib/.test(source)) {
+      post(id, 'Loading matplotlib…');
+      await py.loadPackage('matplotlib', { messageCallback: () => {} });
     }
+    await install(py, id, '', packages);
+  } catch (err) {
+    const output = String((err && err.message) || err) + '\n';
+    return JSON.stringify({ output, error: true, response: null, network: null });
   }
-  // the packages of Pyodide's distribution the line imports
-  try { await py.loadPackagesFromImports(line, { messageCallback: () => {} }); } catch (_) {}
   current = id;
   try {
-    return consoleScope.get('console_push')(dir, line, reload);
+    return notebookScope.get('run_cell')(dir, source, reload, fresh, dpi || 192);
   } finally {
     current = null;
   }
@@ -106,10 +112,10 @@ async function consoleLine(id, files, line, reload) {
 
 async function handle(data) {
   const { id, files, requirements } = data;
-  if (data.console) {
+  if (data.cell) {
     try {
-      const { files: f, line, reload } = data.console;
-      self.postMessage({ id, result: await consoleLine(id, f, line, reload) });
+      const { files: f, source, reload, fresh, dpi } = data.cell;
+      self.postMessage({ id, result: await notebookCell(id, f, source, reload, fresh, dpi) });
     } catch (err) {
       self.postMessage({ id, error: String((err && err.message) || err) });
     }

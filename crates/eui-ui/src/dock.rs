@@ -2,7 +2,8 @@
 //! Editor — which the user can move. Panels in one place show as tabs, one at
 //! a time. Dragged by its title bar (or tab) to the left or the right edge of
 //! the window a panel docks there, above or below the others on that side (by
-//! where it is let go); onto another panel's title bar it joins it as a tab;
+//! where it is let go); to the bottom edge it docks under the map (as a tab
+//! of the panels there); onto another panel's title bar it joins it as a tab;
 //! let go elsewhere it floats as a window of its own. The title bar's context
 //! menu does the same, and a double click floats a docked panel or docks a
 //! floating one again.
@@ -22,10 +23,11 @@ pub enum Pane {
     Identify,
     Query,
     Locate,
+    Notebook,
 }
 
 impl Pane {
-    const ALL: [Pane; 7] = [
+    const ALL: [Pane; 8] = [
         Pane::MapViewer,
         Pane::ProjectExplorer,
         Pane::PropertyEditor,
@@ -33,6 +35,7 @@ impl Pane {
         Pane::Identify,
         Pane::Query,
         Pane::Locate,
+        Pane::Notebook,
     ];
 
     fn title(self) -> &'static str {
@@ -44,6 +47,7 @@ impl Pane {
             Pane::Identify => "Identify Results",
             Pane::Query => "Map Query",
             Pane::Locate => "Object Locater",
+            Pane::Notebook => "Python Notebook",
         }
     }
 
@@ -51,6 +55,7 @@ impl Pane {
         match self {
             Pane::MapViewer | Pane::Layers | Pane::Query | Pane::Locate => 250.0,
             Pane::ProjectExplorer | Pane::PropertyEditor | Pane::Identify => 300.0,
+            Pane::Notebook => 620.0,
         }
     }
 
@@ -62,6 +67,7 @@ impl Pane {
             Pane::PropertyEditor | Pane::Layers => 300.0,
             Pane::Query => 170.0,
             Pane::Locate => 320.0,
+            Pane::Notebook => 520.0,
         }
     }
 
@@ -71,7 +77,7 @@ impl Pane {
             // the tree sits on white, as in EPANET-UI
             Pane::ProjectExplorer if ui.visuals().dark_mode => ui.visuals().extreme_bg_color,
             Pane::ProjectExplorer => Color32::WHITE,
-            Pane::PropertyEditor | Pane::Identify => ui.visuals().panel_fill,
+            Pane::PropertyEditor | Pane::Identify | Pane::Notebook => ui.visuals().panel_fill,
         }
     }
 
@@ -83,12 +89,16 @@ impl Pane {
             Pane::Identify => app.prefs.show_explorer && !app.prefs.hide_identify,
             Pane::Query => app.query.open,
             Pane::Locate => app.locate.open,
+            Pane::Notebook => app.python.notebook.open,
         }
     }
 
     /// Whether its title bar (or tab) has a cross that closes it.
     fn closable(self) -> bool {
-        matches!(self, Pane::Identify | Pane::Query | Pane::Locate)
+        matches!(
+            self,
+            Pane::Identify | Pane::Query | Pane::Locate | Pane::Notebook
+        )
     }
 
     /// Closes it (the Identify tool, Query or Locate opens it again).
@@ -97,6 +107,7 @@ impl Pane {
             Pane::Identify => app.prefs.hide_identify = true,
             Pane::Query => crate::viewer::close_query(app),
             Pane::Locate => crate::locater::close(app),
+            Pane::Notebook => crate::python::notebook::toggle(app),
             _ => {}
         }
     }
@@ -110,6 +121,7 @@ impl Pane {
             Pane::Identify => crate::layers::identify_pane(app, ui),
             Pane::Query => crate::viewer::query_pane(app, ui),
             Pane::Locate => crate::locater::pane(app, ui),
+            Pane::Notebook => crate::python::notebook::pane(app, ui),
         }
     }
 }
@@ -137,6 +149,8 @@ impl Group {
 pub struct Layout {
     pub left: Vec<Group>,
     pub right: Vec<Group>,
+    /// Under the map, between the sides: one group.
+    pub bottom: Vec<Group>,
     pub floating: Vec<Pane>,
     /// The heights the user gave places above others, by their first panel.
     pub heights: std::collections::HashMap<Pane, f32>,
@@ -148,7 +162,8 @@ pub struct Layout {
 
 impl Default for Layout {
     /// As in EPANET-UI, with the Map Layers a tab beside the Map Viewer
-    /// and the Object Locater and Map Query (when open) above them.
+    /// and the Object Locater and Map Query (when open) above them; the
+    /// Python Notebook (when open) under the map.
     fn default() -> Self {
         Layout {
             left: vec![
@@ -160,6 +175,7 @@ impl Default for Layout {
                 Group::of(&[Pane::ProjectExplorer, Pane::Identify]),
                 Group::of(&[Pane::PropertyEditor]),
             ],
+            bottom: vec![Group::of(&[Pane::Notebook])],
             floating: Vec::new(),
             heights: Default::default(),
             fold_left: false,
@@ -174,6 +190,8 @@ enum Place {
     /// On the left, at the top (or the bottom).
     Left(bool),
     Right(bool),
+    /// Under the map.
+    Bottom,
     Floating,
     /// A tab beside this panel.
     With(Pane),
@@ -181,7 +199,10 @@ enum Place {
 
 impl Layout {
     fn groups_mut(&mut self) -> impl Iterator<Item = &mut Group> {
-        self.left.iter_mut().chain(self.right.iter_mut())
+        self.left
+            .iter_mut()
+            .chain(self.right.iter_mut())
+            .chain(self.bottom.iter_mut())
     }
 
     fn take(&mut self, pane: Pane) {
@@ -195,6 +216,7 @@ impl Layout {
         }
         self.left.retain(|g| !g.panes.is_empty());
         self.right.retain(|g| !g.panes.is_empty());
+        self.bottom.retain(|g| !g.panes.is_empty());
         self.floating.retain(|p| *p != pane);
     }
 
@@ -202,6 +224,7 @@ impl Layout {
         self.left
             .iter()
             .chain(&self.right)
+            .chain(&self.bottom)
             .any(|g| g.panes.contains(&pane))
             || self.floating.contains(&pane)
     }
@@ -228,6 +251,14 @@ impl Layout {
         });
         self.left.retain(|g| !g.panes.is_empty());
         self.right.retain(|g| !g.panes.is_empty());
+        self.bottom.retain(|g| !g.panes.is_empty());
+        // one group under the map: the others join it as tabs
+        if self.bottom.len() > 1 {
+            let rest: Vec<Group> = self.bottom.drain(1..).collect();
+            self.bottom[0]
+                .panes
+                .extend(rest.into_iter().flat_map(|g| g.panes));
+        }
         for p in Pane::ALL {
             if self.contains(p) {
                 continue;
@@ -242,6 +273,7 @@ impl Layout {
                     self.activate(Pane::ProjectExplorer);
                 }
                 Pane::Query | Pane::Locate => self.put(p, Place::Left(true)),
+                Pane::Notebook => self.put(p, Place::Bottom),
                 Pane::MapViewer | Pane::Layers => self.put(p, Place::Left(false)),
                 _ => self.put(p, Place::Right(false)),
             }
@@ -255,6 +287,16 @@ impl Layout {
             Place::Right(top) => (&mut self.right, top),
             Place::Floating => {
                 self.floating.push(pane);
+                return;
+            }
+            Place::Bottom => {
+                match self.bottom.first_mut() {
+                    Some(g) => {
+                        g.panes.push(pane);
+                        g.active = pane;
+                    }
+                    None => self.bottom.push(Group::of(&[pane])),
+                }
                 return;
             }
             Place::With(other) => {
@@ -363,9 +405,10 @@ pub(crate) fn show(app: &mut EpanetApp, ui: &mut Ui) {
             .iter()
             .flat_map(|(panes, _)| panes.iter().map(|p| p.width()))
             .fold(0.0, f32::max);
+        let widest = (ctx.content_rect().width() - 260.0).max(520.0);
         let side = panel
             .default_size(width)
-            .size_range(220.0..=520.0)
+            .size_range(220.0..=widest)
             .resizable(true)
             .frame(egui::Frame::NONE.fill(ui.visuals().panel_fill))
             .show(ui, |ui| {
@@ -396,6 +439,31 @@ pub(crate) fn show(app: &mut EpanetApp, ui: &mut Ui) {
         if fold_tab(app, &ctx, tab, left, left, "Hide the panels") {
             set_fold(app, left, true);
         }
+    }
+    // under the map, between the sides
+    let shown = visible_groups(app, &layout.bottom);
+    if !shown.is_empty() {
+        let tallest = (ctx.content_rect().height() - 160.0).max(120.0);
+        egui::Panel::bottom("dock_bottom")
+            .default_size(260.0)
+            .size_range(80.0..=tallest)
+            .resizable(true)
+            .frame(egui::Frame::NONE.fill(ui.visuals().panel_fill))
+            .show(ui, |ui| {
+                for (panes, tabs, rect) in stack(app, ui, &shown) {
+                    bars.0.push((panes.clone(), rect));
+                    for (p, r) in tabs {
+                        if r.clicked() && panes.len() > 1 {
+                            chosen = Some(p);
+                        }
+                        if let Some(to) =
+                            moved(&ctx, &r, Place::Bottom, None, p, &panes, &last_bars)
+                        {
+                            moves.push((p, to));
+                        }
+                    }
+                }
+            });
     }
     let floating: Vec<Pane> = layout
         .floating
@@ -557,7 +625,7 @@ pub(crate) fn stack(app: &mut EpanetApp, ui: &mut Ui, groups: &[(Vec<Pane>, Pane
                 .get(&panes[0])
                 .copied()
                 .unwrap_or_else(|| panes.iter().map(|q| q.height()).fold(0.0, f32::max));
-            let max = (ui.available_height() - 120.0).max(60.0);
+            let max = (ui.available_height() - 60.0).max(60.0);
             let fits = wanted.min(max);
             let had = egui::containers::panel::PanelState::load(&ctx, id).map(|s| s.size().y);
             // grown back after a smaller window (not shrunk: a panel may need
@@ -707,7 +775,7 @@ fn grab(resp: Response) -> Response {
         CursorIcon::Grab
     })
     .on_hover_text(crate::i18n::tr(
-        "Drag to the left or the right of the window to dock it there, onto another panel's title to make it a tab, or elsewhere to float it. Right-click for more.",
+        "Drag to the left, the right or the bottom of the window to dock it there, onto another panel's title to make it a tab, or elsewhere to float it. Right-click for more.",
     ))
 }
 
@@ -746,6 +814,7 @@ fn moved(
         for (place, label) in [
             (Place::Left(false), "Dock Left"),
             (Place::Right(false), "Dock Right"),
+            (Place::Bottom, "Dock Bottom"),
             (Place::Floating, "Float"),
         ] {
             if ui
@@ -826,6 +895,8 @@ fn target(ctx: &egui::Context, p: Pos2, pane: Pane, bars: &Bars) -> Place {
         Place::Left(top)
     } else if p.x > r.right() - r.width() * EDGE {
         Place::Right(top)
+    } else if p.y > r.bottom() - r.height() * EDGE {
+        Place::Bottom
     } else {
         Place::Floating
     }
@@ -854,6 +925,10 @@ fn show_target(ctx: &egui::Context, p: Pos2, floating: bool, pane: Pane, bars: &
             let (y0, y1) = half(top);
             Rect::from_min_max(egui::pos2(r.right() - w, y0), egui::pos2(r.right(), y1))
         }
+        Place::Bottom => Rect::from_min_max(
+            egui::pos2(r.left() + w, r.bottom() - r.height() * EDGE),
+            egui::pos2(r.right() - w, r.bottom()),
+        ),
         // a docked panel let go elsewhere floats there
         Place::Floating if !floating => {
             Rect::from_min_size(p - vec2(40.0, 14.0), vec2(260.0, 320.0))
@@ -1051,6 +1126,37 @@ mod tests {
         crate::layers::start_identify(&mut app);
         assert!(!app.prefs.hide_identify);
         at(&frame(&mut app, &ctx, vec![]), "Identify Results");
+    }
+
+    /// A panel let go at the bottom of the window docks under the map, as
+    /// a tab beside the Python Notebook, and its menu does the same.
+    #[test]
+    fn panels_dock_under_the_map() {
+        let (mut app, ctx) = app();
+        app.python.notebook.open = true;
+        drag(&mut app, &ctx, "Property Editor", egui::pos2(700.0, 860.0));
+        assert_eq!(
+            app.prefs.docks.bottom,
+            [Group {
+                panes: vec![Pane::Notebook, Pane::PropertyEditor],
+                active: Pane::PropertyEditor,
+            }]
+        );
+        let t = frame(&mut app, &ctx, vec![]);
+        let tab = at(&t, "Property Editor");
+        assert!(tab.top() > 450.0 && tab.center().x > 300.0, "{tab:?}");
+        assert!(at(&t, "EPANET Example Network 1").top() > tab.bottom()); // its Title field
+        // the side the Property Editor left
+        assert_eq!(
+            sides(&app.prefs.docks).1,
+            [vec![Pane::ProjectExplorer, Pane::Identify]]
+        );
+        // Dock Bottom in the menu of a floating panel
+        let mut l = Layout::default();
+        l.put(Pane::Layers, Place::Floating);
+        l.put(Pane::Layers, Place::Bottom);
+        assert_eq!(l.bottom[0].panes, [Pane::Notebook, Pane::Layers]);
+        assert!(l.floating.is_empty());
     }
 
     #[test]

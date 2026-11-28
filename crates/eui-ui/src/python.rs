@@ -21,11 +21,11 @@
 //! own folder (its modules, translations, …: see `wepanet.plugin_dir`), and
 //! answers with what to show; a changed project replaces the current one in
 //! a step Undo can take back. The same runner keeps the session of the
-//! Python Console ([`console`]).
+//! Python Notebook ([`notebook`]).
 
-pub(crate) mod console;
+pub(crate) mod notebook;
 
-pub use console::ConsoleState;
+pub use notebook::NotebookState;
 
 use std::sync::mpsc;
 
@@ -89,8 +89,8 @@ type Outcome = Result<(Response, Option<String>), String>;
 enum Msg {
     Progress(String),
     Done(Outcome),
-    /// The console's answer to a line (JSON), or why its Python stopped.
-    Console(Result<String, String>),
+    /// The notebook's answer to a cell (JSON), or why its Python stopped.
+    Cell(Result<String, String>),
 }
 
 /// A plugin running in Python.
@@ -102,7 +102,7 @@ struct Job {
 #[derive(Default)]
 pub struct PythonState {
     job: Option<Job>,
-    pub console: ConsoleState,
+    pub notebook: NotebookState,
 }
 
 // ----- reading a plugin's header ---------------------------------------------
@@ -271,9 +271,9 @@ pub fn start(app: &mut EpanetApp, p: &UserPlugin, item: &str) {
 }
 
 /// Shows the progress and the outcome of the running plugin, and the
-/// console's answers.
+/// notebook's answers.
 pub fn poll(app: &mut EpanetApp, ctx: &egui::Context) {
-    console::poll(app, ctx);
+    notebook::poll(app, ctx);
     let Some(job) = &app.python.job else {
         return;
     };
@@ -286,7 +286,7 @@ pub fn poll(app: &mut EpanetApp, ctx: &egui::Context) {
                 done = Some(o);
                 break;
             }
-            Ok(Msg::Console(_)) => {}
+            Ok(Msg::Cell(_)) => {}
             Err(mpsc::TryRecvError::Empty) => break,
             Err(mpsc::TryRecvError::Disconnected) => {
                 done = Some(Err("the Python plugin stopped unexpectedly".into()));
@@ -467,8 +467,8 @@ mod backend {
         Ok(())
     }
 
-    /// The Python Console's Python: a process kept running, which reads a
-    /// JSON line per line typed and answers with an `@@console` line.
+    /// The Python Notebook's Python: a process kept running, which reads a
+    /// JSON line per cell and answers with an `@@cell` line.
     pub struct Session {
         child: std::process::Child,
         stdin: std::process::ChildStdin,
@@ -488,7 +488,7 @@ mod backend {
             let mut child = command(&py)
                 .arg("-u")
                 .arg(dir.join("python_runner.py"))
-                .arg("--console")
+                .arg("--notebook")
                 .arg(&dir)
                 .current_dir(&dir)
                 .env("PYTHONIOENCODING", "utf-8")
@@ -513,8 +513,9 @@ mod backend {
                     .lines()
                     .map_while(Result::ok)
                 {
-                    let msg = if let Some(t) = line.strip_prefix("@@console ") {
-                        Msg::Console(Ok(t.to_string()))
+                    // after what a library printed without a line break
+                    let msg = if let Some(k) = line.find("@@cell ") {
+                        Msg::Cell(Ok(line[k + 7..].to_string()))
                     } else if let Some(t) = line.strip_prefix("@@progress ") {
                         Msg::Progress(t.to_string())
                     } else {
@@ -525,7 +526,7 @@ mod backend {
                     }
                 }
                 let log = log.join().unwrap_or_default();
-                let _ = tx.send(Msg::Console(Err(format!("Python stopped. {}", log.trim()))));
+                let _ = tx.send(Msg::Cell(Err(format!("Python stopped. {}", log.trim()))));
             });
             Ok(Session {
                 child,
@@ -535,17 +536,18 @@ mod backend {
             })
         }
 
-        /// Sends a line (with the project's files first, when they changed).
+        /// Sends a cell (with the project's files first, when they changed).
         pub fn push(
             &mut self,
             files: Option<Vec<(String, Vec<u8>)>>,
-            line: &str,
+            cell: &str,
+            dpi: u32,
         ) -> Result<(), String> {
             use std::io::Write as _;
             if let Some(f) = &files {
                 write(&self.dir, f)?;
             }
-            let msg = serde_json::json!({ "line": line, "reload": files.is_some() });
+            let msg = serde_json::json!({ "cell": cell, "reload": files.is_some(), "dpi": dpi });
             writeln!(self.stdin, "{msg}")
                 .and_then(|()| self.stdin.flush())
                 .map_err(|e| format!("Python is not running: {e}"))
@@ -620,32 +622,42 @@ mod backend {
             requirements: &Array,
             on_progress: &Closure<dyn FnMut(String)>,
         ) -> Result<js_sys::Promise, JsValue>;
-        #[wasm_bindgen(catch, js_namespace = euiPython, js_name = console)]
-        fn js_console(
+        #[wasm_bindgen(catch, js_namespace = euiPython, js_name = cell)]
+        fn js_cell(
             files: &JsValue,
-            line: &str,
+            cell: &str,
             reload: bool,
+            fresh: bool,
+            dpi: u32,
             on_progress: &Closure<dyn FnMut(String)>,
         ) -> Result<js_sys::Promise, JsValue>;
     }
 
-    /// The Python Console's Python: Pyodide's worker keeps its session.
+    /// The Python Notebook's Python: Pyodide's worker keeps its session,
+    /// which a new `Session` starts again.
     pub struct Session {
         tx: mpsc::Sender<Msg>,
         pub rx: mpsc::Receiver<Msg>,
+        /// No cell has been sent yet.
+        fresh: bool,
     }
 
     impl Session {
         pub fn start() -> Result<Session, String> {
             let (tx, rx) = mpsc::channel();
-            Ok(Session { tx, rx })
+            Ok(Session {
+                tx,
+                rx,
+                fresh: true,
+            })
         }
 
-        /// Sends a line (with the project's files first, when they changed).
+        /// Sends a cell (with the project's files first, when they changed).
         pub fn push(
             &mut self,
             files: Option<Vec<(String, Vec<u8>)>>,
-            line: &str,
+            cell: &str,
+            dpi: u32,
         ) -> Result<(), String> {
             let reload = files.is_some();
             let obj: JsValue = match files {
@@ -662,8 +674,9 @@ mod backend {
             let on_progress = Closure::<dyn FnMut(String)>::new(move |t: String| {
                 let _ = progress_tx.send(Msg::Progress(t));
             });
-            let promise = js_console(&obj, line, reload, &on_progress)
+            let promise = js_cell(&obj, cell, reload, self.fresh, dpi, &on_progress)
                 .map_err(|e| format!("Python is not available in this page ({})", text(&e)))?;
+            self.fresh = false;
             let tx = self.tx.clone();
             wasm_bindgen_futures::spawn_local(async move {
                 let r = JsFuture::from(promise)
@@ -671,7 +684,7 @@ mod backend {
                     .map(|v| text(&v))
                     .map_err(|e| text(&e));
                 drop(on_progress);
-                let _ = tx.send(Msg::Console(r));
+                let _ = tx.send(Msg::Cell(r));
             });
             Ok(())
         }
@@ -754,7 +767,7 @@ mod tests {
             match rx.recv().ok()? {
                 Msg::Progress(_) => {}
                 Msg::Done(o) => return Some(o),
-                Msg::Console(_) => {}
+                Msg::Cell(_) => {}
             }
         }
     }
